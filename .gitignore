@@ -1,0 +1,33 @@
+# Build artifacts
+**/build/
+**/managed_components/
+**/sdkconfig
+**/sdkconfig.old
+
+# Example programs (reference only, not source)
+示例程序/
+
+# Binary files
+*.bin
+*.elf
+*.map
+*.zip
+
+# IDE
+.vscode/
+.idea/
+.clangd/
+.ccls-cache/
+compile_commands.json
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
