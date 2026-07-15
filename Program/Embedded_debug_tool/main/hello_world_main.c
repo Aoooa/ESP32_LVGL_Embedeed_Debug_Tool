@@ -396,6 +396,7 @@ static esp_err_t ctrl_handler(httpd_req_t *req)
 /* GET / (index page) */
 static esp_err_t root_handler(httpd_req_t *req)
 {
+    printf("[WEB] GET / from client\n");
     const char *html =
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\"content=\"width=device-width,initial-scale=1\">"
@@ -419,6 +420,8 @@ static void start_web_server(void)
     config.max_uri_handlers = 8;
     config.stack_size = 8192;
     config.lru_purge_enable = true;
+    config.max_open_sockets = 7;
+    config.backlog_conn_limit = 7;
 
     printf("[WEB] starting server on port %d...\n", config.server_port);
     esp_err_t err = httpd_start(&g_server, &config);
@@ -426,6 +429,7 @@ static void start_web_server(void)
         printf("[WEB] server start FAILED: %s\n", esp_err_to_name(err));
         return;
     }
+    printf("[WEB] server handle: %p\n", g_server);
 
     httpd_uri_t uris[] = {
         { .uri = "/",      .method = HTTP_GET, .handler = root_handler },
