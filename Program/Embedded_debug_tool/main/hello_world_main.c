@@ -398,7 +398,10 @@ static esp_err_t data_handler(httpd_req_t *req)
     }
 
     httpd_resp_set_type(req, "text/plain; charset=utf-8");
-    return httpd_resp_send(req, (const char *)tmp, n);
+    /* Use httpd_resp_send_chunk — it respects the length parameter,
+       unlike httpd_resp_send which uses strlen() when data != NULL */
+    httpd_resp_send_chunk(req, (const char *)tmp, n);
+    return httpd_resp_send_chunk(req, NULL, 0);  /* End chunked response */
 }
 
 /* GET /ctrl?uart=N&pause=M */
