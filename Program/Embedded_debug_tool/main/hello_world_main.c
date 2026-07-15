@@ -353,9 +353,11 @@ static esp_err_t page_handler(httpd_req_t *req)
         "document.getElementById('bp').onclick=function(){"
         "P=!P;var b=document.getElementById('bp');"
         "if(P){b.textContent='继续';b.className='on';"
+        "clearTimeout(T);"
         "fetch('/ctrl?uart='+U+'&pause=1')}else{"
         "b.textContent='暂停';b.className='';"
-        "fetch('/ctrl?uart='+U+'&pause=0')}};"
+        "fetch('/ctrl?uart='+U+'&pause=0');"
+        "T=setTimeout(poll,200)}};"
         "function poll(){if(!P){"
         "fetch('/data?uart='+U+'&since='+O)"
         ".then(function(r){if(r.status===204)return null;return r.text()})"
@@ -368,7 +370,7 @@ static esp_err_t page_handler(httpd_req_t *req)
         ".catch(function(){});}"
         "T=setTimeout(poll,200)}T=setTimeout(poll,200);"
         "</script></body></html>",
-        idx, idx, br->name, idx);
+        idx + 1, idx + 1, br->name, idx);
 
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_send(req, page, n);
