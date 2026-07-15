@@ -253,67 +253,74 @@ static void uart_forward_task(void *arg)
 
 /* ──────────────────── Web Server ──────────────────── */
 
-static const char *HTML_HEAD =
-"<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
-"<meta name=\"viewport\"content=\"width=device-width,initial-scale=1\">"
-"<title>UART%d</title><style>"
-"*{margin:0;padding:0;box-sizing:border-box}"
-"body{font:13px/1.3 monospace;background:#1a1a1a;color:#ccc;padding:8px}"
-"h3{color:#4fc3f7;margin-bottom:6px}"
-"textarea{width:100%;height:60vh;background:#111;color:#0f0;border:1px solid #333;"
-"font:12px/1.4 monospace;resize:vertical;padding:4px}"
-".bar{display:flex;gap:6px;margin:6px 0;align-items:center;flex-wrap:wrap}"
-"button{padding:4px 12px;border:1px solid #555;background:#222;color:#ccc;"
-"cursor:pointer;font:12px monospace;border-radius:3px}"
-"button:hover{background:#333}"
-"button.on{border-color:#4caf50;color:#4caf50}"
-"</style></head><body>"
-"<h3>UART%d - %s</h3>"
-"<div class=\"bar\">"
-"<button id=\"btnPause\" onclick=\"togglePause()\">暂停</button>"
-"<button onclick=\"clrScr()\">清空</button>"
-"<span id=\"info\" style=\"color:#666;margin-left:auto\"></span>"
-"</div>"
-"<textarea id=\"out\" readonly></textarea>"
-"<script>"
-"var ps=0,ofs=0,tid;"
-"function $(id){return document.getElementById(id)}"
-"function clrScr(){$('out').value='';ofs=0}"
-"function togglePause(){"
-"if(!ps){ps=1;$('btnPause').textContent='继续';$('btnPause').className='on'"
-"+fetch('/ctrl?uart=%d&pause=1')}"
-"else{ps=0;$('btnPause').textContent='暂停';$('btnPause').className='off'"
-"+fetch('/ctrl?uart=%d&pause=0')}"
-"}"
-"function poll(){"
-"if(!ps){"
-"fetch('/data?uart=%d&since='+ofs).then(function(r){"
-"if(r.status===204){return null}"
-"return r.text().then(function(t){"
-"if(t.length>0){"
-"var a=$('out');var at=a.scrollTop>=a.scrollHeight-a.clientHeight-16;"
-"a.value+=t;ofs+=t.length;"
-"if(at)a.scrollTop=a.scrollHeight"
-"$('info').textContent=ofs+' bytes'"
-"}"
-"})})"
-"}.then(function(){tid=setTimeout(poll,150)}"
-").catch(function(){tid=setTimeout(poll,1000)})"
-"}"
-"tid=setTimeout(poll,200)"
-"</script></body></html>";
-
 static uart_bridge_t *g_bridges[2];
 static httpd_handle_t g_server;
 
 static void send_html_page(httpd_req_t *req, int uart_idx, uart_bridge_t *br)
 {
-    char page[1800];
-    int len = snprintf(page, sizeof(page), HTML_HEAD,
-                       br->tcp_port, uart_idx, br->name,
-                       uart_idx, uart_idx, uart_idx);
+    /* Build HTML without snprintf — avoids format string issues */
+    char page[2048];
+    int off = 0;
+
+    off += snprintf(page + off, sizeof(page) - off,
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\"content=\"width=device-width,initial-scale=1\">"
+        "<title>UART%d</title><style>"
+        "*{margin:0;padding:0;box-sizing:border-box}"
+        "body{font:13px/1.3 monospace;background:#1a1a1a;color:#ccc;padding:8px}"
+        "h3{color:#4fc3f7;margin-bottom:6px}"
+        "textarea{width:100%%;height:60vh;background:#111;color:#0f0;border:1px solid #333;"
+        "font:12px/1.4 monospace;resize:vertical;padding:4px}"
+        ".bar{display:flex;gap:6px;margin:6px 0;align-items:center;flex-wrap:wrap}"
+        "button{padding:4px 12px;border:1px solid #555;background:#222;color:#ccc;"
+        "cursor:pointer;font:12px monospace;border-radius:3px}"
+        "button:hover{background:#333}"
+        "button.on{border-color:#4caf50;color:#4caf50}"
+        "</style></head><body>"
+        "<h3>UART%d - %s</h3>"
+        "<div class=\"bar\">"
+        "<button id=\"btnPause\">暂停</button>"
+        "<button id=\"btnClear\">清空</button>"
+        "<span id=\"info\" style=\"color:#666;margin-left:auto\"></span>"
+        "</div>"
+        "<textarea id=\"out\" readonly></textarea>"
+        "<input type=\"hidden\" id=\"uid\" value=\"%d\">",
+        br->tcp_port, uart_idx, br->name, uart_idx);
+
+    /* JavaScript — no format specifiers, reads uart index from DOM */
+    off += snprintf(page + off, sizeof(page) - off,
+        "<script>"
+        "var U=document.getElementById('uid').value;"
+        "var ps=0,ofs=0,tid;"
+        "document.getElementById('btnClear').onclick=function(){"
+        "document.getElementById('out').value='';ofs=0};"
+        "document.getElementById('btnPause').onclick=function(){"
+        "var b=document.getElementById('btnPause');"
+        "if(!ps){ps=1;b.textContent='继续';b.className='on';"
+        "fetch('/ctrl?uart='+U+'&pause=1')}"
+        "else{ps=0;b.textContent='暂停';b.className='off';"
+        "fetch('/ctrl?uart='+U+'&pause=0')}"
+        "};"
+        "function poll(){"
+        "if(!ps){"
+        "fetch('/data?uart='+U+'&since='+ofs).then(function(r){"
+        "if(r.status===204)return;"
+        "return r.text().then(function(t){"
+        "if(t.length>0){"
+        "var a=document.getElementById('out');"
+        "var at=a.scrollTop>=a.scrollHeight-a.clientHeight-16;"
+        "a.value+=t;ofs+=t.length;"
+        "if(at)a.scrollTop=a.scrollHeight;"
+        "document.getElementById('info').textContent=ofs+' bytes';"
+        "}});})"
+        ".then(function(){tid=setTimeout(poll,150)})"
+        ".catch(function(){tid=setTimeout(poll,1000)})"
+        "}"
+        "tid=setTimeout(poll,200);"
+        "</script></body></html>");
+
     httpd_resp_set_type(req, "text/html");
-    httpd_resp_send(req, page, len);
+    httpd_resp_send(req, page, off);
 }
 
 /* GET /page?uart=0 or /page?uart=1 */
@@ -360,7 +367,7 @@ static esp_err_t data_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    printf("[WEB] data uart=%d since=%u → %u bytes\n", uart_idx, since, n);
+    printf("[WEB] data uart=%d since=%lu → %lu bytes\n", uart_idx, (unsigned long)since, (unsigned long)n);
     httpd_resp_set_type(req, "text/plain; charset=utf-8");
     httpd_resp_send(req, (const char *)tmp, n);
     return ESP_OK;
