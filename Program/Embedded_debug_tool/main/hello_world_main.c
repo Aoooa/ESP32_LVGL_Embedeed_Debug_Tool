@@ -179,18 +179,20 @@ static void uart_forward_task(void *arg)
 static void ws_broadcast_work(void *arg)
 {
     bcast_item_t *item = (bcast_item_t *)arg;
-    int max_fd = httpd_get_max_fd(g_httpd);
+    size_t client_count = CONFIG_LWIP_MAX_SOCKETS;
+    int fds[CONFIG_LWIP_MAX_SOCKETS];
 
-    for (int fd = 0; fd <= max_fd; fd++) {
-        httpd_ws_client_info_t info = httpd_ws_get_fd_info(g_httpd, fd);
-        if (info == HTTPD_WS_CLIENT_WEBSOCKET) {
-            httpd_ws_frame_t frame = {
-                .type = HTTPD_WS_TYPE_BINARY,
-                .payload = item->data,
-                .len = item->len,
-                .final = true,
-            };
-            httpd_ws_send_frame_async(g_httpd, fd, &frame);
+    if (httpd_get_client_list(g_httpd, &client_count, fds) == ESP_OK) {
+        for (size_t i = 0; i < client_count; i++) {
+            if (httpd_ws_get_fd_info(g_httpd, fds[i]) == HTTPD_WS_CLIENT_WEBSOCKET) {
+                httpd_ws_frame_t frame = {
+                    .type = HTTPD_WS_TYPE_BINARY,
+                    .payload = item->data,
+                    .len = item->len,
+                    .final = true,
+                };
+                httpd_ws_send_frame_async(g_httpd, fds[i], &frame);
+            }
         }
     }
     free(item);
@@ -387,7 +389,6 @@ static void start_web_server(void)
     config.max_uri_handlers = 8;
     config.stack_size = 16384;
     config.lru_purge_enable = true;
-    config.httpd_ws_support = true;
 
     printf("[WEB] starting...\n");
     ESP_ERROR_CHECK(httpd_start(&g_httpd, &config));
