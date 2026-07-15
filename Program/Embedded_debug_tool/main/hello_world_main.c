@@ -258,7 +258,11 @@ static httpd_handle_t g_server;
 
 static void send_html_page(httpd_req_t *req, int uart_idx, uart_bridge_t *br)
 {
-    /* Build HTML without snprintf — avoids format string issues */
+    /* Prevent browser caching */
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
+    httpd_resp_set_hdr(req, "Pragma", "no-cache");
+    httpd_resp_set_hdr(req, "Expires", "0");
+
     char page[2048];
     int off = 0;
 
@@ -279,43 +283,40 @@ static void send_html_page(httpd_req_t *req, int uart_idx, uart_bridge_t *br)
         "</style></head><body>"
         "<h3>UART%d - %s</h3>"
         "<div class=\"bar\">"
-        "<button id=\"btnPause\">暂停</button>"
-        "<button id=\"btnClear\">清空</button>"
-        "<span id=\"info\" style=\"color:#666;margin-left:auto\"></span>"
+        "<button id=\"btnP\">暂停</button>"
+        "<button id=\"btnC\">清空</button>"
+        "<span id=\"inf\" style=\"color:#666;margin-left:auto\"></span>"
         "</div>"
-        "<textarea id=\"out\" readonly></textarea>"
+        "<textarea id=\"ta\" readonly></textarea>"
         "<input type=\"hidden\" id=\"uid\" value=\"%d\">",
         br->tcp_port, uart_idx, br->name, uart_idx);
 
-    /* JavaScript — no format specifiers, reads uart index from DOM */
     off += snprintf(page + off, sizeof(page) - off,
         "<script>"
-        "var U=document.getElementById('uid').value;"
-        "var ps=0,ofs=0,tid;"
-        "document.getElementById('btnClear').onclick=function(){"
-        "document.getElementById('out').value='';ofs=0};"
-        "document.getElementById('btnPause').onclick=function(){"
-        "var b=document.getElementById('btnPause');"
-        "if(!ps){ps=1;b.textContent='继续';b.className='on';"
-        "fetch('/ctrl?uart='+U+'&pause=1')}"
-        "else{ps=0;b.textContent='暂停';b.className='off';"
-        "fetch('/ctrl?uart='+U+'&pause=0')}"
+        "var uid=document.getElementById('uid').value,"
+        "paused=0,ofs=0,tid;"
+        "document.getElementById('btnC').onclick=function(){"
+        "document.getElementById('ta').value='';ofs=0};"
+        "document.getElementById('btnP').onclick=function(){"
+        "var b=document.getElementById('btnP');"
+        "paused=!paused;"
+        "if(paused){b.textContent='继续';b.className='on';"
+        "fetch('/ctrl?uart='+uid+'&pause=1')}else{"
+        "b.textContent='暂停';b.className='off';"
+        "fetch('/ctrl?uart='+uid+'&pause=0')}"
         "};"
-        "function poll(){"
-        "if(!ps){"
-        "fetch('/data?uart='+U+'&since='+ofs).then(function(r){"
-        "if(r.status===204)return;"
-        "return r.text().then(function(t){"
-        "if(t.length>0){"
-        "var a=document.getElementById('out');"
-        "var at=a.scrollTop>=a.scrollHeight-a.clientHeight-16;"
+        "function poll(){if(!paused){"
+        "fetch('/data?uart='+uid+'&since='+ofs)"
+        ".then(function(r){if(r.status===204)return null;return r.text()})"
+        ".then(function(t){if(t&&t.length>0){"
+        "var a=document.getElementById('ta');"
+        "var bot=a.scrollTop>=a.scrollHeight-a.clientHeight-16;"
         "a.value+=t;ofs+=t.length;"
-        "if(at)a.scrollTop=a.scrollHeight;"
-        "document.getElementById('info').textContent=ofs+' bytes';"
-        "}});})"
-        ".then(function(){tid=setTimeout(poll,150)})"
-        ".catch(function(){tid=setTimeout(poll,1000)})"
-        "}"
+        "if(bot)a.scrollTop=a.scrollHeight;"
+        "document.getElementById('inf').textContent=ofs+' bytes';"
+        "}})"
+        ".catch(function(){});}"
+        "tid=setTimeout(poll,200);}"
         "tid=setTimeout(poll,200);"
         "</script></body></html>");
 
@@ -404,6 +405,7 @@ static esp_err_t ctrl_handler(httpd_req_t *req)
 static esp_err_t root_handler(httpd_req_t *req)
 {
     printf("[WEB] GET / from client\n");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
     const char *html =
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\"content=\"width=device-width,initial-scale=1\">"
