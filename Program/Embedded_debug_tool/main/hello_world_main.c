@@ -34,7 +34,7 @@
 #define UART_BUF_SIZE   1024
 #define UART_BAUD_RATE  115200
 #define RING_BUF_SIZE   (16 * 1024)
-#define WEB_FETCH_LIMIT (8 * 1024)
+#define WEB_FETCH_LIMIT 1024
 
 /* ──────────────────── Ring Buffer ──────────────────── */
 
@@ -234,7 +234,7 @@ static void uart_bridge_init(uart_bridge_t *br)
     ESP_ERROR_CHECK(uart_set_pin(br->port, br->tx_pin, br->rx_pin,
                                  UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 
-    xTaskCreate(tcp_server_task, br->name, 4096, br, 5, NULL);
+    xTaskCreate(tcp_server_task, br->name, 8192, br, 5, NULL);
     xTaskCreate(uart_forward_task, br->name, 4096, br, 5, NULL);
     printf("[%s] ready: UART%d TX=IO%d RX=IO%d TCP=%d\n",
            br->name, br->port, br->tx_pin, br->rx_pin, br->tcp_port);
@@ -426,7 +426,7 @@ static void start_web_server(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.max_uri_handlers = 8;
-    config.stack_size = 8192;
+    config.stack_size = 16384;
     config.lru_purge_enable = true;
 
     printf("[WEB] starting...\n");
