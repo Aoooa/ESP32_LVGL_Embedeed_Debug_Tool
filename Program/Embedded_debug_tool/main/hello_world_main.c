@@ -443,6 +443,8 @@ static void start_web_server(void)
 
 static void uart_bridge_init(uart_bridge_t *br)
 {
+    printf("[%s] init start...\n", br->name);
+
     ring_buf_init(&br->ring);
     br->mutex = xSemaphoreCreateMutex();
     br->paused = 0;
@@ -456,15 +458,23 @@ static void uart_bridge_init(uart_bridge_t *br)
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
         .source_clk = UART_SCLK_DEFAULT,
     };
-    ESP_ERROR_CHECK(uart_driver_install(br->port, UART_BUF_SIZE * 2, 0, 0, NULL, 0));
-    ESP_ERROR_CHECK(uart_param_config(br->port, &uart_config));
-    ESP_ERROR_CHECK(uart_set_pin(br->port, br->tx_pin, br->rx_pin,
-                                 UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+
+    esp_err_t err;
+    err = uart_driver_install(br->port, UART_BUF_SIZE * 2, 0, 0, NULL, 0);
+    if (err != ESP_OK) { printf("[%s] driver_install FAIL: %s\n", br->name, esp_err_to_name(err)); return; }
+    printf("[%s] driver installed\n", br->name);
+
+    err = uart_param_config(br->port, &uart_config);
+    if (err != ESP_OK) { printf("[%s] param_config FAIL: %s\n", br->name, esp_err_to_name(err)); return; }
+    printf("[%s] param configured\n", br->name);
+
+    err = uart_set_pin(br->port, br->tx_pin, br->rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    if (err != ESP_OK) { printf("[%s] set_pin FAIL: %s\n", br->name, esp_err_to_name(err)); return; }
+    printf("[%s] pins set TX=%d RX=%d\n", br->name, br->tx_pin, br->rx_pin);
 
     xTaskCreate(tcp_server_task, br->name, 4096, br, 5, NULL);
     xTaskCreate(uart_forward_task, br->name, 4096, br, 5, NULL);
-    printf("[%s] UART%d: TX=IO%d RX=IO%d baud=%d → TCP %d + Web\n",
-           br->name, br->port, br->tx_pin, br->rx_pin, UART_BAUD_RATE, br->tcp_port);
+    printf("[%s] init done → TCP port %d\n", br->name, br->tcp_port);
 }
 
 /* ──────────────────── App Main ──────────────────── */
@@ -495,13 +505,16 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     /* WiFi AP */
+    printf("[INIT] starting WiFi AP...\n");
     wifi_init_softap();
 
     /* UART bridges */
+    printf("[INIT] starting UART bridges...\n");
     uart_bridge_init(&bridge1);
     uart_bridge_init(&bridge2);
 
     /* Web server */
+    printf("[INIT] starting web server...\n");
     start_web_server();
 
     printf("\n========================================\n");
@@ -510,4 +523,5 @@ void app_main(void)
     printf(" UART1: http://192.168.4.1/page?uart=0  TCP 192.168.4.1:8080\n");
     printf(" UART2: http://192.168.4.1/page?uart=1  TCP 192.168.4.1:8081\n");
     printf("========================================\n\n");
+    fflush(stdout);
 }
