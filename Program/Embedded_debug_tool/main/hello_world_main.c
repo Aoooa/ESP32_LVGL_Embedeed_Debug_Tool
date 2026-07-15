@@ -3,14 +3,16 @@
  *
  * SPDX-License-Identifier: CC0-1.0
  *
- * UART-to-HTTP bridge: UART1(UART2) data viewed via web browser.
- * Architecture: HTTP server only (no separate TCP server) to avoid
- * lwIP netconn/socket API conflict crash.
+ * UART-to-TCP/HTTP bridge: UART data accessible via both
+ * TCP (raw socket, port 8080/8081) and HTTP (web browser, port 80).
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -28,6 +30,7 @@
 #define WIFI_SSID       "Embedded-debug-tool"
 #define WIFI_CHANNEL    6
 #define MAX_STA_CONN    5
+#define MAX_TCP_CLIENTS 3
 #define UART_BUF_SIZE   1024
 #define UART_BAUD_RATE  115200
 #define RING_BUF_SIZE   (16 * 1024)
@@ -82,10 +85,112 @@ typedef struct {
     uart_port_t port;
     int tx_pin;
     int rx_pin;
+    int tcp_port;
     const char *name;
     ring_buf_t ring;
     volatile int paused;
+    int tcp_fds[MAX_TCP_CLIENTS];
+    SemaphoreHandle_t tcp_mutex;
 } uart_bridge_t;
+
+/* ──────────────────── TCP Server ──────────────────── */
+
+static void tcp_broadcast(uart_bridge_t *br, const uint8_t *data, int len)
+{
+    xSemaphoreTake(br->tcp_mutex, portMAX_DELAY);
+    for (int i = 0; i < MAX_TCP_CLIENTS; i++) {
+        if (br->tcp_fds[i] >= 0) {
+            if (send(br->tcp_fds[i], data, len, 0) < 0) {
+                close(br->tcp_fds[i]);
+                br->tcp_fds[i] = -1;
+            }
+        }
+    }
+    xSemaphoreGive(br->tcp_mutex);
+}
+
+static void tcp_server_task(void *arg)
+{
+    uart_bridge_t *br = (uart_bridge_t *)arg;
+    int srv = socket(AF_INET, SOCK_STREAM, 0);
+    if (srv < 0) { printf("[%s] TCP socket fail\n", br->name); vTaskDelete(NULL); return; }
+
+    int opt = 1;
+    setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    struct sockaddr_in addr = {
+        .sin_family = AF_INET,
+        .sin_port = htons(br->tcp_port),
+        .sin_addr.s_addr = htonl(INADDR_ANY),
+    };
+    if (bind(srv, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        printf("[%s] TCP bind fail\n", br->name); close(srv); vTaskDelete(NULL); return;
+    }
+    listen(srv, MAX_TCP_CLIENTS);
+    printf("[%s] TCP server on port %d\n", br->name, br->tcp_port);
+
+    while (1) {
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(srv, &rfds);
+        int maxfd = srv;
+
+        xSemaphoreTake(br->tcp_mutex, portMAX_DELAY);
+        for (int i = 0; i < MAX_TCP_CLIENTS; i++) {
+            if (br->tcp_fds[i] >= 0) {
+                FD_SET(br->tcp_fds[i], &rfds);
+                if (br->tcp_fds[i] > maxfd) maxfd = br->tcp_fds[i];
+            }
+        }
+        xSemaphoreGive(br->tcp_mutex);
+
+        struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+        if (select(maxfd + 1, &rfds, NULL, NULL, &tv) < 0) continue;
+
+        /* Accept new */
+        if (FD_ISSET(srv, &rfds)) {
+            struct sockaddr_in ca; socklen_t cl = sizeof(ca);
+            int fd = accept(srv, (struct sockaddr *)&ca, &cl);
+            if (fd >= 0) {
+                xSemaphoreTake(br->tcp_mutex, portMAX_DELAY);
+                int added = 0;
+                for (int i = 0; i < MAX_TCP_CLIENTS; i++) {
+                    if (br->tcp_fds[i] < 0) {
+                        br->tcp_fds[i] = fd;
+                        printf("[%s] TCP+ fd=%d\n", br->name, fd);
+                        added = 1;
+                        break;
+                    }
+                }
+                xSemaphoreGive(br->tcp_mutex);
+                if (!added) {
+                    printf("[%s] TCP reject (full)\n", br->name);
+                    close(fd);
+                }
+            }
+        }
+
+        /* Receive from TCP clients → UART TX */
+        xSemaphoreTake(br->tcp_mutex, portMAX_DELAY);
+        for (int i = 0; i < MAX_TCP_CLIENTS; i++) {
+            int fd = br->tcp_fds[i];
+            if (fd >= 0 && FD_ISSET(fd, &rfds)) {
+                uint8_t tmp[512];
+                int n = recv(fd, tmp, sizeof(tmp), 0);
+                if (n > 0) {
+                    uart_write_bytes(br->port, tmp, n);
+                } else {
+                    close(fd);
+                    br->tcp_fds[i] = -1;
+                    printf("[%s] TCP- fd=%d\n", br->name, fd);
+                }
+            }
+        }
+        xSemaphoreGive(br->tcp_mutex);
+    }
+}
+
+/* ──────────────────── UART Forward ──────────────────── */
 
 static void uart_forward_task(void *arg)
 {
@@ -98,9 +203,13 @@ static void uart_forward_task(void *arg)
         int len = uart_read_bytes(br->port, buf, sizeof(buf), pdMS_TO_TICKS(100));
         if (len <= 0) continue;
 
+        /* Ring buffer for HTTP */
         if (!br->paused) {
             ring_buf_put(&br->ring, buf, len);
         }
+
+        /* TCP broadcast for raw socket clients */
+        tcp_broadcast(br, buf, len);
     }
 }
 
@@ -108,6 +217,8 @@ static void uart_bridge_init(uart_bridge_t *br)
 {
     ring_buf_init(&br->ring);
     br->paused = 0;
+    br->tcp_mutex = xSemaphoreCreateMutex();
+    for (int i = 0; i < MAX_TCP_CLIENTS; i++) br->tcp_fds[i] = -1;
 
     uart_config_t cfg = {
         .baud_rate = UART_BAUD_RATE,
@@ -123,8 +234,10 @@ static void uart_bridge_init(uart_bridge_t *br)
     ESP_ERROR_CHECK(uart_set_pin(br->port, br->tx_pin, br->rx_pin,
                                  UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 
+    xTaskCreate(tcp_server_task, br->name, 4096, br, 5, NULL);
     xTaskCreate(uart_forward_task, br->name, 4096, br, 5, NULL);
-    printf("[%s] UART%d ready: TX=IO%d RX=IO%d\n", br->name, br->port, br->tx_pin, br->rx_pin);
+    printf("[%s] ready: UART%d TX=IO%d RX=IO%d TCP=%d\n",
+           br->name, br->port, br->tx_pin, br->rx_pin, br->tcp_port);
 }
 
 /* ──────────────────── WiFi AP ──────────────────── */
@@ -185,10 +298,10 @@ static esp_err_t root_handler(httpd_req_t *req)
         "<meta name=\"viewport\"content=\"width=device-width,initial-scale=1\">"
         "<title>Embedded Debug Tool</title>"
         "<style>body{font:14px monospace;background:#1a1a1a;color:#ccc;padding:20px}"
-        "a{color:#4fc3f7}li{margin:8px 0}</style></head><body>"
-        "<h2 style=\"color:#4fc3f7\">Embedded Debug Tool</h2><ul>"
-        "<li><a href=\"/page?uart=0\">UART1 (IO2/IO4)</a></li>"
-        "<li><a href=\"/page?uart=1\">UART2 (IO16/IO17)</a></li>"
+        "a{color:#4fc3f7}li{margin:8px 0}h2{color:#4fc3f7}</style></head><body>"
+        "<h2>Embedded Debug Tool</h2><ul>"
+        "<li><a href=\"/page?uart=0\">UART1 Web (IO2/IO4)</a> | TCP 192.168.4.1:8080</li>"
+        "<li><a href=\"/page?uart=1\">UART2 Web (IO16/IO17)</a> | TCP 192.168.4.1:8081</li>"
         "</ul></body></html>";
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_send(req, html, strlen(html));
@@ -336,10 +449,12 @@ static void start_web_server(void)
 void app_main(void)
 {
     static uart_bridge_t bridge1 = {
-        .port = UART_NUM_1, .tx_pin = 2, .rx_pin = 4, .name = "UART1",
+        .port = UART_NUM_1, .tx_pin = 2, .rx_pin = 4,
+        .tcp_port = 8080, .name = "UART1",
     };
     static uart_bridge_t bridge2 = {
-        .port = UART_NUM_2, .tx_pin = 16, .rx_pin = 17, .name = "UART2",
+        .port = UART_NUM_2, .tx_pin = 16, .rx_pin = 17,
+        .tcp_port = 8081, .name = "UART2",
     };
     g_bridges[0] = &bridge1;
     g_bridges[1] = &bridge2;
