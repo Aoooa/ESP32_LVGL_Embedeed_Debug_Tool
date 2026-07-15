@@ -231,10 +231,15 @@ static void uart_forward_task(void *arg)
 {
     uart_bridge_t *br = (uart_bridge_t *)arg;
     uint8_t buf[UART_BUF_SIZE];
+    int log_cnt = 0;
+
+    printf("[%s] forward task running\n", br->name);
 
     while (1) {
         int len = uart_read_bytes(br->port, buf, sizeof(buf), pdMS_TO_TICKS(100));
         if (len <= 0) continue;
+
+        printf("[%s] RX %d bytes, paused=%d\n", br->name, len, br->paused);
 
         /* Ring buffer for web */
         if (!br->paused) {
@@ -257,29 +262,26 @@ static const char *HTML_HEAD =
 "h3{color:#4fc3f7;margin-bottom:6px}"
 "textarea{width:100%;height:60vh;background:#111;color:#0f0;border:1px solid #333;"
 "font:12px/1.4 monospace;resize:vertical;padding:4px}"
-".bar{display:flex;gap:6px;margin:6px 0;flex-wrap:wrap}"
+".bar{display:flex;gap:6px;margin:6px 0;align-items:center;flex-wrap:wrap}"
 "button{padding:4px 12px;border:1px solid #555;background:#222;color:#ccc;"
 "cursor:pointer;font:12px monospace;border-radius:3px}"
 "button:hover{background:#333}"
 "button.on{border-color:#4caf50;color:#4caf50}"
-"button.off{border-color:#f44336;color:#f44336}"
+"#dot{width:10px;height:10px;border-radius:50%;background:#555;display:inline-block;margin:0 6px}"
+"#dot.on{background:#4caf50;box-shadow:0 0 6px #4caf50}"
 "</style></head><body>"
 "<h3>UART%d - %s</h3>"
 "<div class=\"bar\">"
-"<button id=\"btnConn\" onclick=\"toggleConn()\">断开</button>"
+"<span id=\"dot\"></span>"
 "<button id=\"btnPause\" onclick=\"togglePause()\">暂停</button>"
 "<button onclick=\"clrScr()\">清空</button>"
 "<span id=\"info\" style=\"color:#666;margin-left:auto\"></span>"
 "</div>"
 "<textarea id=\"out\" readonly></textarea>"
 "<script>"
-"var cn=1,ps=0,ofs=0,tid;"
+"var ps=0,ofs=0,tid,dc=0;"
 "function $(id){return document.getElementById(id)}"
 "function clrScr(){$('out').value='';ofs=0}"
-"function toggleConn(){"
-"if(cn){cn=0;$('btnConn').textContent='连接';$('btnConn').className='on'}"
-"else{cn=1;ofs=0;$('btnConn').textContent='断开';$('btnConn').className='off'}"
-"}"
 "function togglePause(){"
 "if(!ps){ps=1;$('btnPause').textContent='继续';$('btnPause').className='on'"
 "+fetch('/ctrl?uart=%d&pause=1')}"
@@ -287,15 +289,15 @@ static const char *HTML_HEAD =
 "+fetch('/ctrl?uart=%d&pause=0')}"
 "}"
 "function poll(){"
-"if(cn&&!ps){"
+"if(!ps){"
 "fetch('/data?uart=%d&since='+ofs).then(function(r){"
-"if(r.status===204){return null}"
+"if(r.status===204){dc=0;$('dot').className='';return null}"
 "return r.text().then(function(t){"
 "if(t.length>0){"
 "var a=$('out');var at=a.scrollTop>=a.scrollHeight-a.clientHeight-16;"
 "a.value+=t;ofs+=t.length;"
 "if(at)a.scrollTop=a.scrollHeight"
-"$('info').textContent=ofs+' bytes'"
+"$('info').textContent=ofs+' bytes';dc=1;$('dot').className='on'"
 "}"
 "})})"
 "}.then(function(){tid=setTimeout(poll,150)}"
@@ -361,6 +363,7 @@ static esp_err_t data_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
+    printf("[WEB] data uart=%d since=%u → %u bytes\n", uart_idx, since, n);
     httpd_resp_set_type(req, "text/plain; charset=utf-8");
     httpd_resp_send(req, (const char *)tmp, n);
     return ESP_OK;
