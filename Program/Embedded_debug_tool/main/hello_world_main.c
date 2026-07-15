@@ -418,9 +418,12 @@ static void start_web_server(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.max_uri_handlers = 8;
     config.stack_size = 8192;
+    config.lru_purge_enable = true;
 
-    if (httpd_start(&g_server, &config) != ESP_OK) {
-        printf("[WEB] server start failed\n");
+    printf("[WEB] starting server on port %d...\n", config.server_port);
+    esp_err_t err = httpd_start(&g_server, &config);
+    if (err != ESP_OK) {
+        printf("[WEB] server start FAILED: %s\n", esp_err_to_name(err));
         return;
     }
 
