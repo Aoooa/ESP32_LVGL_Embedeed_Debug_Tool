@@ -57,25 +57,20 @@ static void ring_buf_put(ring_buf_t *rb, const uint8_t *data, uint32_t len)
 /* Returns bytes written to out. since=0 means "from oldest available". */
 static uint32_t ring_buf_get(ring_buf_t *rb, uint8_t *out, uint32_t max_len, uint32_t since)
 {
+    /* Snapshot head once — UART task may update it concurrently */
     uint32_t h = rb->head;
-    if (h == since) return 0;
-
-    /* If client is too far behind, give from oldest */
-    uint32_t available = h - since;
-    if (available > RING_BUF_SIZE) {
+    uint32_t avail = h - since;
+    if (avail == 0) return 0;
+    if (avail > RING_BUF_SIZE) {
         since = h - RING_BUF_SIZE;
-        available = RING_BUF_SIZE;
+        avail = RING_BUF_SIZE;
     }
-
-    uint32_t len = (available > max_len) ? max_len : available;
-    uint32_t offset = since & (RING_BUF_SIZE - 1);
-    uint32_t first = RING_BUF_SIZE - offset;
-    if (first > len) first = len;
-
-    memcpy(out, rb->buf + offset, first);
-    if (first < len) {
-        memcpy(out, rb->buf, len - first);
-    }
+    uint32_t len = (avail > max_len) ? max_len : avail;
+    uint32_t off = since & (RING_BUF_SIZE - 1);
+    uint32_t n1 = RING_BUF_SIZE - off;
+    if (n1 > len) n1 = len;
+    memcpy(out, rb->buf + off, n1);
+    if (n1 < len) memcpy(out + n1, rb->buf, len - n1);
     return len;
 }
 
@@ -321,8 +316,12 @@ static esp_err_t page_handler(httpd_req_t *req)
     if (idx < 0 || idx > 1) idx = 0;
     uart_bridge_t *br = g_bridges[idx];
 
-    char page[2048];
-    int n = snprintf(page, sizeof(page),
+    char *page = malloc(2048);
+    if (!page) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return httpd_resp_send(req, NULL, 0);
+    }
+    int n = snprintf(page, 2048,
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\"content=\"width=device-width,initial-scale=1\">"
         "<title>UART%d</title><style>"
@@ -373,7 +372,9 @@ static esp_err_t page_handler(httpd_req_t *req)
         idx + 1, idx + 1, br->name, idx);
 
     httpd_resp_set_type(req, "text/html");
-    return httpd_resp_send(req, page, n);
+    httpd_resp_send(req, page, n);
+    free(page);
+    return ESP_OK;
 }
 
 /* GET /data?uart=N&since=M */
