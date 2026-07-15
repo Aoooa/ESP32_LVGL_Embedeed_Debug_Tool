@@ -17,11 +17,12 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_mac.h"
+#include "esp_http_server.h"
 #include "nvs_flash.h"
 #include "driver/uart.h"
 #include "lwip/sockets.h"
 
-/* ──────────────────────── Config ──────────────────────── */
+/* ──────────────────── Config ──────────────────── */
 
 #define WIFI_SSID       "Embedded-debug-tool"
 #define WIFI_CHANNEL    6
@@ -30,8 +31,57 @@
 #define TCP_BUF_SIZE    1024
 #define UART_BUF_SIZE   1024
 #define UART_BAUD_RATE  115200
+#define RING_BUF_SIZE   (16 * 1024)
+#define WEB_FETCH_LIMIT (8 * 1024)
 
-/* Per-UART bridge instance */
+/* ──────────────────── Ring Buffer ──────────────────── */
+
+typedef struct {
+    uint8_t buf[RING_BUF_SIZE];
+    volatile uint32_t head;
+    volatile uint32_t tail;
+} ring_buf_t;
+
+static inline void ring_buf_init(ring_buf_t *rb) { rb->head = rb->tail = 0; }
+
+static inline uint32_t ring_buf_count(ring_buf_t *rb)
+{
+    return rb->head - rb->tail;
+}
+
+static void ring_buf_put(ring_buf_t *rb, const uint8_t *data, uint32_t len)
+{
+    for (uint32_t i = 0; i < len; i++) {
+        rb->buf[(rb->head + i) & (RING_BUF_SIZE - 1)] = data[i];
+    }
+    rb->head += len;
+    /* If overflowed, advance tail */
+    if (rb->head - rb->tail > RING_BUF_SIZE) {
+        rb->tail = rb->head - RING_BUF_SIZE;
+    }
+}
+
+static uint32_t ring_buf_get(ring_buf_t *rb, uint8_t *out, uint32_t max_len, uint32_t since)
+{
+    uint32_t count = rb->head - since;
+    if (count == 0) return 0;
+    if (count > RING_BUF_SIZE) {
+        since = rb->head - RING_BUF_SIZE;
+        count = RING_BUF_SIZE;
+    }
+    if (count > max_len) count = max_len;
+    uint32_t offset = since & (RING_BUF_SIZE - 1);
+    uint32_t first = RING_BUF_SIZE - offset;
+    if (first > count) first = count;
+    memcpy(out, rb->buf + offset, first);
+    if (first < count) {
+        memcpy(out + first, rb->buf, count - first);
+    }
+    return count;
+}
+
+/* ──────────────────── Bridge Instance ──────────────────── */
+
 typedef struct {
     uart_port_t port;
     int tx_pin;
@@ -40,9 +90,11 @@ typedef struct {
     const char *name;
     int client_fds[MAX_CLIENTS];
     SemaphoreHandle_t mutex;
+    ring_buf_t ring;
+    volatile int paused;
 } uart_bridge_t;
 
-/* ──────────────────────── WiFi AP ──────────────────────── */
+/* ──────────────────── WiFi AP ──────────────────── */
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data)
@@ -59,10 +111,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 static void wifi_init_softap(void)
 {
     esp_netif_create_default_wifi_ap();
-
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-
     ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
                     &wifi_event_handler, NULL, NULL));
 
@@ -76,15 +126,13 @@ static void wifi_init_softap(void)
             .pmf_cfg = { .required = true },
         },
     };
-
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
-
-    printf("[WIFI] AP started: SSID=%s, channel=%d\n", WIFI_SSID, WIFI_CHANNEL);
+    printf("[WIFI] AP started: SSID=%s\n", WIFI_SSID);
 }
 
-/* ──────────────────────── TCP Server ──────────────────────── */
+/* ──────────────────── TCP Server ──────────────────── */
 
 static void add_client(uart_bridge_t *br, int fd)
 {
@@ -92,14 +140,14 @@ static void add_client(uart_bridge_t *br, int fd)
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (br->client_fds[i] == -1) {
             br->client_fds[i] = fd;
-            printf("[%s] client connected, fd=%d\n", br->name, fd);
+            printf("[%s] TCP client connected fd=%d\n", br->name, fd);
             xSemaphoreGive(br->mutex);
             return;
         }
     }
     close(fd);
     xSemaphoreGive(br->mutex);
-    printf("[%s] client rejected (full), fd=%d\n", br->name, fd);
+    printf("[%s] TCP client rejected (full)\n", br->name);
 }
 
 static void broadcast_to_clients(uart_bridge_t *br, const uint8_t *data, int len)
@@ -107,11 +155,9 @@ static void broadcast_to_clients(uart_bridge_t *br, const uint8_t *data, int len
     xSemaphoreTake(br->mutex, portMAX_DELAY);
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (br->client_fds[i] != -1) {
-            int sent = send(br->client_fds[i], data, len, 0);
-            if (sent < 0) {
+            if (send(br->client_fds[i], data, len, 0) < 0) {
                 close(br->client_fds[i]);
                 br->client_fds[i] = -1;
-                printf("[%s] send failed, removed fd=%d\n", br->name, br->client_fds[i]);
             }
         }
     }
@@ -121,86 +167,57 @@ static void broadcast_to_clients(uart_bridge_t *br, const uint8_t *data, int len
 static void tcp_server_task(void *arg)
 {
     uart_bridge_t *br = (uart_bridge_t *)arg;
-
-    int server_fd;
-    struct sockaddr_in server_addr = {
-        .sin_family = AF_INET,
-        .sin_port = htons(br->tcp_port),
-        .sin_addr.s_addr = htonl(INADDR_ANY),
-    };
-
-    server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_fd < 0) {
-        printf("[%s] socket create failed\n", br->name);
-        vTaskDelete(NULL);
-        return;
-    }
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0) { vTaskDelete(NULL); return; }
 
     int opt = 1;
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
-    if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-        printf("[%s] bind failed on port %d\n", br->name, br->tcp_port);
-        close(server_fd);
-        vTaskDelete(NULL);
-        return;
+    struct sockaddr_in addr = {
+        .sin_family = AF_INET,
+        .sin_port = htons(br->tcp_port),
+        .sin_addr.s_addr = htonl(INADDR_ANY),
+    };
+    if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(server_fd); vTaskDelete(NULL); return;
     }
-
-    if (listen(server_fd, MAX_CLIENTS) < 0) {
-        printf("[%s] listen failed\n", br->name);
-        close(server_fd);
-        vTaskDelete(NULL);
-        return;
-    }
-
-    printf("[%s] TCP server listening on port %d\n", br->name, br->tcp_port);
+    listen(server_fd, MAX_CLIENTS);
+    printf("[%s] TCP server on port %d\n", br->name, br->tcp_port);
 
     while (1) {
-        fd_set read_fds;
-        FD_ZERO(&read_fds);
-        FD_SET(server_fd, &read_fds);
-        int max_fd = server_fd;
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(server_fd, &rfds);
+        int maxfd = server_fd;
 
         xSemaphoreTake(br->mutex, portMAX_DELAY);
         for (int i = 0; i < MAX_CLIENTS; i++) {
             if (br->client_fds[i] != -1) {
-                FD_SET(br->client_fds[i], &read_fds);
-                if (br->client_fds[i] > max_fd) {
-                    max_fd = br->client_fds[i];
-                }
+                FD_SET(br->client_fds[i], &rfds);
+                if (br->client_fds[i] > maxfd) maxfd = br->client_fds[i];
             }
         }
         xSemaphoreGive(br->mutex);
 
         struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
-        int ret = select(max_fd + 1, &read_fds, NULL, NULL, &tv);
-        if (ret < 0) {
-            continue;
+        if (select(maxfd + 1, &rfds, NULL, NULL, &tv) < 0) continue;
+
+        if (FD_ISSET(server_fd, &rfds)) {
+            struct sockaddr_in ca; socklen_t cl = sizeof(ca);
+            int fd = accept(server_fd, (struct sockaddr *)&ca, &cl);
+            if (fd >= 0) add_client(br, fd);
         }
 
-        /* New connection */
-        if (FD_ISSET(server_fd, &read_fds)) {
-            struct sockaddr_in client_addr;
-            socklen_t addr_len = sizeof(client_addr);
-            int new_fd = accept(server_fd, (struct sockaddr *)&client_addr, &addr_len);
-            if (new_fd >= 0) {
-                add_client(br, new_fd);
-            }
-        }
-
-        /* TCP client data → UART TX */
         xSemaphoreTake(br->mutex, portMAX_DELAY);
         for (int i = 0; i < MAX_CLIENTS; i++) {
             int fd = br->client_fds[i];
-            if (fd != -1 && FD_ISSET(fd, &read_fds)) {
+            if (fd != -1 && FD_ISSET(fd, &rfds)) {
                 uint8_t buf[TCP_BUF_SIZE];
-                int len = recv(fd, buf, sizeof(buf), 0);
-                if (len > 0) {
-                    uart_write_bytes(br->port, buf, len);
+                int n = recv(fd, buf, sizeof(buf), 0);
+                if (n > 0) {
+                    uart_write_bytes(br->port, buf, n);
                 } else {
-                    close(fd);
-                    br->client_fds[i] = -1;
-                    printf("[%s] client disconnected, fd=%d\n", br->name, fd);
+                    close(fd); br->client_fds[i] = -1;
                 }
             }
         }
@@ -208,34 +225,226 @@ static void tcp_server_task(void *arg)
     }
 }
 
-/* ──────────────────────── UART Forward ──────────────────────── */
+/* ──────────────────── UART Forward ──────────────────── */
 
 static void uart_forward_task(void *arg)
 {
     uart_bridge_t *br = (uart_bridge_t *)arg;
     uint8_t buf[UART_BUF_SIZE];
 
-    printf("[%s] forward started: TX=IO%d, RX=IO%d\n", br->name, br->tx_pin, br->rx_pin);
-
     while (1) {
         int len = uart_read_bytes(br->port, buf, sizeof(buf), pdMS_TO_TICKS(100));
-        if (len > 0) {
-            broadcast_to_clients(br, buf, len);
+        if (len <= 0) continue;
+
+        /* Ring buffer for web */
+        if (!br->paused) {
+            ring_buf_put(&br->ring, buf, len);
         }
+
+        /* TCP broadcast */
+        broadcast_to_clients(br, buf, len);
     }
 }
 
-/* ──────────────────────── Init ──────────────────────── */
+/* ──────────────────── Web Server ──────────────────── */
+
+static const char HTML_HEAD[] =
+"<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+"<meta name=\"viewport\"content=\"width=device-width,initial-scale=1\">"
+"<title>UART%d</title><style>"
+"*{margin:0;padding:0;box-sizing:border-box}"
+"body{font:13px/1.3 monospace;background:#1a1a1a;color:#ccc;padding:8px}"
+"h3{color:#4fc3f7;margin-bottom:6px}"
+"textarea{width:100%;height:60vh;background:#111;color:#0f0;border:1px solid #333;"
+"font:12px/1.4 monospace;resize:vertical;padding:4px}"
+".bar{display:flex;gap:6px;margin:6px 0;flex-wrap:wrap}"
+"button{padding:4px 12px;border:1px solid #555;background:#222;color:#ccc;"
+"cursor:pointer;font:12px monospace;border-radius:3px}"
+"button:hover{background:#333}"
+"button.on{border-color:#4caf50;color:#4caf50}"
+"button.off{border-color:#f44336;color:#f44336}"
+"</style></head><body>"
+"<h3>UART%d - %s</h3>"
+"<div class=\"bar\">"
+"<button id=\"btnConn\" onclick=\"toggleConn()\">断开</button>"
+"<button id=\"btnPause\" onclick=\"togglePause()\">暂停</button>"
+"<button onclick=\"clrScr()\">清空</button>"
+"<span id=\"info\" style=\"color:#666;margin-left:auto\"></span>"
+"</div>"
+"<textarea id=\"out\" readonly></textarea>"
+"<script>"
+"var cn=1,ps=0,ofs=0,tid;"
+"function $(id){return document.getElementById(id)}"
+"function clrScr(){$('out').value='';ofs=0}"
+"function toggleConn(){"
+"if(cn){cn=0;$('btnConn').textContent='连接';$('btnConn').className='on'}"
+"else{cn=1;ofs=0;$('btnConn').textContent='断开';$('btnConn').className='off'}"
+"}"
+"function togglePause(){"
+"if(!ps){ps=1;$('btnPause').textContent='继续';$('btnPause').className='on'"
+"+fetch('/ctrl?uart=%d&pause=1')}"
+"else{ps=0;$('btnPause').textContent='暂停';$('btnPause').className='off'"
+"+fetch('/ctrl?uart=%d&pause=0')}"
+"}"
+"function poll(){"
+"if(cn&&!ps){"
+"fetch('/data?uart=%d&since='+ofs).then(function(r){"
+"if(r.status===204){return null}"
+"return r.text().then(function(t){"
+"if(t.length>0){"
+"var a=$('out');var at=a.scrollTop>=a.scrollHeight-a.clientHeight-16;"
+"a.value+=t;ofs+=t.length;"
+"if(at)a.scrollTop=a.scrollHeight"
+"$('info').textContent=ofs+' bytes'"
+"}"
+"})})"
+"}.then(function(){tid=setTimeout(poll,150)}"
+").catch(function(){tid=setTimeout(poll,1000)})"
+"}"
+"tid=setTimeout(poll,200)"
+"</script></body></html>";
+
+static uart_bridge_t *g_bridges[2];
+static httpd_handle_t g_server;
+
+static void send_html_page(httpd_req_t *req, int uart_idx, uart_bridge_t *br)
+{
+    char page[1800];
+    int len = snprintf(page, sizeof(page), HTML_HEAD,
+                       br->tcp_port, uart_idx, br->name,
+                       uart_idx, uart_idx, uart_idx);
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, page, len);
+}
+
+/* GET /page?uart=0 or /page?uart=1 */
+static esp_err_t page_handler(httpd_req_t *req)
+{
+    char qbuf[16];
+    int uart_idx = 0;
+    if (httpd_req_get_url_query_str(req, qbuf, sizeof(qbuf)) == ESP_OK) {
+        char val[4];
+        if (httpd_query_key_value(qbuf, "uart", val, sizeof(val)) == ESP_OK) {
+            uart_idx = atoi(val);
+        }
+    }
+    if (uart_idx < 0 || uart_idx > 1) uart_idx = 0;
+    send_html_page(req, uart_idx, g_bridges[uart_idx]);
+    return ESP_OK;
+}
+
+/* GET /data?uart=0&since=N */
+static esp_err_t data_handler(httpd_req_t *req)
+{
+    char qbuf[32];
+    int uart_idx = 0;
+    uint32_t since = 0;
+
+    if (httpd_req_get_url_query_str(req, qbuf, sizeof(qbuf)) == ESP_OK) {
+        char val[16];
+        if (httpd_query_key_value(qbuf, "uart", val, sizeof(val)) == ESP_OK) {
+            uart_idx = atoi(val);
+        }
+        if (httpd_query_key_value(qbuf, "since", val, sizeof(val)) == ESP_OK) {
+            since = (uint32_t)strtoul(val, NULL, 10);
+        }
+    }
+    if (uart_idx < 0 || uart_idx > 1) uart_idx = 0;
+
+    uart_bridge_t *br = g_bridges[uart_idx];
+    uint8_t tmp[WEB_FETCH_LIMIT];
+    uint32_t n = ring_buf_get(&br->ring, tmp, sizeof(tmp), since);
+
+    if (n == 0) {
+        httpd_resp_set_status(req, "204 No Content");
+        httpd_resp_send(req, NULL, 0);
+        return ESP_OK;
+    }
+
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    httpd_resp_send(req, (const char *)tmp, n);
+    return ESP_OK;
+}
+
+/* GET /ctrl?uart=0&pause=1 */
+static esp_err_t ctrl_handler(httpd_req_t *req)
+{
+    char qbuf[32];
+    int uart_idx = 0;
+    int pause = -1;
+
+    if (httpd_req_get_url_query_str(req, qbuf, sizeof(qbuf)) == ESP_OK) {
+        char val[4];
+        if (httpd_query_key_value(qbuf, "uart", val, sizeof(val)) == ESP_OK) {
+            uart_idx = atoi(val);
+        }
+        if (httpd_query_key_value(qbuf, "pause", val, sizeof(val)) == ESP_OK) {
+            pause = atoi(val);
+        }
+    }
+    if (uart_idx < 0 || uart_idx > 1) uart_idx = 0;
+
+    if (pause >= 0) {
+        g_bridges[uart_idx]->paused = pause;
+    }
+
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_send(req, "ok", 2);
+    return ESP_OK;
+}
+
+/* GET / (index page) */
+static esp_err_t root_handler(httpd_req_t *req)
+{
+    const char *html =
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\"content=\"width=device-width,initial-scale=1\">"
+        "<title>Embedded Debug Tool</title>"
+        "<style>*{margin:0;padding:0}body{font:14px/1.5 monospace;background:#1a1a1a;"
+        "color:#ccc;padding:20px}a{color:#4fc3f7;text-decoration:none}"
+        "a:hover{text-decoration:underline}h2{color:#4fc3f7;margin-bottom:12px}"
+        "li{margin:6px 0}</style></head><body>"
+        "<h2>Embedded Debug Tool</h2><ul>"
+        "<li><a href=\"/page?uart=0\">UART1 (IO2/IO4) - TCP 8080</a></li>"
+        "<li><a href=\"/page?uart=1\">UART2 (IO16/IO17) - TCP 8081</a></li>"
+        "</ul></body></html>";
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, html, strlen(html));
+    return ESP_OK;
+}
+
+static void start_web_server(void)
+{
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.max_uri_handlers = 8;
+    config.stack_size = 8192;
+
+    if (httpd_start(&g_server, &config) != ESP_OK) {
+        printf("[WEB] server start failed\n");
+        return;
+    }
+
+    httpd_uri_t uris[] = {
+        { .uri = "/",      .method = HTTP_GET, .handler = root_handler },
+        { .uri = "/page",  .method = HTTP_GET, .handler = page_handler },
+        { .uri = "/data",  .method = HTTP_GET, .handler = data_handler },
+        { .uri = "/ctrl",  .method = HTTP_GET, .handler = ctrl_handler },
+    };
+    for (int i = 0; i < 4; i++) {
+        httpd_register_uri_handler(g_server, &uris[i]);
+    }
+    printf("[WEB] server started on port 80\n");
+}
+
+/* ──────────────────── Init ──────────────────── */
 
 static void uart_bridge_init(uart_bridge_t *br)
 {
-    /* Init clients */
+    ring_buf_init(&br->ring);
     br->mutex = xSemaphoreCreateMutex();
-    for (int i = 0; i < MAX_CLIENTS; i++) {
-        br->client_fds[i] = -1;
-    }
+    br->paused = 0;
+    for (int i = 0; i < MAX_CLIENTS; i++) br->client_fds[i] = -1;
 
-    /* Configure UART */
     uart_config_t uart_config = {
         .baud_rate = UART_BAUD_RATE,
         .data_bits = UART_DATA_8_BITS,
@@ -249,35 +458,27 @@ static void uart_bridge_init(uart_bridge_t *br)
     ESP_ERROR_CHECK(uart_set_pin(br->port, br->tx_pin, br->rx_pin,
                                  UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 
-    printf("[%s] UART%d: TX=IO%d, RX=IO%d, baud=%d\n",
-           br->name, br->port, br->tx_pin, br->rx_pin, UART_BAUD_RATE);
-
-    /* Start tasks */
     xTaskCreate(tcp_server_task, br->name, 4096, br, 5, NULL);
     xTaskCreate(uart_forward_task, br->name, 4096, br, 5, NULL);
+    printf("[%s] UART%d: TX=IO%d RX=IO%d baud=%d → TCP %d + Web\n",
+           br->name, br->port, br->tx_pin, br->rx_pin, UART_BAUD_RATE, br->tcp_port);
 }
 
-/* ──────────────────────── App Main ──────────────────────── */
+/* ──────────────────── App Main ──────────────────── */
 
 void app_main(void)
 {
-    /* UART1: IO2(TX) IO4(RX) → TCP 8080 */
     static uart_bridge_t bridge1 = {
-        .port = UART_NUM_1,
-        .tx_pin = 2,
-        .rx_pin = 4,
-        .tcp_port = 8080,
-        .name = "UART1",
+        .port = UART_NUM_1, .tx_pin = 2, .rx_pin = 4,
+        .tcp_port = 8080, .name = "UART1",
+    };
+    static uart_bridge_t bridge2 = {
+        .port = UART_NUM_2, .tx_pin = 16, .rx_pin = 17,
+        .tcp_port = 8081, .name = "UART2",
     };
 
-    /* UART2: IO16(TX) IO17(RX) → TCP 8081 */
-    static uart_bridge_t bridge2 = {
-        .port = UART_NUM_2,
-        .tx_pin = 16,
-        .rx_pin = 17,
-        .tcp_port = 8081,
-        .name = "UART2",
-    };
+    g_bridges[0] = &bridge1;
+    g_bridges[1] = &bridge2;
 
     /* NVS */
     esp_err_t ret = nvs_flash_init();
@@ -293,11 +494,17 @@ void app_main(void)
     /* WiFi AP */
     wifi_init_softap();
 
-    /* Init bridges */
+    /* UART bridges */
     uart_bridge_init(&bridge1);
     uart_bridge_init(&bridge2);
 
-    printf("[APP] Bridge ready. WiFi '%s' → 192.168.4.1\n", WIFI_SSID);
-    printf("[APP] UART1 (IO2/IO4) → TCP port %d\n", bridge1.tcp_port);
-    printf("[APP] UART2 (IO16/IO17) → TCP port %d\n", bridge2.tcp_port);
+    /* Web server */
+    start_web_server();
+
+    printf("\n========================================\n");
+    printf(" WiFi: %s (no password)\n", WIFI_SSID);
+    printf(" Web:  http://192.168.4.1/\n");
+    printf(" UART1: http://192.168.4.1/page?uart=0  TCP 192.168.4.1:8080\n");
+    printf(" UART2: http://192.168.4.1/page?uart=1  TCP 192.168.4.1:8081\n");
+    printf("========================================\n\n");
 }
