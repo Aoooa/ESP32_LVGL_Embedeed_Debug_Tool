@@ -421,7 +421,7 @@ static void start_web_server(void)
     config.stack_size = 8192;
     config.lru_purge_enable = true;
     config.max_open_sockets = 7;
-    config.backlog_conn_limit = 7;
+    config.backlog_conn = 7;
 
     printf("[WEB] starting server on port %d...\n", config.server_port);
     esp_err_t err = httpd_start(&g_server, &config);
