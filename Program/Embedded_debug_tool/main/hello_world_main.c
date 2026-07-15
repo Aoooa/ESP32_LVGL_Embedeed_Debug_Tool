@@ -248,7 +248,7 @@ static void uart_forward_task(void *arg)
 
 /* ──────────────────── Web Server ──────────────────── */
 
-static const char HTML_HEAD[] =
+static const char *HTML_HEAD =
 "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
 "<meta name=\"viewport\"content=\"width=device-width,initial-scale=1\">"
 "<title>UART%d</title><style>"
