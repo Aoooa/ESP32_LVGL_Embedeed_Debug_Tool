@@ -323,12 +323,12 @@ static esp_err_t page_handler(httpd_req_t *req)
     if (idx < 0 || idx > 1) idx = 0;
     uart_bridge_t *br = g_bridges[idx];
 
-    char *page = malloc(2048);
+    char *page = malloc(3072);
     if (!page) {
         httpd_resp_set_status(req, "500 Internal Server Error");
         return httpd_resp_send(req, NULL, 0);
     }
-    int n = snprintf(page, 2048,
+    int n = snprintf(page, 3072,
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\"content=\"width=device-width,initial-scale=1\">"
         "<title>%s</title><style>"
