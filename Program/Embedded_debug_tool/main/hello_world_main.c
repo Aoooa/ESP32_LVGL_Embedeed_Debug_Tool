@@ -48,6 +48,14 @@ typedef struct {
     volatile int paused;
     int tcp_fds[MAX_TCP_CLIENTS];
     SemaphoreHandle_t tcp_mutex;
+    /* Send config */
+    volatile int send_newline;
+    volatile int send_hex;
+    volatile int timer_on;
+    volatile int timer_ms;
+    TimerHandle_t send_timer;
+    char send_buf[256];
+    int send_len;
 } uart_bridge_t;
 
 /* ──────────────────── Broadcast Queue ──────────────────── */
@@ -213,6 +221,62 @@ static void ws_broadcast_task(void *arg)
     }
 }
 
+/* ──────────────────── Send Helpers ──────────────────── */
+
+static int hex_char_val(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static int hex_to_bytes(const char *hex, uint8_t *out, int max_len)
+{
+    int len = 0;
+    while (hex[0] && hex[1] && len < max_len) {
+        int hi = hex_char_val(hex[0]);
+        int lo = hex_char_val(hex[1]);
+        if (hi < 0 || lo < 0) break;
+        out[len++] = (hi << 4) | lo;
+        hex += 2;
+    }
+    return len;
+}
+
+static void send_timer_cb(TimerHandle_t xTimer)
+{
+    uart_bridge_t *br = (uart_bridge_t *)pvTimerGetTimerID(xTimer);
+    if (br->send_len > 0) {
+        uart_write_bytes(br->port, br->send_buf, br->send_len);
+    }
+}
+
+static void do_send(uart_bridge_t *br, const char *data, int len)
+{
+    uint8_t buf[256];
+    int n;
+
+    if (br->send_hex) {
+        n = hex_to_bytes(data, buf, sizeof(buf));
+    } else {
+        n = (len < (int)sizeof(buf)) ? len : (int)sizeof(buf);
+        memcpy(buf, data, n);
+    }
+
+    if (br->send_newline && n + 2 <= (int)sizeof(buf)) {
+        buf[n++] = '\r';
+        buf[n++] = '\n';
+    }
+
+    /* Store for timer re-send */
+    memcpy(br->send_buf, buf, n);
+    br->send_len = n;
+
+    uart_write_bytes(br->port, buf, n);
+    printf("[%s] TX %d bytes\n", br->name, n);
+}
+
 /* ──────────────────── WebSocket Handler ──────────────────── */
 
 static uart_bridge_t *g_bridges[2];
@@ -234,13 +298,45 @@ static esp_err_t ws_handler(httpd_req_t *req)
     ret = httpd_ws_recv_frame(req, &frame, frame.len);
     if (ret == ESP_OK) {
         buf[frame.len] = 0;
-        if (strncmp((char *)buf, "pause:", 6) == 0) {
-            int val = atoi((char *)buf + 6);
-            int idx = (req->uri[4] == '1') ? 1 : 0;
-            g_bridges[idx]->paused = val;
-            printf("[WS] uart%d paused=%d\n", idx, val);
-        } else if (strcmp((char *)buf, "clear") == 0) {
-            /* Nothing to clear for WebSocket (no ring buffer) */
+        int idx = (req->uri[4] == '1') ? 1 : 0;
+        uart_bridge_t *br = g_bridges[idx];
+        char *msg = (char *)buf;
+
+        if (strncmp(msg, "pause:", 6) == 0) {
+            br->paused = atoi(msg + 6);
+        } else if (strcmp(msg, "clear") == 0) {
+            /* No-op for WebSocket mode */
+        } else if (strncmp(msg, "send:", 5) == 0) {
+            do_send(br, msg + 5, frame.len - 5);
+        } else if (strncmp(msg, "sendh:", 6) == 0) {
+            /* HEX mode forced regardless of checkbox */
+            uint8_t bin[256];
+            int n = hex_to_bytes(msg + 6, bin, sizeof(bin));
+            if (br->send_newline && n + 2 <= (int)sizeof(bin)) {
+                bin[n++] = '\r'; bin[n++] = '\n';
+            }
+            memcpy(br->send_buf, bin, n);
+            br->send_len = n;
+            uart_write_bytes(br->port, bin, n);
+        } else if (strncmp(msg, "cfg:", 4) == 0) {
+            /* cfg:NL,HEX */
+            int nl = msg[4] - '0';
+            int hx = msg[6] - '0';
+            br->send_newline = nl;
+            br->send_hex = hx;
+        } else if (strncmp(msg, "tconf:", 6) == 0) {
+            /* tconf:MS */
+            br->timer_ms = atoi(msg + 6);
+            if (br->send_timer) {
+                xTimerChangePeriod(br->send_timer, pdMS_TO_TICKS(br->timer_ms), 0);
+            }
+        } else if (strncmp(msg, "timer:", 6) == 0) {
+            br->timer_on = atoi(msg + 6);
+            if (br->timer_on && br->send_timer) {
+                xTimerStart(br->send_timer, 0);
+            } else if (br->send_timer) {
+                xTimerStop(br->send_timer, 0);
+            }
         }
     }
     free(buf);
@@ -349,6 +445,13 @@ static esp_err_t page_handler(httpd_req_t *req)
         "line-height:1.5;resize:none;outline:none;background:#fafafa;color:#111}"
         "#log:focus{border-color:#9ca3af}"
         ".info{font-size:11px;color:#9ca3af;text-align:right;padding-top:8px}"
+        "#snd{display:flex;gap:6px;align-items:center;padding-top:8px;border-top:1px solid #e5e5e5;margin-top:4px}"
+        "#si{flex:1;padding:6px 10px;border:1px solid #d1d5d5;border-radius:6px;font-size:13px;outline:none;font-family:inherit}"
+        "#si:focus{border-color:#9ca3af}"
+        "#snd label{font-size:12px;color:#374151;display:flex;align-items:center;gap:3px;white-space:nowrap}"
+        "#ti{width:65px;padding:5px 6px;border:1px solid #d1d5d5;border-radius:6px;font-size:12px;outline:none;text-align:center}"
+        "#sb{padding:6px 16px;border:none;background:#111;color:#fff;border-radius:6px;font-size:12px;cursor:pointer;font-family:inherit}"
+        "#sb:hover{background:#333}"
         "</style></head><body>"
         "<header>"
         "<span class=\"dot\" id=\"st\"></span>"
@@ -358,8 +461,17 @@ static esp_err_t page_handler(httpd_req_t *req)
         "</header>"
         "<textarea id=\"log\" readonly spellcheck=\"false\"></textarea>"
         "<div class=\"info\" id=\"bi\">0 bytes</div>"
+        "<div id=\"snd\">"
+        "<input type=\"text\" id=\"si\" placeholder=\"输入数据...\" autocomplete=\"off\">"
+        "<label><input type=\"checkbox\" id=\"nl\"> 回车</label>"
+        "<label><input type=\"checkbox\" id=\"hx\"> HEX</label>"
+        "<input type=\"number\" id=\"ti\" value=\"1000\" min=\"100\" style=\"width:70px\">"
+        "<label><input type=\"checkbox\" id=\"te\"> 定时</label>"
+        "<button id=\"sb\">发送</button>"
+        "</div>"
         "<script>"
-        "var U=%d,ws,paused=0,O=0;"
+        "var U=%d,ws,paused=0,O=0,tid=null;"
+        "function wsSend(m){if(ws&&ws.readyState===1)ws.send(m)}"
         "function connect(){"
         "ws=new WebSocket('ws://'+location.host+'/ws'+U);"
         "ws.onopen=function(){document.getElementById('st').className='dot on'};"
@@ -372,19 +484,35 @@ static esp_err_t page_handler(httpd_req_t *req)
         "t.value+=e.data;O+=e.data.length;"
         "if(b)t.scrollTop=t.scrollHeight;"
         "document.getElementById('bi').textContent=O+' bytes'}};"
+        "function doSend(){"
+        "var d=document.getElementById('si').value;"
+        "if(!d)return;"
+        "wsSend(document.getElementById('hx').checked?'sendh:'+d:'send:'+d);"
+        "document.getElementById('si').value=''}"
+        "document.getElementById('sb').onclick=doSend;"
+        "document.getElementById('si').onkeydown=function(e){if(e.key==='Enter')doSend()};"
+        "document.getElementById('nl').onchange=function(){"
+        "wsSend('cfg:'+(this.checked?1:0)+','+(document.getElementById('hx').checked?1:0))};"
+        "document.getElementById('hx').onchange=function(){"
+        "wsSend('cfg:'+(document.getElementById('nl').checked?1:0)+','+(this.checked?1:0))};"
+        "document.getElementById('ti').onchange=function(){"
+        "wsSend('tconf:'+this.value)};"
+        "document.getElementById('te').onchange=function(){"
+        "wsSend('timer:'+(this.checked?1:0));"
+        "wsSend('tconf:'+document.getElementById('ti').value)};"
         "document.getElementById('bc').onclick=function(){"
         "document.getElementById('log').value='';O=0;"
         "document.getElementById('bi').textContent='0 bytes';"
-        "if(ws&&ws.readyState===1)ws.send('clear')};"
+        "wsSend('clear')};"
         "document.getElementById('bp').onclick=function(){"
         "paused=!paused;var b=document.getElementById('bp');"
         "if(paused){b.textContent='继续';b.className='active';"
-        "if(ws&&ws.readyState===1)ws.send('pause:1')}else{"
+        "wsSend('pause:1')}else{"
         "b.textContent='暂停';b.className='';"
-        "if(ws&&ws.readyState===1)ws.send('pause:0')}};"
+        "wsSend('pause:0')}};"
         "connect();"
         "</script></body></html>",
-        br->name, br->name, idx);
+        br->name, idx);
 
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, page, n);
@@ -423,8 +551,17 @@ static void start_web_server(void)
 static void uart_bridge_init(uart_bridge_t *br)
 {
     br->paused = 0;
+    br->send_newline = 0;
+    br->send_hex = 0;
+    br->timer_on = 0;
+    br->timer_ms = 1000;
+    br->send_len = 0;
     br->tcp_mutex = xSemaphoreCreateMutex();
     for (int i = 0; i < MAX_TCP_CLIENTS; i++) br->tcp_fds[i] = -1;
+
+    /* Periodic send timer */
+    br->send_timer = xTimerCreate("uart_tx", pdMS_TO_TICKS(1000),
+                                   pdTRUE, (void *)br, send_timer_cb);
 
     uart_config_t cfg = {
         .baud_rate = UART_BAUD_RATE,
