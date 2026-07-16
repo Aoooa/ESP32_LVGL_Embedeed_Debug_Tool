@@ -61,8 +61,11 @@ esp_err_t app_ws_handler(httpd_req_t *req)
                 bin[n++] = '\r';
                 bin[n++] = '\n';
             }
-            memcpy(br->send_buf, bin, n);
-            br->send_len = n;
+            /* 保存原始 hex 字符串，定时器根据当前设置重建 */
+            int raw_len = frame.len - 6;
+            if (raw_len > (int)sizeof(br->send_raw)) raw_len = sizeof(br->send_raw);
+            memcpy(br->send_raw, msg + 6, raw_len);
+            br->send_raw_len = raw_len;
             drv_uart_write(br->port, bin, n);
         } else if (strncmp(msg, "cfg:", 4) == 0) {
             br->send_newline = msg[4] - '0';

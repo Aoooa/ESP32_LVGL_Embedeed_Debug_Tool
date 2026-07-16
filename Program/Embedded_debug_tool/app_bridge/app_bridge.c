@@ -39,22 +39,45 @@ int app_hex_to_bytes(const char *hex, uint8_t *out, int max_len)
 static void send_timer_cb(TimerHandle_t xTimer)
 {
     uart_bridge_t *br = (uart_bridge_t *)pvTimerGetTimerID(xTimer);
-    if (br->send_len > 0) {
-        drv_uart_write(br->port, (const uint8_t *)br->send_buf, br->send_len);
+    if (br->send_raw_len <= 0) return;
+
+    /* 每次定时触发时，根据当前设置重新构建发送数据 */
+    uint8_t final_buf[260];
+    int n = 0;
+
+    if (br->send_hex) {
+        /* HEX 模式：将原始 hex 字符串解析为字节 */
+        n = app_hex_to_bytes((const char *)br->send_raw, final_buf, sizeof(final_buf));
+    } else {
+        n = br->send_raw_len;
+        memcpy(final_buf, br->send_raw, n);
     }
+
+    if (br->send_newline && n + 2 <= (int)sizeof(final_buf)) {
+        final_buf[n++] = '\r';
+        final_buf[n++] = '\n';
+    }
+
+    drv_uart_write(br->port, final_buf, n);
 }
 
 /* ──────────────── 发送 ──────────────── */
 
 void app_uart_send(uart_bridge_t *br, const char *data, int len)
 {
-    uint8_t buf[256];
-    int n;
+    /* 保存原始数据，定时器每次触发时根据当前设置重新构建 */
+    int copy_len = (len < (int)sizeof(br->send_raw)) ? len : (int)sizeof(br->send_raw);
+    memcpy(br->send_raw, data, copy_len);
+    br->send_raw_len = copy_len;
+
+    /* 立即发送（应用当前 HEX/换行设置） */
+    uint8_t buf[260];
+    int n = 0;
 
     if (br->send_hex) {
         n = app_hex_to_bytes(data, buf, sizeof(buf));
     } else {
-        n = (len < (int)sizeof(buf)) ? len : (int)sizeof(buf);
+        n = copy_len;
         memcpy(buf, data, n);
     }
 
@@ -62,9 +85,6 @@ void app_uart_send(uart_bridge_t *br, const char *data, int len)
         buf[n++] = '\r';
         buf[n++] = '\n';
     }
-
-    memcpy(br->send_buf, buf, n);
-    br->send_len = n;
 
     drv_uart_write(br->port, buf, n);
     ESP_LOGI(br->name, "TX %d bytes", n);

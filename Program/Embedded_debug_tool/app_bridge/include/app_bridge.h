@@ -27,8 +27,8 @@ typedef struct {
     volatile int timer_on;
     volatile int timer_ms;
     TimerHandle_t send_timer;
-    char send_buf[256];
-    int send_len;
+    uint8_t send_raw[256];
+    int send_raw_len;
 } uart_bridge_t;
 
 /**
