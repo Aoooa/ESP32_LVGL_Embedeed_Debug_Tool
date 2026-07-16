@@ -77,7 +77,7 @@ esp_err_t app_ws_handler(httpd_req_t *req)
             }
         } else if (strncmp(msg, "timer:", 6) == 0) {
             br->timer_on = atoi(msg + 6);
-            if (br->timer_on && br->send_timer) {
+            if (br->timer_on && br->send_timer && br->send_raw_len > 0) {
                 xTimerStart(br->send_timer, 0);
             } else if (br->send_timer) {
                 xTimerStop(br->send_timer, 0);

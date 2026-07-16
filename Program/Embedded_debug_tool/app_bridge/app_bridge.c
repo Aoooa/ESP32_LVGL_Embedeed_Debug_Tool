@@ -6,8 +6,6 @@
 #include "drv_uart.h"
 #include "esp_log.h"
 
-static const char *TAG = "app_bridge";
-
 uart_bridge_t *g_bridges[2];
 QueueHandle_t g_bcast_queue;
 
@@ -133,7 +131,7 @@ void app_bridge_init(uart_bridge_t *br)
     br->send_hex = 0;
     br->timer_on = 0;
     br->timer_ms = 1000;
-    br->send_len = 0;
+    br->send_raw_len = 0;
     br->tcp_mutex = xSemaphoreCreateMutex();
     for (int i = 0; i < APP_BRIDGE_MAX_TCP_CLIENTS; i++) {
         br->tcp_fds[i] = -1;

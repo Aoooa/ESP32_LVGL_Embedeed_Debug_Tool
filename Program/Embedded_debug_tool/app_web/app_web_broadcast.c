@@ -3,8 +3,6 @@
 #include <string.h>
 #include "esp_log.h"
 
-static const char *TAG = "app_ws_bcast";
-
 static void ws_broadcast_work(void *arg)
 {
     bcast_item_t *item = (bcast_item_t *)arg;
