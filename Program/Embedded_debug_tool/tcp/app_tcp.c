@@ -108,5 +108,4 @@ void app_tcp_start(void)
         xTaskCreate(tcp_server_task, g_bridges[i]->name, 8192, g_bridges[i], 5, NULL);
     }
     xTaskCreate(tcp_bcast_task, "tcp_bcast", 4096, NULL, 5, NULL);
-    ESP_LOGI("app_tcp", "ready");
 }

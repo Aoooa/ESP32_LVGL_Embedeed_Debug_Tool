@@ -185,5 +185,4 @@ void app_web_start(void)
     for (int i = 0; i < 4; i++) {
         httpd_register_uri_handler(g_httpd, &uris[i]);
     }
-    ESP_LOGI("app_web", "ready");
 }

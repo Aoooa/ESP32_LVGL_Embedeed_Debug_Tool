@@ -1,7 +1,6 @@
 #include "app_uart.h"
 #include <stdio.h>
 #include <string.h>
-#include "drv_uart.h"
 #include "esp_log.h"
 
 uart_bridge_t *g_bridges[2];
@@ -77,7 +76,6 @@ void app_uart_fwd_task(void *arg)
 {
     uart_bridge_t *br = (uart_bridge_t *)arg;
     uint8_t buf[1024];
-    ESP_LOGI(br->name, "fwd: TX=IO%d RX=IO%d", br->tx_pin, br->rx_pin);
 
     while (1) {
         int len = drv_uart_read(br->port, buf, sizeof(buf), 100);
@@ -114,5 +112,4 @@ void app_uart_init(uart_bridge_t *br)
                                    pdTRUE, (void *)br, send_timer_cb);
 
     drv_uart_init(br->port, br->tx_pin, br->rx_pin);
-    ESP_LOGI(br->name, "ready: UART%d TCP=%d", br->port, br->tcp_port);
 }

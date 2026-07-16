@@ -1,7 +1,7 @@
 #ifndef APP_UART_H
 #define APP_UART_H
 
-#include "driver/uart.h"
+#include "drv_uart.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/timers.h"
