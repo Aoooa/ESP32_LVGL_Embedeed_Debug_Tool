@@ -335,7 +335,6 @@ static esp_err_t ws_handler(httpd_req_t *req)
         } else if (strncmp(msg, "cfg:", 4) == 0) {
             br->send_newline = msg[4] - '0';
             br->send_hex = msg[6] - '0';
-            br->send_hex = hx;
         } else if (strncmp(msg, "tconf:", 6) == 0) {
             br->timer_ms = atoi(msg + 6);
             if (br->send_timer) {
@@ -512,9 +511,7 @@ static esp_err_t page_handler(httpd_req_t *req)
         "var hx=document.getElementById('hx').checked;"
         "wsSend(hx?'sendh:'+d:'send:'+d);"
         "TX+=hx?Math.ceil(d.length/2):d.length;"
-        "updInfo();"
-        "document.getElementById('si').value='';"
-        "document.getElementById('si').focus()}"
+        "updInfo()}"
         "document.getElementById('sb').onclick=doSend;"
         "document.getElementById('si').onkeydown=function(e){if(e.key==='Enter')doSend()};"
         "document.getElementById('nl').onchange=function(){"
