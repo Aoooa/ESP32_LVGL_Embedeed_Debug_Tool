@@ -340,7 +340,7 @@ static esp_err_t page_handler(httpd_req_t *req)
         "#st{width:8px;height:8px;border-radius:50%%;background:#555;display:inline-block;margin:0 6px}"
         "#st.on{background:#4caf50}"
         "</style></head><body>"
-        "<h3>UART%d - %s</h3>"
+        "<h3>%s</h3>"
         "<div class=\"b\">"
         "<span id=\"st\"></span>"
         "<button id=\"bp\">暂停</button>"
@@ -373,7 +373,7 @@ static esp_err_t page_handler(httpd_req_t *req)
         "if(ws&&ws.readyState===1)ws.send('pause:0')}};"
         "connect();"
         "</script></body></html>",
-        idx + 1, idx + 1, br->name, idx);
+        idx + 1, br->name, idx);
 
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, page, n);
