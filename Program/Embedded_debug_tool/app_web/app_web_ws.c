@@ -1,11 +1,10 @@
 #include "app_web.h"
+#include "app_uart.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "drv_uart.h"
 #include "esp_log.h"
-
-static const char *TAG = "app_ws";
 
 static void ws_broadcast_status(uart_bridge_t *br)
 {
@@ -14,12 +13,9 @@ static void ws_broadcast_status(uart_bridge_t *br)
                       br->timer_on, br->timer_ms, br->paused,
                       (unsigned long)br->tx_bytes);
     httpd_ws_frame_t frame = {
-        .type = HTTPD_WS_TYPE_TEXT,
-        .payload = (uint8_t *)status,
-        .len = sn,
-        .final = true
+        .type = HTTPD_WS_TYPE_TEXT, .payload = (uint8_t *)status,
+        .len = sn, .final = true
     };
-
     size_t count = CONFIG_LWIP_MAX_SOCKETS;
     int fds[CONFIG_LWIP_MAX_SOCKETS];
     if (httpd_get_client_list(g_httpd, &count, fds) == ESP_OK) {
@@ -33,16 +29,13 @@ static void ws_broadcast_status(uart_bridge_t *br)
 
 esp_err_t app_ws_handler(httpd_req_t *req)
 {
-    /* 新客户端连接 — 发送当前状态 */
     if (req->method == HTTP_GET) {
         int idx = (req->uri[4] == '1') ? 1 : 0;
-        int fd = httpd_req_to_sockfd(req);
-        ESP_LOGI(TAG, "connected fd=%d uart%d", fd, idx + 1);
+        ESP_LOGI("app_ws", "connected fd=%d uart%d", httpd_req_to_sockfd(req), idx + 1);
         ws_broadcast_status(g_bridges[idx]);
         return ESP_OK;
     }
 
-    /* 接收 WebSocket 消息 */
     httpd_ws_frame_t frame = { .type = HTTPD_WS_TYPE_TEXT };
     esp_err_t ret = httpd_ws_recv_frame(req, &frame, 0);
     if (ret != ESP_OK) return ret;
@@ -55,7 +48,6 @@ esp_err_t app_ws_handler(httpd_req_t *req)
         buf[frame.len] = 0;
         int idx = (req->uri[4] == '1') ? 1 : 0;
         uart_bridge_t *br = g_bridges[idx];
-        int fd = httpd_req_to_sockfd(req);
         char *msg = (char *)buf;
 
         if (strncmp(msg, "pause:", 6) == 0) {
@@ -68,10 +60,8 @@ esp_err_t app_ws_handler(httpd_req_t *req)
             uint8_t bin[256];
             int n = app_hex_to_bytes(msg + 6, bin, sizeof(bin));
             if (br->send_newline && n + 2 <= (int)sizeof(bin)) {
-                bin[n++] = '\r';
-                bin[n++] = '\n';
+                bin[n++] = '\r'; bin[n++] = '\n';
             }
-            /* 保存原始 hex 字符串，定时器根据当前设置重建 */
             int raw_len = frame.len - 6;
             if (raw_len > (int)sizeof(br->send_raw)) raw_len = sizeof(br->send_raw);
             memcpy(br->send_raw, msg + 6, raw_len);
@@ -83,9 +73,7 @@ esp_err_t app_ws_handler(httpd_req_t *req)
             br->send_hex = msg[6] - '0';
         } else if (strncmp(msg, "tconf:", 6) == 0) {
             br->timer_ms = atoi(msg + 6);
-            if (br->send_timer) {
-                xTimerChangePeriod(br->send_timer, pdMS_TO_TICKS(br->timer_ms), 0);
-            }
+            if (br->send_timer) xTimerChangePeriod(br->send_timer, pdMS_TO_TICKS(br->timer_ms), 0);
         } else if (strncmp(msg, "timer:", 6) == 0) {
             br->timer_on = atoi(msg + 6);
             if (br->timer_on && br->send_timer && br->send_raw_len > 0) {
@@ -94,7 +82,6 @@ esp_err_t app_ws_handler(httpd_req_t *req)
                 xTimerStop(br->send_timer, 0);
             }
         }
-        /* 广播状态给所有客户端 */
         ws_broadcast_status(br);
     }
     free(buf);

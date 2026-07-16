@@ -1,7 +1,7 @@
 #include "app_web.h"
+#include "app_uart.h"
 #include <stdlib.h>
 #include <string.h>
-#include "esp_log.h"
 
 static void ws_broadcast_work(void *arg)
 {
@@ -13,10 +13,8 @@ static void ws_broadcast_work(void *arg)
         for (size_t i = 0; i < client_count; i++) {
             if (httpd_ws_get_fd_info(g_httpd, fds[i]) == HTTPD_WS_CLIENT_WEBSOCKET) {
                 httpd_ws_frame_t frame = {
-                    .type = HTTPD_WS_TYPE_TEXT,
-                    .payload = item->data,
-                    .len = item->len,
-                    .final = true,
+                    .type = HTTPD_WS_TYPE_TEXT, .payload = item->data,
+                    .len = item->len, .final = true,
                 };
                 httpd_ws_send_frame_async(g_httpd, fds[i], &frame);
             }

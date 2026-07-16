@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "drv_uart.c"
+    SRCS "app_wifi.c"
     INCLUDE_DIRS "."
-    REQUIRES driver
+    REQUIRES drv_wifi
 )

@@ -1,10 +1,9 @@
 #include "app_web.h"
+#include "app_uart.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "esp_log.h"
-
-static const char *TAG = "app_web";
 
 httpd_handle_t g_httpd;
 
@@ -34,13 +33,11 @@ static esp_err_t root_handler(httpd_req_t *req)
     return httpd_resp_send(req, html, strlen(html));
 }
 
-/* 前向声明 — 在 app_web_ws.c 中实现 */
 extern esp_err_t app_ws_handler(httpd_req_t *req);
 
 static esp_err_t page_handler(httpd_req_t *req)
 {
     set_no_cache(req);
-
     char qbuf[16] = {0};
     int idx = 0;
     if (httpd_req_get_url_query_str(req, qbuf, sizeof(qbuf)) == ESP_OK) {
@@ -175,7 +172,6 @@ void app_web_start(void)
     config.stack_size = 16384;
     config.lru_purge_enable = true;
 
-    ESP_LOGI(TAG, "starting...");
     ESP_ERROR_CHECK(httpd_start(&g_httpd, &config));
 
     static const httpd_uri_t uris[] = {
@@ -189,5 +185,5 @@ void app_web_start(void)
     for (int i = 0; i < 4; i++) {
         httpd_register_uri_handler(g_httpd, &uris[i]);
     }
-    ESP_LOGI(TAG, "ready (HTTP + WebSocket)");
+    ESP_LOGI("app_web", "ready");
 }

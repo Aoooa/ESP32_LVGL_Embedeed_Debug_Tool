@@ -1,8 +1,6 @@
 #include "drv_uart.h"
 #include "esp_log.h"
 
-static const char *TAG = "drv_uart";
-
 void drv_uart_init(uart_port_t port, int tx_pin, int rx_pin)
 {
     uart_config_t cfg = {
@@ -17,7 +15,7 @@ void drv_uart_init(uart_port_t port, int tx_pin, int rx_pin)
     ESP_ERROR_CHECK(uart_param_config(port, &cfg));
     ESP_ERROR_CHECK(uart_set_pin(port, tx_pin, rx_pin,
                                  UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
-    ESP_LOGI(TAG, "UART%d init: TX=IO%d RX=IO%d", port, tx_pin, rx_pin);
+    ESP_LOGI("drv_uart", "UART%d: TX=IO%d RX=IO%d", port, tx_pin, rx_pin);
 }
 
 int drv_uart_read(uart_port_t port, uint8_t *buf, int size, int timeout_ms)
