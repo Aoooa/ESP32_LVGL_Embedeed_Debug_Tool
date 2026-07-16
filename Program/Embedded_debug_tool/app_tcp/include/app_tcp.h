@@ -4,9 +4,8 @@
 #include "app_bridge.h"
 
 /**
- * @brief TCP 服务器任务入口
- * @param arg uart_bridge_t* 指针
+ * @brief 启动 TCP 服务器（监听 + 广播消费任务）
  */
-void app_tcp_server_task(void *arg);
+void app_tcp_start(void);
 
 #endif /* APP_TCP_H */

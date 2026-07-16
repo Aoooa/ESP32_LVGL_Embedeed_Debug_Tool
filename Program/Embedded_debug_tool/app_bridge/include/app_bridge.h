@@ -29,6 +29,7 @@ typedef struct {
     TimerHandle_t send_timer;
     uint8_t send_raw[256];
     int send_raw_len;
+    volatile uint32_t tx_bytes;
 } uart_bridge_t;
 
 /**
@@ -44,6 +45,9 @@ extern uart_bridge_t *g_bridges[2];
 
 /** WebSocket 广播队列 */
 extern QueueHandle_t g_bcast_queue;
+
+/** TCP 广播队列 */
+extern QueueHandle_t g_tcp_bcast_queue;
 
 /**
  * @brief 初始化桥接实例（UART 驱动 + 定时器 + TCP 客户端数组）

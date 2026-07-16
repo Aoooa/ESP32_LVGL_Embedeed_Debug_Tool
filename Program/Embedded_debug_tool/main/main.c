@@ -42,24 +42,21 @@ void app_main(void)
     /* WiFi AP */
     drv_wifi_init_softap();
 
-    /* WebSocket 广播队列 */
+    /* 广播队列 */
     g_bcast_queue = xQueueCreate(APP_BRIDGE_BCAST_QUEUE_LEN, sizeof(bcast_item_t));
-    xTaskCreate(app_ws_broadcast_task, "ws_bcast", 4096, NULL, 5, NULL);
+    g_tcp_bcast_queue = xQueueCreate(APP_BRIDGE_BCAST_QUEUE_LEN, sizeof(bcast_item_t));
 
     /* UART 桥接初始化 */
     app_bridge_init(&s_bridge1);
     app_bridge_init(&s_bridge2);
 
-    /* 启动 TCP 服务器 */
-    xTaskCreate(app_tcp_server_task, "tcp1", 8192, &s_bridge1, 5, NULL);
-    xTaskCreate(app_tcp_server_task, "tcp2", 8192, &s_bridge2, 5, NULL);
+    /* 启动各模块 */
+    app_tcp_start();
+    app_web_start();
 
     /* 启动 UART 转发任务 */
     xTaskCreate(app_uart_fwd_task, "fwd1", 4096, &s_bridge1, 5, NULL);
     xTaskCreate(app_uart_fwd_task, "fwd2", 4096, &s_bridge2, 5, NULL);
-
-    /* 启动 Web 服务器 */
-    app_web_start();
 
     printf("\n=== Ready ===\n");
     printf(" WiFi: Embedded-debug-tool\n");

@@ -8,6 +8,7 @@
 
 uart_bridge_t *g_bridges[2];
 QueueHandle_t g_bcast_queue;
+QueueHandle_t g_tcp_bcast_queue;
 
 /* ──────────────── HEX 工具 ──────────────── */
 
@@ -57,6 +58,7 @@ static void send_timer_cb(TimerHandle_t xTimer)
     }
 
     drv_uart_write(br->port, final_buf, n);
+    br->tx_bytes += n;
 }
 
 /* ──────────────── 发送 ──────────────── */
@@ -85,6 +87,7 @@ void app_uart_send(uart_bridge_t *br, const char *data, int len)
     }
 
     drv_uart_write(br->port, buf, n);
+    br->tx_bytes += n;
     ESP_LOGI(br->name, "TX %d bytes", n);
 }
 
@@ -100,19 +103,15 @@ void app_uart_fwd_task(void *arg)
         int len = drv_uart_read(br->port, buf, sizeof(buf), 100);
         if (len <= 0) continue;
 
-        /* TCP 广播 */
-        xSemaphoreTake(br->tcp_mutex, portMAX_DELAY);
-        for (int i = 0; i < APP_BRIDGE_MAX_TCP_CLIENTS; i++) {
-            if (br->tcp_fds[i] >= 0) {
-                if (send(br->tcp_fds[i], buf, len, 0) < 0) {
-                    close(br->tcp_fds[i]);
-                    br->tcp_fds[i] = -1;
-                }
-            }
+        /* 写入 TCP 广播队列 */
+        if (g_tcp_bcast_queue) {
+            bcast_item_t item;
+            memcpy(item.data, buf, len);
+            item.len = len;
+            xQueueSend(g_tcp_bcast_queue, &item, 0);
         }
-        xSemaphoreGive(br->tcp_mutex);
 
-        /* WebSocket 广播 */
+        /* 写入 WebSocket 广播队列 */
         if (!br->paused && g_bcast_queue) {
             bcast_item_t item;
             memcpy(item.data, buf, len);

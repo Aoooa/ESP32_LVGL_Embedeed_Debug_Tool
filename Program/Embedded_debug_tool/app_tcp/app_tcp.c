@@ -7,7 +7,21 @@
 
 static const char *TAG = "app_tcp";
 
-void app_tcp_server_task(void *arg)
+static void tcp_broadcast_to_clients(uart_bridge_t *br, const uint8_t *data, int len)
+{
+    xSemaphoreTake(br->tcp_mutex, portMAX_DELAY);
+    for (int i = 0; i < APP_BRIDGE_MAX_TCP_CLIENTS; i++) {
+        if (br->tcp_fds[i] >= 0) {
+            if (send(br->tcp_fds[i], data, len, 0) < 0) {
+                close(br->tcp_fds[i]);
+                br->tcp_fds[i] = -1;
+            }
+        }
+    }
+    xSemaphoreGive(br->tcp_mutex);
+}
+
+static void tcp_server_task(void *arg)
 {
     uart_bridge_t *br = (uart_bridge_t *)arg;
     int srv = socket(AF_INET, SOCK_STREAM, 0);
@@ -31,7 +45,7 @@ void app_tcp_server_task(void *arg)
         return;
     }
     listen(srv, APP_BRIDGE_MAX_TCP_CLIENTS);
-    ESP_LOGI(TAG, "[%s] TCP on port %d", br->name, br->tcp_port);
+    ESP_LOGI(TAG, "[%s] server on port %d", br->name, br->tcp_port);
 
     while (1) {
         fd_set rfds;
@@ -51,7 +65,6 @@ void app_tcp_server_task(void *arg)
         struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
         if (select(maxfd + 1, &rfds, NULL, NULL, &tv) < 0) continue;
 
-        /* 接受新连接 */
         if (FD_ISSET(srv, &rfds)) {
             struct sockaddr_in ca;
             socklen_t cl = sizeof(ca);
@@ -70,7 +83,6 @@ void app_tcp_server_task(void *arg)
             }
         }
 
-        /* 接收 TCP 客户端数据 → UART TX */
         xSemaphoreTake(br->tcp_mutex, portMAX_DELAY);
         for (int i = 0; i < APP_BRIDGE_MAX_TCP_CLIENTS; i++) {
             int fd = br->tcp_fds[i];
@@ -88,4 +100,25 @@ void app_tcp_server_task(void *arg)
         }
         xSemaphoreGive(br->tcp_mutex);
     }
+}
+
+static void tcp_bcast_task(void *arg)
+{
+    bcast_item_t item;
+    while (1) {
+        if (xQueueReceive(g_tcp_bcast_queue, &item, portMAX_DELAY) == pdTRUE) {
+            for (int u = 0; u < 2; u++) {
+                tcp_broadcast_to_clients(g_bridges[u], item.data, item.len);
+            }
+        }
+    }
+}
+
+void app_tcp_start(void)
+{
+    for (int i = 0; i < 2; i++) {
+        xTaskCreate(tcp_server_task, g_bridges[i]->name, 8192, g_bridges[i], 5, NULL);
+    }
+    xTaskCreate(tcp_bcast_task, "tcp_bcast", 4096, NULL, 5, NULL);
+    ESP_LOGI(TAG, "ready");
 }

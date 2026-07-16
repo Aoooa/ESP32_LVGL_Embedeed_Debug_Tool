@@ -10,8 +10,9 @@ static const char *TAG = "app_ws";
 static void ws_broadcast_status(uart_bridge_t *br)
 {
     char status[64];
-    int sn = snprintf(status, sizeof(status), "S:%d,%d,%d",
-                      br->timer_on, br->timer_ms, br->paused);
+    int sn = snprintf(status, sizeof(status), "S:%d,%d,%d,%lu",
+                      br->timer_on, br->timer_ms, br->paused,
+                      (unsigned long)br->tx_bytes);
     httpd_ws_frame_t frame = {
         .type = HTTPD_WS_TYPE_TEXT,
         .payload = (uint8_t *)status,
@@ -76,6 +77,7 @@ esp_err_t app_ws_handler(httpd_req_t *req)
             memcpy(br->send_raw, msg + 6, raw_len);
             br->send_raw_len = raw_len;
             drv_uart_write(br->port, bin, n);
+            br->tx_bytes += n;
         } else if (strncmp(msg, "cfg:", 4) == 0) {
             br->send_newline = msg[4] - '0';
             br->send_hex = msg[6] - '0';
