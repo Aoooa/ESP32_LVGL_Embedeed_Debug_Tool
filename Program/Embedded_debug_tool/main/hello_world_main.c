@@ -281,19 +281,24 @@ static void do_send(uart_bridge_t *br, const char *data, int len)
 
 static uart_bridge_t *g_bridges[2];
 
+static void ws_send_status(httpd_handle_t hd, int fd, uart_bridge_t *br)
+{
+    char status[64];
+    int sn = snprintf(status, sizeof(status), "S:%d,%d,%d",
+                      br->timer_on, br->timer_ms, br->paused);
+    httpd_ws_frame_t frame = {
+        .type = HTTPD_WS_TYPE_TEXT, .payload = (uint8_t *)status,
+        .len = sn, .final = true
+    };
+    httpd_ws_send_frame_async(hd, fd, &frame);
+}
+
 static esp_err_t ws_handler(httpd_req_t *req)
 {
     if (req->method == HTTP_GET) {
         int idx = (req->uri[4] == '1') ? 1 : 0;
-        printf("[WS] client connected fd=%d uart%d\n", httpd_req_to_sockfd(req), idx + 1);
-        /* Send initial state to newly connected client */
-        uart_bridge_t *br = g_bridges[idx];
-        char status[64];
-        int sn = snprintf(status, sizeof(status), "S:%d,%d,%d",
-                          br->timer_on, br->timer_ms, br->paused);
-        httpd_ws_frame_t sframe = { .type = HTTPD_WS_TYPE_TEXT,
-                                    .payload = (uint8_t *)status, .len = sn, .final = true };
-        httpd_ws_send_frame_async(g_httpd, httpd_req_to_sockfd(req), &sframe);
+        printf("[WS] connected fd=%d uart%d\n", httpd_req_to_sockfd(req), idx + 1);
+        ws_send_status(g_httpd, httpd_req_to_sockfd(req), g_bridges[idx]);
         return ESP_OK;
     }
 
@@ -309,12 +314,13 @@ static esp_err_t ws_handler(httpd_req_t *req)
         buf[frame.len] = 0;
         int idx = (req->uri[4] == '1') ? 1 : 0;
         uart_bridge_t *br = g_bridges[idx];
+        int fd = httpd_req_to_sockfd(req);
         char *msg = (char *)buf;
 
         if (strncmp(msg, "pause:", 6) == 0) {
             br->paused = atoi(msg + 6);
         } else if (strcmp(msg, "clear") == 0) {
-            /* No-op for WebSocket mode */
+            /* No-op */
         } else if (strncmp(msg, "send:", 5) == 0) {
             do_send(br, msg + 5, frame.len - 5);
         } else if (strncmp(msg, "sendh:", 6) == 0) {
@@ -327,9 +333,8 @@ static esp_err_t ws_handler(httpd_req_t *req)
             br->send_len = n;
             uart_write_bytes(br->port, bin, n);
         } else if (strncmp(msg, "cfg:", 4) == 0) {
-            int nl = msg[4] - '0';
-            int hx = msg[6] - '0';
-            br->send_newline = nl;
+            br->send_newline = msg[4] - '0';
+            br->send_hex = msg[6] - '0';
             br->send_hex = hx;
         } else if (strncmp(msg, "tconf:", 6) == 0) {
             br->timer_ms = atoi(msg + 6);
@@ -344,44 +349,11 @@ static esp_err_t ws_handler(httpd_req_t *req)
                 xTimerStop(br->send_timer, 0);
             }
         }
+        /* Confirm state back to client */
+        ws_send_status(g_httpd, fd, br);
     }
     free(buf);
     return ret;
-}
-
-/* ──────────────────── Status Sync ──────────────────── */
-
-static void ws_status_task(void *arg)
-{
-    while (1) {
-        vTaskDelay(pdMS_TO_TICKS(500));
-        if (!g_httpd) continue;
-
-        size_t count = CONFIG_LWIP_MAX_SOCKETS;
-        int fds[CONFIG_LWIP_MAX_SOCKETS];
-        if (httpd_get_client_list(g_httpd, &count, fds) != ESP_OK) continue;
-
-        for (int u = 0; u < 2; u++) {
-            uart_bridge_t *br = g_bridges[u];
-            char status[64];
-            int sn = snprintf(status, sizeof(status), "S:%d,%d,%d",
-                              br->timer_on, br->timer_ms, br->paused);
-            httpd_ws_frame_t frame = {
-                .type = HTTPD_WS_TYPE_TEXT, .payload = (uint8_t *)status,
-                .len = sn, .final = true
-            };
-
-            char uri[] = "/ws0";
-            uri[3] = '0' + u;
-
-            for (size_t i = 0; i < count; i++) {
-                if (httpd_ws_get_fd_info(g_httpd, fds[i]) == HTTPD_WS_CLIENT_WEBSOCKET) {
-                    /* Send to both UART pages' WS endpoints */
-                    httpd_ws_send_frame_async(g_httpd, fds[i], &frame);
-                }
-            }
-        }
-    }
 }
 
 /* ──────────────────── WiFi AP ──────────────────── */
@@ -662,7 +634,6 @@ void app_main(void)
     /* Broadcast queue + task */
     g_bcast_queue = xQueueCreate(BROADCAST_QUEUE_LEN, sizeof(bcast_item_t));
     xTaskCreate(ws_broadcast_task, "ws_bcast", 4096, NULL, 5, NULL);
-    xTaskCreate(ws_status_task, "ws_stat", 4096, NULL, 3, NULL);
 
     uart_bridge_init(&bridge1);
     uart_bridge_init(&bridge2);
