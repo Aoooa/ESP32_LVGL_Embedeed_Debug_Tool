@@ -7,7 +7,7 @@
 
 static const char *TAG = "app_ws";
 
-static void ws_send_status(httpd_handle_t hd, int fd, uart_bridge_t *br)
+static void ws_broadcast_status(uart_bridge_t *br)
 {
     char status[64];
     int sn = snprintf(status, sizeof(status), "S:%d,%d,%d",
@@ -18,7 +18,16 @@ static void ws_send_status(httpd_handle_t hd, int fd, uart_bridge_t *br)
         .len = sn,
         .final = true
     };
-    httpd_ws_send_frame_async(hd, fd, &frame);
+
+    size_t count = CONFIG_LWIP_MAX_SOCKETS;
+    int fds[CONFIG_LWIP_MAX_SOCKETS];
+    if (httpd_get_client_list(g_httpd, &count, fds) == ESP_OK) {
+        for (size_t i = 0; i < count; i++) {
+            if (httpd_ws_get_fd_info(g_httpd, fds[i]) == HTTPD_WS_CLIENT_WEBSOCKET) {
+                httpd_ws_send_frame_async(g_httpd, fds[i], &frame);
+            }
+        }
+    }
 }
 
 esp_err_t app_ws_handler(httpd_req_t *req)
@@ -28,7 +37,7 @@ esp_err_t app_ws_handler(httpd_req_t *req)
         int idx = (req->uri[4] == '1') ? 1 : 0;
         int fd = httpd_req_to_sockfd(req);
         ESP_LOGI(TAG, "connected fd=%d uart%d", fd, idx + 1);
-        ws_send_status(g_httpd, fd, g_bridges[idx]);
+        ws_broadcast_status(g_bridges[idx]);
         return ESP_OK;
     }
 
@@ -83,8 +92,8 @@ esp_err_t app_ws_handler(httpd_req_t *req)
                 xTimerStop(br->send_timer, 0);
             }
         }
-        /* 确认状态 */
-        ws_send_status(g_httpd, fd, br);
+        /* 广播状态给所有客户端 */
+        ws_broadcast_status(br);
     }
     free(buf);
     return ret;

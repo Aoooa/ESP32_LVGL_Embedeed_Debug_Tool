@@ -37,7 +37,7 @@ int app_hex_to_bytes(const char *hex, uint8_t *out, int max_len)
 static void send_timer_cb(TimerHandle_t xTimer)
 {
     uart_bridge_t *br = (uart_bridge_t *)pvTimerGetTimerID(xTimer);
-    if (br->send_raw_len <= 0) return;
+    if (br->send_raw_len <= 0 || !br->timer_on) return;
 
     /* 每次定时触发时，根据当前设置重新构建发送数据 */
     uint8_t final_buf[260];
