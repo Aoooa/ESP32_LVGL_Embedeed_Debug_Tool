@@ -3,6 +3,15 @@
 cmake_minimum_required(VERSION 3.16)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-# "Trim" the build. Include the minimal set of components, main, and anything it depends on.
+
+# 组件目录与 main 同级
+set(EXTRA_COMPONENT_DIRS
+    "${CMAKE_CURRENT_SOURCE_DIR}/drv_uart"
+    "${CMAKE_CURRENT_SOURCE_DIR}/drv_wifi"
+    "${CMAKE_CURRENT_SOURCE_DIR}/app_bridge"
+    "${CMAKE_CURRENT_SOURCE_DIR}/app_tcp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/app_web"
+)
+
 idf_build_set_property(MINIMAL_BUILD ON)
 project(Embedded_debug_tool)

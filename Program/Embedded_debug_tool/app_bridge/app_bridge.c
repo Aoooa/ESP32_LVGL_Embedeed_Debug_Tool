@@ -1,6 +1,8 @@
 #include "app_bridge.h"
 #include <stdio.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
 #include "drv_uart.h"
 #include "esp_log.h"
 
