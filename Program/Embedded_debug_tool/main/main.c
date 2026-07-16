@@ -11,6 +11,7 @@
 #include "app_wifi.h"
 #include "app_tcp.h"
 #include "app_web.h"
+#include "app_display.h"
 
 static uart_bridge_t s_bridge1 = {
     .port = UART_NUM_1, .tx_pin = 2, .rx_pin = 4,
@@ -46,6 +47,7 @@ void app_main(void)
 
     app_tcp_start();
     app_web_start();
+    app_display_start();
 
     xTaskCreate(app_ws_broadcast_task, "ws_bcast", 4096, NULL, 5, NULL);
     xTaskCreate(app_uart_fwd_task, "fwd1", 4096, &s_bridge1, 5, NULL);

@@ -1,0 +1,41 @@
+#ifndef DRV_DISPLAY_H
+#define DRV_DISPLAY_H
+
+#include "esp_lcd_panel_ops.h"
+#include "esp_lcd_panel_io.h"
+#include "esp_lcd_touch.h"
+
+/* LCD 引脚定义 — ESP32-S3-Touch-LCD-2 */
+#define DRV_LCD_HOST            SPI2_HOST
+#define DRV_LCD_PIN_SCLK        34
+#define DRV_LCD_PIN_MOSI        33
+#define DRV_LCD_PIN_MISO        -1
+#define DRV_LCD_PIN_CS          38
+#define DRV_LCD_PIN_DC          37
+#define DRV_LCD_PIN_RST         0
+#define DRV_LCD_PIN_BL          1
+
+#define DRV_LCD_H_RES           320
+#define DRV_LCD_V_RES           240
+#define DRV_LCD_PCLK_HZ        (40 * 1000 * 1000)
+#define DRV_LCD_CMD_BITS        8
+#define DRV_LCD_PARAM_BITS      8
+
+/* 触摸引脚定义 */
+#define DRV_TOUCH_I2C_PORT      I2C_NUM_0
+#define DRV_TOUCH_PIN_SCL       41
+#define DRV_TOUCH_PIN_SDA       40
+#define DRV_TOUCH_PIN_INT       39
+#define DRV_TOUCH_PIN_RST       -1
+
+typedef struct {
+    esp_lcd_panel_handle_t panel;
+    esp_lcd_touch_handle_t touch;
+} drv_display_t;
+
+/**
+ * @brief 初始化 LCD + 触摸硬件
+ */
+void drv_display_init(drv_display_t *disp);
+
+#endif

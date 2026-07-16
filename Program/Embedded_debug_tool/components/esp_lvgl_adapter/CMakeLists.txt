@@ -39,8 +39,6 @@ endif()
 set(lvgl_ver "")
 if(DEFINED ENV{LVGL_VERSION} AND NOT "$ENV{LVGL_VERSION}" STREQUAL "")
     set(lvgl_ver $ENV{LVGL_VERSION})
-else()
-    idf_component_get_property(lvgl_ver ${lvgl_name} COMPONENT_VERSION)
 endif()
 
 if("${lvgl_ver}" STREQUAL "")

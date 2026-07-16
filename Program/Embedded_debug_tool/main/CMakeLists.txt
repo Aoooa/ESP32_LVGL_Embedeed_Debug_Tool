@@ -11,6 +11,8 @@ idf_component_register(
         "${MODULE_DIR}/web/app_web_http.c"
         "${MODULE_DIR}/web/app_web_ws.c"
         "${MODULE_DIR}/web/app_web_broadcast.c"
+        "${MODULE_DIR}/display/drv_display.c"
+        "${MODULE_DIR}/display/app_display.c"
 
     INCLUDE_DIRS
         "."
@@ -18,8 +20,10 @@ idf_component_register(
         "${MODULE_DIR}/wifi"
         "${MODULE_DIR}/tcp"
         "${MODULE_DIR}/web"
+        "${MODULE_DIR}/display"
 
     PRIV_REQUIRES
         spi_flash nvs_flash esp_netif esp_event
         driver esp_wifi esp_http_server lwip freertos
+        esp_lcd esp_lcd_touch esp_lvgl_adapter lvgl
 )
