@@ -284,7 +284,16 @@ static uart_bridge_t *g_bridges[2];
 static esp_err_t ws_handler(httpd_req_t *req)
 {
     if (req->method == HTTP_GET) {
-        printf("[WS] client connected fd=%d\n", httpd_req_to_sockfd(req));
+        int idx = (req->uri[4] == '1') ? 1 : 0;
+        printf("[WS] client connected fd=%d uart%d\n", httpd_req_to_sockfd(req), idx + 1);
+        /* Send initial state to newly connected client */
+        uart_bridge_t *br = g_bridges[idx];
+        char status[64];
+        int sn = snprintf(status, sizeof(status), "S:%d,%d,%d",
+                          br->timer_on, br->timer_ms, br->paused);
+        httpd_ws_frame_t sframe = { .type = HTTPD_WS_TYPE_TEXT,
+                                    .payload = (uint8_t *)status, .len = sn, .final = true };
+        httpd_ws_send_frame_async(g_httpd, httpd_req_to_sockfd(req), &sframe);
         return ESP_OK;
     }
 
@@ -309,7 +318,6 @@ static esp_err_t ws_handler(httpd_req_t *req)
         } else if (strncmp(msg, "send:", 5) == 0) {
             do_send(br, msg + 5, frame.len - 5);
         } else if (strncmp(msg, "sendh:", 6) == 0) {
-            /* HEX mode forced regardless of checkbox */
             uint8_t bin[256];
             int n = hex_to_bytes(msg + 6, bin, sizeof(bin));
             if (br->send_newline && n + 2 <= (int)sizeof(bin)) {
@@ -319,13 +327,11 @@ static esp_err_t ws_handler(httpd_req_t *req)
             br->send_len = n;
             uart_write_bytes(br->port, bin, n);
         } else if (strncmp(msg, "cfg:", 4) == 0) {
-            /* cfg:NL,HEX */
             int nl = msg[4] - '0';
             int hx = msg[6] - '0';
             br->send_newline = nl;
             br->send_hex = hx;
         } else if (strncmp(msg, "tconf:", 6) == 0) {
-            /* tconf:MS */
             br->timer_ms = atoi(msg + 6);
             if (br->send_timer) {
                 xTimerChangePeriod(br->send_timer, pdMS_TO_TICKS(br->timer_ms), 0);
@@ -341,6 +347,41 @@ static esp_err_t ws_handler(httpd_req_t *req)
     }
     free(buf);
     return ret;
+}
+
+/* ──────────────────── Status Sync ──────────────────── */
+
+static void ws_status_task(void *arg)
+{
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+        if (!g_httpd) continue;
+
+        size_t count = CONFIG_LWIP_MAX_SOCKETS;
+        int fds[CONFIG_LWIP_MAX_SOCKETS];
+        if (httpd_get_client_list(g_httpd, &count, fds) != ESP_OK) continue;
+
+        for (int u = 0; u < 2; u++) {
+            uart_bridge_t *br = g_bridges[u];
+            char status[64];
+            int sn = snprintf(status, sizeof(status), "S:%d,%d,%d",
+                              br->timer_on, br->timer_ms, br->paused);
+            httpd_ws_frame_t frame = {
+                .type = HTTPD_WS_TYPE_TEXT, .payload = (uint8_t *)status,
+                .len = sn, .final = true
+            };
+
+            char uri[] = "/ws0";
+            uri[3] = '0' + u;
+
+            for (size_t i = 0; i < count; i++) {
+                if (httpd_ws_get_fd_info(g_httpd, fds[i]) == HTTPD_WS_CLIENT_WEBSOCKET) {
+                    /* Send to both UART pages' WS endpoints */
+                    httpd_ws_send_frame_async(g_httpd, fds[i], &frame);
+                }
+            }
+        }
+    }
 }
 
 /* ──────────────────── WiFi AP ──────────────────── */
@@ -460,7 +501,7 @@ static esp_err_t page_handler(httpd_req_t *req)
         "<button id=\"bc\">清空</button>"
         "</header>"
         "<textarea id=\"log\" readonly spellcheck=\"false\"></textarea>"
-        "<div class=\"info\" id=\"bi\">0 bytes</div>"
+        "<div class=\"info\" id=\"bi\">RX: 0 &nbsp; TX: 0</div>"
         "<div id=\"snd\">"
         "<input type=\"text\" id=\"si\" placeholder=\"输入数据...\" autocomplete=\"off\">"
         "<label><input type=\"checkbox\" id=\"nl\"> 回车</label>"
@@ -470,25 +511,38 @@ static esp_err_t page_handler(httpd_req_t *req)
         "<button id=\"sb\">发送</button>"
         "</div>"
         "<script>"
-        "var U=%d,ws,paused=0,O=0,tid=null;"
+        "var U=%d,ws,paused=0,RX=0,TX=0;"
         "function wsSend(m){if(ws&&ws.readyState===1)ws.send(m)}"
+        "function updInfo(){document.getElementById('bi').textContent='RX: '+RX+'  TX: '+TX}"
         "function connect(){"
         "ws=new WebSocket('ws://'+location.host+'/ws'+U);"
         "ws.onopen=function(){document.getElementById('st').className='dot on'};"
         "ws.onclose=function(){document.getElementById('st').className='dot';"
         "setTimeout(connect,1000)};"
         "ws.onmessage=function(e){"
+        "var m=e.data;"
+        "if(m.charAt(0)==='S'){"
+        "var p=m.substring(2).split(',');"
+        "var te=document.getElementById('te'),ti=document.getElementById('ti'),bp=document.getElementById('bp');"
+        "te.checked=parseInt(p[0]);ti.value=p[1];"
+        "paused=parseInt(p[2]);"
+        "bp.textContent=paused?'继续':'暂停';bp.className=paused?'active':'';"
+        "return}"
         "if(paused)return;"
         "var t=document.getElementById('log'),"
-        "b=t.scrollTop>=t.scrollHeight-t.clientHeight-10;"
-        "t.value+=e.data;O+=e.data.length;"
-        "if(b)t.scrollTop=t.scrollHeight;"
-        "document.getElementById('bi').textContent=O+' bytes'}};"
+        "at=t.scrollTop>=t.scrollHeight-t.clientHeight-10;"
+        "t.value+=m;RX+=m.length;"
+        "if(at)t.scrollTop=t.scrollHeight;"
+        "updInfo()}};"
         "function doSend(){"
         "var d=document.getElementById('si').value;"
         "if(!d)return;"
-        "wsSend(document.getElementById('hx').checked?'sendh:'+d:'send:'+d);"
-        "document.getElementById('si').value=''}"
+        "var hx=document.getElementById('hx').checked;"
+        "wsSend(hx?'sendh:'+d:'send:'+d);"
+        "TX+=hx?Math.ceil(d.length/2):d.length;"
+        "updInfo();"
+        "document.getElementById('si').value='';"
+        "document.getElementById('si').focus()}"
         "document.getElementById('sb').onclick=doSend;"
         "document.getElementById('si').onkeydown=function(e){if(e.key==='Enter')doSend()};"
         "document.getElementById('nl').onchange=function(){"
@@ -501,9 +555,8 @@ static esp_err_t page_handler(httpd_req_t *req)
         "wsSend('timer:'+(this.checked?1:0));"
         "wsSend('tconf:'+document.getElementById('ti').value)};"
         "document.getElementById('bc').onclick=function(){"
-        "document.getElementById('log').value='';O=0;"
-        "document.getElementById('bi').textContent='0 bytes';"
-        "wsSend('clear')};"
+        "document.getElementById('log').value='';RX=0;TX=0;"
+        "updInfo();wsSend('clear')};"
         "document.getElementById('bp').onclick=function(){"
         "paused=!paused;var b=document.getElementById('bp');"
         "if(paused){b.textContent='继续';b.className='active';"
@@ -609,6 +662,7 @@ void app_main(void)
     /* Broadcast queue + task */
     g_bcast_queue = xQueueCreate(BROADCAST_QUEUE_LEN, sizeof(bcast_item_t));
     xTaskCreate(ws_broadcast_task, "ws_bcast", 4096, NULL, 5, NULL);
+    xTaskCreate(ws_status_task, "ws_stat", 4096, NULL, 3, NULL);
 
     uart_bridge_init(&bridge1);
     uart_bridge_init(&bridge2);
