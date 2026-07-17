@@ -25,5 +25,5 @@ idf_component_register(
     PRIV_REQUIRES
         spi_flash nvs_flash esp_netif esp_event
         driver esp_wifi esp_http_server lwip freertos
-        esp_lcd esp_lcd_touch esp_lvgl_adapter lvgl
+        esp_lcd esp_lcd_touch esp_lcd_touch_cst816s esp_lvgl_adapter lvgl
 )

@@ -19,8 +19,8 @@ void app_display_start(void)
 
     /* 注册显示屏 */
     esp_lv_adapter_display_config_t disp_cfg =
-        ESP_LV_ADAPTER_DISPLAY_SPI_DEFAULT_CONFIG(
-            disp.panel, NULL,
+        ESP_LV_ADAPTER_DISPLAY_SPI_WITHOUT_PSRAM_DEFAULT_CONFIG(
+            disp.panel, disp.io,
             DRV_LCD_H_RES, DRV_LCD_V_RES,
             ESP_LV_ADAPTER_ROTATE_0);
     lv_display_t *lv_disp = esp_lv_adapter_register_display(&disp_cfg);
@@ -34,21 +34,5 @@ void app_display_start(void)
 
     /* 启动 LVGL 任务 */
     ESP_ERROR_CHECK(esp_lv_adapter_start());
-
-    /* 绘制 Hello World */
-    ESP_LOGI(TAG, "drawing Hello World...");
-    if (esp_lv_adapter_lock(-1) == ESP_OK) {
-        lv_obj_t *scr = lv_screen_active();
-        lv_obj_set_style_bg_color(scr, lv_color_hex(0x1F1F1F), 0);
-
-        lv_obj_t *label = lv_label_create(scr);
-        lv_label_set_text(label, "Hello World!");
-        lv_obj_set_style_text_color(label, lv_color_hex(0x00FF00), 0);
-        lv_obj_set_style_text_font(label, &lv_font_montserrat_24, 0);
-        lv_obj_center(label);
-
-        esp_lv_adapter_unlock();
-    }
-
     ESP_LOGI(TAG, "ready");
 }

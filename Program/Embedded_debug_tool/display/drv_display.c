@@ -5,7 +5,7 @@
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_vendor.h"
-#include "esp_lcd_st7789.h"
+#include "esp_lcd_panel_st7789.h"
 #include "esp_lcd_touch_cst816s.h"
 #include "esp_log.h"
 
@@ -44,17 +44,21 @@ void drv_display_init(drv_display_t *disp)
     };
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(
         (esp_lcd_spi_bus_handle_t)DRV_LCD_HOST, &io_cfg, &io_handle));
+    disp->io = io_handle;
 
     /* ST7789 面板 */
     esp_lcd_panel_dev_config_t panel_cfg = {
         .reset_gpio_num = DRV_LCD_PIN_RST,
-        .rgb_endian = LCD_RGB_ENDIAN_BGR,
+        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
         .bits_per_pixel = 16,
     };
     ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(io_handle, &panel_cfg, &disp->panel));
     ESP_ERROR_CHECK(esp_lcd_panel_reset(disp->panel));
     ESP_ERROR_CHECK(esp_lcd_panel_init(disp->panel));
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(disp->panel, false, false));
+    ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(disp->panel, false));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(disp->panel, true));
+    ESP_ERROR_CHECK(esp_lcd_panel_invert_color(disp->panel, true));
     ESP_LOGI(TAG, "LCD ST7789 ready: %dx%d", DRV_LCD_H_RES, DRV_LCD_V_RES);
 
     /* I2C 总线 */
@@ -73,15 +77,25 @@ void drv_display_init(drv_display_t *disp)
     esp_lcd_panel_io_i2c_config_t tp_io_cfg = {
         .dev_addr = ESP_LCD_TOUCH_IO_I2C_CST816S_ADDRESS,
         .scl_speed_hz = 400 * 1000,
+        .control_phase_bytes = 1,
+        .dc_bit_offset = 0,
+        .lcd_cmd_bits = 8,
+        .lcd_param_bits = 8,
+        .flags = { .disable_control_phase = 1 },
     };
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c_v2(i2c_bus, &tp_io_cfg, &tp_io));
 
     /* CST816S 触摸面板 */
     esp_lcd_touch_config_t tp_cfg = {
-        .x_max = DRV_LCD_H_RES,
-        .y_max = DRV_LCD_V_RES,
+        .x_max = DRV_LCD_V_RES,
+        .y_max = DRV_LCD_H_RES,
         .rst_gpio_num = DRV_TOUCH_PIN_RST,
         .int_gpio_num = DRV_TOUCH_PIN_INT,
+        .flags = {
+            .swap_xy = 0,
+            .mirror_x = 0,
+            .mirror_y = 0,
+        },
     };
     ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_cst816s(tp_io, &tp_cfg, &disp->touch));
     ESP_LOGI(TAG, "Touch CST816S ready");
