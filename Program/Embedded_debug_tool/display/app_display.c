@@ -6,9 +6,12 @@
 #include <stdio.h>
 
 static lv_obj_t *s_label_ip = NULL;
-static lv_obj_t *s_label_uart1 = NULL;
-static lv_obj_t *s_label_uart2 = NULL;
-static lv_obj_t *s_label_web = NULL;
+static lv_obj_t *s_label_uart1_port = NULL;
+static lv_obj_t *s_label_uart1_io = NULL;
+static lv_obj_t *s_label_uart2_port = NULL;
+static lv_obj_t *s_label_uart2_io = NULL;
+static lv_obj_t *s_label_web_title = NULL;
+static lv_obj_t *s_label_web_url = NULL;
 
 void app_display_start(void)
 {
@@ -38,40 +41,61 @@ void app_display_start(void)
         lv_obj_set_style_bg_color(scr, lv_color_hex(0xFFFFFF), 0);
         lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
-        /* 标题 */
+        /* 标题 y=15 */
         lv_obj_t *title = lv_label_create(scr);
         lv_label_set_text(title, "Embedded Debug Tool");
         lv_obj_set_style_text_color(title, lv_color_hex(0x000000), 0);
         lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
-        lv_obj_set_pos(title, 10, 20);
+        lv_obj_set_pos(title, 10, 15);
 
-        /* IP */
+        /* IP y=50 */
         s_label_ip = lv_label_create(scr);
         lv_label_set_text(s_label_ip, "Starting...");
         lv_obj_set_style_text_color(s_label_ip, lv_color_hex(0x333333), 0);
         lv_obj_set_style_text_font(s_label_ip, &lv_font_montserrat_14, 0);
-        lv_obj_set_pos(s_label_ip, 10, 55);
+        lv_obj_set_pos(s_label_ip, 10, 50);
 
-        /* UART1 */
-        s_label_uart1 = lv_label_create(scr);
-        lv_label_set_text(s_label_uart1, "");
-        lv_obj_set_style_text_color(s_label_uart1, lv_color_hex(0x000000), 0);
-        lv_obj_set_style_text_font(s_label_uart1, &lv_font_montserrat_12, 0);
-        lv_obj_set_pos(s_label_uart1, 10, 85);
+        /* UART1 port y=80 */
+        s_label_uart1_port = lv_label_create(scr);
+        lv_label_set_text(s_label_uart1_port, "");
+        lv_obj_set_style_text_color(s_label_uart1_port, lv_color_hex(0x000000), 0);
+        lv_obj_set_style_text_font(s_label_uart1_port, &lv_font_montserrat_12, 0);
+        lv_obj_set_pos(s_label_uart1_port, 10, 80);
 
-        /* UART2 */
-        s_label_uart2 = lv_label_create(scr);
-        lv_label_set_text(s_label_uart2, "");
-        lv_obj_set_style_text_color(s_label_uart2, lv_color_hex(0x000000), 0);
-        lv_obj_set_style_text_font(s_label_uart2, &lv_font_montserrat_12, 0);
-        lv_obj_set_pos(s_label_uart2, 10, 105);
+        /* UART1 IO y=98 */
+        s_label_uart1_io = lv_label_create(scr);
+        lv_label_set_text(s_label_uart1_io, "");
+        lv_obj_set_style_text_color(s_label_uart1_io, lv_color_hex(0x666666), 0);
+        lv_obj_set_style_text_font(s_label_uart1_io, &lv_font_montserrat_10, 0);
+        lv_obj_set_pos(s_label_uart1_io, 20, 98);
 
-        /* Web */
-        s_label_web = lv_label_create(scr);
-        lv_label_set_text(s_label_web, "");
-        lv_obj_set_style_text_color(s_label_web, lv_color_hex(0x333333), 0);
-        lv_obj_set_style_text_font(s_label_web, &lv_font_montserrat_12, 0);
-        lv_obj_set_pos(s_label_web, 10, 140);
+        /* UART2 port y=120 */
+        s_label_uart2_port = lv_label_create(scr);
+        lv_label_set_text(s_label_uart2_port, "");
+        lv_obj_set_style_text_color(s_label_uart2_port, lv_color_hex(0x000000), 0);
+        lv_obj_set_style_text_font(s_label_uart2_port, &lv_font_montserrat_12, 0);
+        lv_obj_set_pos(s_label_uart2_port, 10, 120);
+
+        /* UART2 IO y=138 */
+        s_label_uart2_io = lv_label_create(scr);
+        lv_label_set_text(s_label_uart2_io, "");
+        lv_obj_set_style_text_color(s_label_uart2_io, lv_color_hex(0x666666), 0);
+        lv_obj_set_style_text_font(s_label_uart2_io, &lv_font_montserrat_10, 0);
+        lv_obj_set_pos(s_label_uart2_io, 20, 138);
+
+        /* Web title y=168 */
+        s_label_web_title = lv_label_create(scr);
+        lv_label_set_text(s_label_web_title, "Web:");
+        lv_obj_set_style_text_color(s_label_web_title, lv_color_hex(0x000000), 0);
+        lv_obj_set_style_text_font(s_label_web_title, &lv_font_montserrat_12, 0);
+        lv_obj_set_pos(s_label_web_title, 10, 168);
+
+        /* Web URL y=186 */
+        s_label_web_url = lv_label_create(scr);
+        lv_label_set_text(s_label_web_url, "");
+        lv_obj_set_style_text_color(s_label_web_url, lv_color_hex(0x666666), 0);
+        lv_obj_set_style_text_font(s_label_web_url, &lv_font_montserrat_10, 0);
+        lv_obj_set_pos(s_label_web_url, 20, 186);
 
         esp_lv_adapter_unlock();
     }
@@ -85,14 +109,16 @@ void app_display_set_info(const char *ip, int uart1_port, int uart2_port)
         snprintf(buf, sizeof(buf), "IP: %s", ip);
         lv_label_set_text(s_label_ip, buf);
 
-        snprintf(buf, sizeof(buf), "UART1:%d  IO2/IO4", uart1_port);
-        lv_label_set_text(s_label_uart1, buf);
+        snprintf(buf, sizeof(buf), "UART1 :%d", uart1_port);
+        lv_label_set_text(s_label_uart1_port, buf);
+        lv_label_set_text(s_label_uart1_io, "TX IO2   RX IO4");
 
-        snprintf(buf, sizeof(buf), "UART2:%d  IO16/IO17", uart2_port);
-        lv_label_set_text(s_label_uart2, buf);
+        snprintf(buf, sizeof(buf), "UART2 :%d", uart2_port);
+        lv_label_set_text(s_label_uart2_port, buf);
+        lv_label_set_text(s_label_uart2_io, "TX IO16  RX IO17");
 
-        snprintf(buf, sizeof(buf), "Web: http://%s/", ip);
-        lv_label_set_text(s_label_web, buf);
+        snprintf(buf, sizeof(buf), "http://%s/", ip);
+        lv_label_set_text(s_label_web_url, buf);
 
         esp_lv_adapter_unlock();
     }
