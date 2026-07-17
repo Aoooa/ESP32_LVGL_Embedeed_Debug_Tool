@@ -55,8 +55,8 @@ void drv_display_init(drv_display_t *disp)
     ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(io_handle, &panel_cfg, &disp->panel));
     ESP_ERROR_CHECK(esp_lcd_panel_reset(disp->panel));
     ESP_ERROR_CHECK(esp_lcd_panel_init(disp->panel));
-    ESP_ERROR_CHECK(esp_lcd_panel_mirror(disp->panel, false, false));
-    ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(disp->panel, false));
+    ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(disp->panel, true));
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(disp->panel, false, true));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(disp->panel, true));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(disp->panel, true));
     ESP_LOGI(TAG, "LCD ST7789 ready: %dx%d", DRV_LCD_H_RES, DRV_LCD_V_RES);

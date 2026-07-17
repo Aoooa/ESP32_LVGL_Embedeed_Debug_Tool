@@ -365,8 +365,8 @@ void app_display_start(void)
     esp_lv_adapter_display_config_t disp_cfg =
         ESP_LV_ADAPTER_DISPLAY_SPI_WITHOUT_PSRAM_DEFAULT_CONFIG(
             disp.panel, disp.io,
-            DRV_LCD_H_RES, DRV_LCD_V_RES,
-            ESP_LV_ADAPTER_ROTATE_90);
+            DRV_LCD_V_RES, DRV_LCD_H_RES,
+            ESP_LV_ADAPTER_ROTATE_0);
     lv_display_t *lv_disp = esp_lv_adapter_register_display(&disp_cfg);
     assert(lv_disp != NULL);
 
