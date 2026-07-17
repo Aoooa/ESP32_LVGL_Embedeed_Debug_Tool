@@ -6,6 +6,7 @@
 uart_bridge_t *g_bridges[2];
 QueueHandle_t g_bcast_queue;
 QueueHandle_t g_tcp_bcast_queue;
+QueueHandle_t g_display_queue;
 
 static int hex_char_val(char c)
 {
@@ -92,6 +93,14 @@ void app_uart_fwd_task(void *arg)
             memcpy(item.data, buf, len);
             item.len = len;
             xQueueSend(g_bcast_queue, &item, 0);
+        }
+        if (!br->paused && g_display_queue) {
+            disp_item_t di;
+            int copy = (len < (int)sizeof(di.data)) ? len : (int)sizeof(di.data);
+            memcpy(di.data, buf, copy);
+            di.len = copy;
+            di.uart_idx = (br->port == UART_NUM_1) ? 0 : 1;
+            xQueueSend(g_display_queue, &di, 0);
         }
     }
 }

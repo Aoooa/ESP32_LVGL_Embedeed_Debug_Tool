@@ -33,9 +33,16 @@ typedef struct {
     int len;
 } bcast_item_t;
 
+typedef struct {
+    uint8_t data[256];
+    int len;
+    int uart_idx;
+} disp_item_t;
+
 extern uart_bridge_t *g_bridges[2];
 extern QueueHandle_t g_bcast_queue;
 extern QueueHandle_t g_tcp_bcast_queue;
+extern QueueHandle_t g_display_queue;
 
 void app_uart_init(uart_bridge_t *br);
 void app_uart_fwd_task(void *arg);

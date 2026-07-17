@@ -1,5 +1,6 @@
 #include "app_web.h"
 #include "app_uart.h"
+#include "app_display.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -83,6 +84,7 @@ esp_err_t app_ws_handler(httpd_req_t *req)
             }
         }
         ws_broadcast_status(br);
+        app_display_notify_status();
     }
     free(buf);
     return ret;

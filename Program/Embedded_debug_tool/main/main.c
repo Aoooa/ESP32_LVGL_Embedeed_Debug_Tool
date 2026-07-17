@@ -41,6 +41,7 @@ void app_main(void)
 
     g_bcast_queue = xQueueCreate(APP_UART_BCAST_QUEUE_LEN, sizeof(bcast_item_t));
     g_tcp_bcast_queue = xQueueCreate(APP_UART_BCAST_QUEUE_LEN, sizeof(bcast_item_t));
+    g_display_queue = xQueueCreate(APP_UART_BCAST_QUEUE_LEN, sizeof(disp_item_t));
 
     app_uart_init(&s_bridge1);
     app_uart_init(&s_bridge2);
