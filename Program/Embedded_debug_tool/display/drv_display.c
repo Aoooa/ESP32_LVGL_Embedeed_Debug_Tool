@@ -93,8 +93,8 @@ void drv_display_init(drv_display_t *disp)
         .int_gpio_num = DRV_TOUCH_PIN_INT,
         .flags = {
             .swap_xy = 1,
-            .mirror_x = 0,
-            .mirror_y = 1,
+            .mirror_x = 1,
+            .mirror_y = 0,
         },
     };
     ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_cst816s(tp_io, &tp_cfg, &disp->touch));
