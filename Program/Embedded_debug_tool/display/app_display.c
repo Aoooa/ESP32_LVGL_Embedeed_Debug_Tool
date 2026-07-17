@@ -23,7 +23,7 @@ static int  s_cur_col;
 /* ── Layout ── */
 #define SCREEN_W         240
 #define SCREEN_H         320
-#define STATUS_BAR_H     28
+#define STATUS_BAR_H     30
 #define BTN_BAR_H        40
 #define SEP_H            1
 #define DISP_LINES       26
@@ -41,6 +41,7 @@ static lv_obj_t *s_status_dot;
 static lv_obj_t *s_status_uart;
 static lv_obj_t *s_status_info;
 static lv_obj_t *s_status_state;
+static lv_obj_t *s_status_pins;
 static lv_obj_t *s_log_container;
 static lv_obj_t *s_log_label;
 static lv_obj_t *s_btn_uart;
@@ -92,8 +93,17 @@ static void update_status_bar(void)
         br->paused ? lv_color_hex(0xF97316) : lv_color_hex(0x22C55E), 0);
 
     lv_label_set_text(s_status_uart, s_active_uart ? "UART2" : "UART1");
+
+    char info[32];
+    snprintf(info, sizeof(info), "192.168.4.1:%d", br->tcp_port);
+    lv_label_set_text(s_status_info, info);
+
     lv_label_set_text(s_status_state, br->paused ? "PAUSED" : "RUN");
     lv_label_set_text(s_btn_pause_lbl, br->paused ? "Resume" : "Pause");
+
+    char pins[24];
+    snprintf(pins, sizeof(pins), "TX:IO%d  RX:IO%d", br->tx_pin, br->rx_pin);
+    lv_label_set_text(s_status_pins, pins);
 }
 
 /* ── Log Label 刷新（在 LVGL lock 内调用） ── */
@@ -160,46 +170,71 @@ static void build_ui(void)
     lv_obj_set_style_pad_all(scr, 0, 0);
     lv_obj_set_style_pad_gap(scr, 0, 0);
 
-    /* ── Status Bar ── */
+    /* ── Status Bar (2 lines) ── */
     lv_obj_t *status_bar = lv_obj_create(scr);
     lv_obj_set_size(status_bar, SCREEN_W, STATUS_BAR_H);
     lv_obj_set_style_bg_color(status_bar, lv_color_hex(0xF9FAFB), 0);
     lv_obj_set_style_bg_opa(status_bar, LV_OPA_COVER, 0);
     lv_obj_set_style_border_side(status_bar, LV_BORDER_SIDE_NONE, 0);
     lv_obj_set_style_radius(status_bar, 0, 0);
-    lv_obj_set_style_pad_hor(status_bar, 8, 0);
-    lv_obj_set_style_pad_ver(status_bar, 6, 0);
-    lv_obj_set_flex_flow(status_bar, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(status_bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_gap(status_bar, 6, 0);
+    lv_obj_set_style_pad_all(status_bar, 0, 0);
+    lv_obj_set_style_pad_gap(status_bar, 0, 0);
+    lv_obj_set_flex_flow(status_bar, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(status_bar, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
-    s_status_dot = lv_obj_create(status_bar);
+    /* Row 1: [●] UARTx  IP:port  RUN */
+    lv_obj_t *row1 = lv_obj_create(status_bar);
+    lv_obj_set_size(row1, SCREEN_W, 16);
+    lv_obj_set_style_bg_opa(row1, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row1, 0, 0);
+    lv_obj_set_style_radius(row1, 0, 0);
+    lv_obj_set_style_pad_hor(row1, 8, 0);
+    lv_obj_set_style_pad_ver(row1, 0, 0);
+    lv_obj_set_flex_flow(row1, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row1, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_gap(row1, 6, 0);
+
+    s_status_dot = lv_obj_create(row1);
     lv_obj_set_size(s_status_dot, 8, 8);
     lv_obj_set_style_radius(s_status_dot, 4, 0);
     lv_obj_set_style_bg_color(s_status_dot, lv_color_hex(0x22C55E), 0);
     lv_obj_set_style_bg_opa(s_status_dot, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(s_status_dot, 0, 0);
 
-    s_status_uart = lv_label_create(status_bar);
+    s_status_uart = lv_label_create(row1);
     lv_label_set_text(s_status_uart, "UART1");
     lv_obj_set_style_text_color(s_status_uart, lv_color_hex(0x111111), 0);
     lv_obj_set_style_text_font(s_status_uart, &lv_font_montserrat_12, 0);
 
-    s_status_info = lv_label_create(status_bar);
+    s_status_info = lv_label_create(row1);
     lv_label_set_text(s_status_info, "");
     lv_obj_set_style_text_color(s_status_info, lv_color_hex(0x9CA3AF), 0);
     lv_obj_set_style_text_font(s_status_info, &lv_font_montserrat_10, 0);
 
-    lv_obj_t *spacer = lv_obj_create(status_bar);
+    lv_obj_t *spacer = lv_obj_create(row1);
     lv_obj_set_size(spacer, 1, 1);
     lv_obj_set_style_bg_opa(spacer, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(spacer, 0, 0);
     lv_obj_set_flex_grow(spacer, 1);
 
-    s_status_state = lv_label_create(status_bar);
+    s_status_state = lv_label_create(row1);
     lv_label_set_text(s_status_state, "RUN");
     lv_obj_set_style_text_color(s_status_state, lv_color_hex(0x22C55E), 0);
     lv_obj_set_style_text_font(s_status_state, &lv_font_montserrat_12, 0);
+
+    /* Row 2: TX:IOx  RX:IOx */
+    lv_obj_t *row2 = lv_obj_create(status_bar);
+    lv_obj_set_size(row2, SCREEN_W, 14);
+    lv_obj_set_style_bg_opa(row2, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row2, 0, 0);
+    lv_obj_set_style_radius(row2, 0, 0);
+    lv_obj_set_style_pad_hor(row2, 14, 0);
+    lv_obj_set_style_pad_ver(row2, 0, 0);
+
+    s_status_pins = lv_label_create(row2);
+    lv_label_set_text(s_status_pins, "TX:IO2  RX:IO4");
+    lv_obj_set_style_text_color(s_status_pins, lv_color_hex(0x9CA3AF), 0);
+    lv_obj_set_style_text_font(s_status_pins, &lv_font_montserrat_10, 0);
 
     /* ── Separator ── */
     lv_obj_t *sep1 = lv_obj_create(scr);
@@ -376,6 +411,7 @@ void app_display_start(void)
 
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
         build_ui();
+        update_status_bar();
         esp_lv_adapter_unlock();
     }
 
@@ -385,13 +421,9 @@ void app_display_start(void)
 
 void app_display_set_info(const char *ip, int uart1_port, int uart2_port)
 {
+    (void)ip;
     (void)uart1_port;
     (void)uart2_port;
-
-    if (s_status_info && esp_lv_adapter_lock(-1) == ESP_OK) {
-        lv_label_set_text(s_status_info, ip);
-        esp_lv_adapter_unlock();
-    }
 }
 
 void app_display_notify_status(void)

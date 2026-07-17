@@ -60,7 +60,4 @@ void app_main(void)
     printf(" UART1: http://192.168.4.1/page?uart=0  TCP :8080\n");
     printf(" UART2: http://192.168.4.1/page?uart=1  TCP :8081\n\n");
     fflush(stdout);
-
-    /* LCD 显示连接信息 */
-    app_display_set_info("192.168.4.1", 8080, 8081);
 }
