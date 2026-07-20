@@ -106,22 +106,26 @@ static void update_status_bar(void)
 
 static void refresh_log_label(void)
 {
-    int total = s_line_count;
-    int show = (total < DISP_LINES) ? total : DISP_LINES;
-    if (show == 0) {
-        lv_label_set_text(s_log_label, "");
-        return;
-    }
-
-    int start = (s_line_idx - show + RING_MAX_LINES) % RING_MAX_LINES;
     static char s_disp_buf[DISP_LINES * (RING_LINE_LEN + 2)];
     int pos = 0;
+
+    int total = s_line_count;
+    int show = (total < DISP_LINES) ? total : DISP_LINES;
+    int empty = DISP_LINES - show;
+
+    int start = (s_line_idx - show + RING_MAX_LINES) % RING_MAX_LINES;
     for (int i = 0; i < show; i++) {
         int idx = (start + i) % RING_MAX_LINES;
         int len = strlen(s_lines[idx]);
         if (pos + len + 1 < (int)sizeof(s_disp_buf)) {
             memcpy(s_disp_buf + pos, s_lines[idx], len);
             pos += len;
+            s_disp_buf[pos++] = '\n';
+        }
+    }
+
+    for (int i = 0; i < empty; i++) {
+        if (pos + 1 < (int)sizeof(s_disp_buf)) {
             s_disp_buf[pos++] = '\n';
         }
     }
