@@ -362,17 +362,19 @@ static esp_err_t touch_rotated_read(esp_lcd_touch_handle_t tp,
     (void)user_ctx;
     (void)max_count;
 
-    uint16_t x[1] = {0}, y[1] = {0};
-    uint8_t cnt = 0;
+    uint16_t touch_x = 0, touch_y = 0;
+    uint8_t touch_cnt = 0;
 
     esp_lcd_touch_read_data(tp);
-    esp_lcd_touch_get_coordinates(tp, x, y, NULL, &cnt, 1);
+    esp_lcd_touch_get_coordinates(tp, &touch_x, &touch_y, NULL, &touch_cnt, 1);
 
-    if (cnt > 0) {
+    if (touch_cnt > 0) {
         *count = 1;
-        points[0].x = y[0];
-        points[0].y = (DRV_LCD_H_RES - 1) - x[0];
+        points[0].x = touch_y;
+        points[0].y = (DRV_LCD_H_RES - 1) - touch_x;
         points[0].strength = 1;
+        ESP_LOGI("touch", "RAW(%d,%d) -> ROT(%d,%d)", touch_x, touch_y,
+                 points[0].x, points[0].y);
     } else {
         *count = 0;
     }
