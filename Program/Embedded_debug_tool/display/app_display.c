@@ -352,6 +352,27 @@ static void display_task(void *arg)
     }
 }
 
+/* ── Touch rotation callback (CST816S raw → rotated 90° CW) ── */
+
+static esp_err_t touch_rotated_read(esp_lcd_touch_handle_t tp,
+                                     esp_lcd_touch_point_data_t *points,
+                                     uint8_t *count, uint8_t max_count,
+                                     void *user_ctx)
+{
+    (void)user_ctx;
+    esp_lcd_touch_read_data(tp);
+    esp_err_t ret = esp_lcd_touch_get_data(tp, points, count, max_count);
+    if (ret == ESP_OK) {
+        for (uint8_t i = 0; i < *count; i++) {
+            int16_t raw_x = points[i].x;
+            int16_t raw_y = points[i].y;
+            points[i].x = raw_y;
+            points[i].y = (DRV_LCD_H_RES - 1) - raw_x;
+        }
+    }
+    return ret;
+}
+
 /* ── Public API ── */
 
 void app_display_start(void)
@@ -372,6 +393,7 @@ void app_display_start(void)
 
     esp_lv_adapter_touch_config_t tp_cfg =
         ESP_LV_ADAPTER_TOUCH_DEFAULT_CONFIG(lv_disp, disp.touch);
+    tp_cfg.callbacks.custom_touch_read = touch_rotated_read;
     lv_indev_t *lv_tp = esp_lv_adapter_register_touch(&tp_cfg);
     assert(lv_tp != NULL);
 
