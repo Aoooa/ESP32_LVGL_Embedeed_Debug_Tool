@@ -239,6 +239,9 @@ static void build_ui(void)
     lv_obj_set_style_text_font(s_log_label, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_line_space(s_log_label, 2, 0);
 
+    ESP_LOGI(TAG, "log_h=%d font_h=%d line_space=%d disp_lines=%d",
+             log_h, lv_font_get_line_height(&lv_font_montserrat_12), 2, DISP_LINES);
+
     /* ── Separator ── */
     lv_obj_t *sep2 = lv_obj_create(scr);
     lv_obj_set_size(sep2, SCREEN_W, SEP_H);
