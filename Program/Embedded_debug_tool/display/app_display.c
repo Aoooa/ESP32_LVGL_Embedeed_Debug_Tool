@@ -371,10 +371,8 @@ static esp_err_t touch_rotated_read(esp_lcd_touch_handle_t tp,
     if (touch_cnt > 0) {
         *count = 1;
         points[0].x = touch_y;
-        points[0].y = (DRV_LCD_H_RES - 1) - touch_x;
+        points[0].y = touch_x;
         points[0].strength = 1;
-        ESP_LOGI("touch", "RAW(%d,%d) -> ROT(%d,%d)", touch_x, touch_y,
-                 points[0].x, points[0].y);
     } else {
         *count = 0;
     }
