@@ -352,8 +352,13 @@ static void display_task(void *arg)
     }
 }
 
-/* ── Touch rotation: CST816S portrait coords → 90° CW landscape ── */
-
+/*
+ * CST816S ignores swap_xy/mirror flags in its get_xy callback,
+ * so touch rotation must be done in software. Panel is rotated
+ * via swap_xy + mirror_y (=270° CW effective), requiring:
+ *   display_x = (V_RES-1) - raw_y
+ *   display_y = raw_x
+ */
 static esp_err_t touch_rotated_read(esp_lcd_touch_handle_t tp,
                                      esp_lcd_touch_point_data_t *points,
                                      uint8_t *count, uint8_t max_count,
@@ -362,16 +367,16 @@ static esp_err_t touch_rotated_read(esp_lcd_touch_handle_t tp,
     (void)user_ctx;
     (void)max_count;
 
-    uint16_t touch_x = 0, touch_y = 0;
-    uint8_t touch_cnt = 0;
+    uint16_t raw_x = 0, raw_y = 0;
+    uint8_t cnt = 0;
 
     esp_lcd_touch_read_data(tp);
-    esp_lcd_touch_get_coordinates(tp, &touch_x, &touch_y, NULL, &touch_cnt, 1);
+    esp_lcd_touch_get_coordinates(tp, &raw_x, &raw_y, NULL, &cnt, 1);
 
-    if (touch_cnt > 0) {
+    if (cnt > 0) {
         *count = 1;
-        points[0].x = (DRV_LCD_V_RES - 1) - touch_y;
-        points[0].y = touch_x;
+        points[0].x = (DRV_LCD_V_RES - 1) - raw_y;
+        points[0].y = raw_x;
         points[0].strength = 1;
     } else {
         *count = 0;
