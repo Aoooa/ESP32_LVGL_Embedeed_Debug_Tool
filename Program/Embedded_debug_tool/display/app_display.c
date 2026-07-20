@@ -366,13 +366,13 @@ static esp_err_t touch_rotated_read(esp_lcd_touch_handle_t tp,
     uint8_t cnt = 0;
 
     esp_lcd_touch_read_data(tp);
-    bool pressed = esp_lcd_touch_get_coordinates(tp, x, y, NULL, &cnt, 1);
+    esp_lcd_touch_get_coordinates(tp, x, y, NULL, &cnt, 1);
 
-    if (pressed && cnt > 0) {
+    if (cnt > 0) {
         *count = 1;
         points[0].x = y[0];
         points[0].y = (DRV_LCD_H_RES - 1) - x[0];
-        points[0].weight = 1;
+        points[0].strength = 1;
     } else {
         *count = 0;
     }
