@@ -82,6 +82,9 @@ void app_uart_fwd_task(void *arg)
         int len = drv_uart_read(br->port, buf, sizeof(buf), 100);
         if (len <= 0) continue;
 
+        /* 调试日志：串口号 + 接收到的原始数据 */
+        ESP_LOGI(br->name, "[R]%d (%.*s)", len, len, (const char *)buf);
+
         if (g_tcp_bcast_queue) {
             bcast_item_t item;
             memcpy(item.data, buf, len);

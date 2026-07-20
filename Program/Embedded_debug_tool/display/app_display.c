@@ -382,6 +382,9 @@ static esp_err_t touch_rotated_read(esp_lcd_touch_handle_t tp,
         points[0].x = (DRV_LCD_V_RES - 1) - raw_y;
         points[0].y = raw_x;
         points[0].strength = 1;
+        /* 调试日志：触摸板原始坐标 + 映射后的 UI 坐标 */
+        ESP_LOGI(TAG, "touch raw(%u,%u) -> ui(%u,%u)",
+                 raw_x, raw_y, points[0].x, points[0].y);
     } else {
         *count = 0;
     }
