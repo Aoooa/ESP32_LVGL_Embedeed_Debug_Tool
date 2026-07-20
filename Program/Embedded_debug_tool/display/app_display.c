@@ -227,12 +227,12 @@ static void build_ui(void)
     lv_obj_set_style_bg_opa(s_log_container, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(s_log_container, 0, 0);
     lv_obj_set_style_radius(s_log_container, 0, 0);
-    lv_obj_set_style_pad_all(s_log_container, 4, 0);
+    lv_obj_set_style_pad_all(s_log_container, 0, 0);
     lv_obj_set_scroll_dir(s_log_container, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(s_log_container, LV_SCROLLBAR_MODE_OFF);
 
     s_log_label = lv_label_create(s_log_container);
-    lv_obj_set_width(s_log_label, SCREEN_W - 8);
+    lv_obj_set_width(s_log_label, SCREEN_W);
     lv_label_set_long_mode(s_log_label, LV_LABEL_LONG_MODE_WRAP);
     lv_label_set_text(s_log_label, "");
     lv_obj_set_style_text_color(s_log_label, lv_color_hex(0x111111), 0);
