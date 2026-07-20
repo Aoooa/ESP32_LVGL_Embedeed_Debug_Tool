@@ -352,7 +352,7 @@ static void display_task(void *arg)
     }
 }
 
-/* ── Touch rotation: CST816S portrait → 90° CW landscape ── */
+/* ── Touch rotation: CST816S portrait coords → 90° CW landscape ── */
 
 static esp_err_t touch_rotated_read(esp_lcd_touch_handle_t tp,
                                      esp_lcd_touch_point_data_t *points,
@@ -360,17 +360,23 @@ static esp_err_t touch_rotated_read(esp_lcd_touch_handle_t tp,
                                      void *user_ctx)
 {
     (void)user_ctx;
-    if (max_count < 1) { *count = 0; return ESP_OK; }
+    (void)max_count;
+
+    uint16_t x[1] = {0}, y[1] = {0};
+    uint8_t cnt = 0;
 
     esp_lcd_touch_read_data(tp);
-    esp_err_t ret = esp_lcd_touch_get_data(tp, points, count, 1);
-    if (ret == ESP_OK && *count > 0) {
-        uint16_t raw_x = points[0].x;
-        uint16_t raw_y = points[0].y;
-        points[0].x = raw_y;
-        points[0].y = (DRV_LCD_H_RES - 1) - raw_x;
+    bool pressed = esp_lcd_touch_get_coordinates(tp, x, y, NULL, &cnt, 1);
+
+    if (pressed && cnt > 0) {
+        *count = 1;
+        points[0].x = y[0];
+        points[0].y = (DRV_LCD_H_RES - 1) - x[0];
+        points[0].weight = 1;
+    } else {
+        *count = 0;
     }
-    return ret;
+    return ESP_OK;
 }
 
 /* ── Public API ── */
