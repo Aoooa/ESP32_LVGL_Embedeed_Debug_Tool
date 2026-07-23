@@ -4,21 +4,20 @@
 #include "esp_lv_adapter.h"
 #include "lvgl.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include <stdio.h>
 #include <string.h>
 
 static const char *TAG = "app_display";
 
-/* ── Ring Buffer ── */
-#define RING_MAX_LINES   200
-#define RING_LINE_LEN    32
-#define RING_LINE_BUF    (RING_LINE_LEN + 1)
+/* ── Log Buffer: linear append, trim oldest lines when full ── */
+#define LOG_BUF_SIZE     8192
+#define LOG_TRIM_CHUNK   2048
 
-static char s_lines[RING_MAX_LINES][RING_LINE_BUF];
-static int  s_line_idx;
-static int  s_line_count;
-static int  s_cur_col;
+static char   s_log_buf[LOG_BUF_SIZE];
+static size_t s_log_len;
+static int    s_removed_lines;   /* lines trimmed since last refresh */
 
 /* ── Layout ── */
 #define SCREEN_W         320
@@ -26,7 +25,6 @@ static int  s_cur_col;
 #define STATUS_BAR_H     28
 #define BTN_BAR_H        40
 #define SEP_H            1
-#define DISP_LINES       10
 
 /* ── State ── */
 static int s_active_uart;
@@ -48,38 +46,38 @@ static lv_obj_t *s_btn_pause;
 static lv_obj_t *s_btn_pause_lbl;
 static lv_obj_t *s_btn_clear;
 
-static void ring_push_char(char c)
+static void log_trim(void)
 {
-    if (c == '\n' || c == '\r') {
-        if (s_cur_col > 0) {
-            s_lines[s_line_idx][s_cur_col] = '\0';
-            s_line_idx = (s_line_idx + 1) % RING_MAX_LINES;
-            if (s_line_count < RING_MAX_LINES) s_line_count++;
-            s_cur_col = 0;
-        }
-        return;
+    size_t cut = LOG_TRIM_CHUNK;
+    while (cut < s_log_len && s_log_buf[cut] != '\n') cut++;
+    if (cut < s_log_len) cut++;     /* drop whole lines only */
+
+    for (size_t i = 0; i < cut; i++) {
+        if (s_log_buf[i] == '\n') s_removed_lines++;
     }
-    if (s_cur_col == 0) {
-        memset(s_lines[s_line_idx], 0, RING_LINE_BUF);
-    }
-    if (s_cur_col < RING_LINE_LEN) {
-        s_lines[s_line_idx][s_cur_col++] = c;
-    }
+    memmove(s_log_buf, s_log_buf + cut, s_log_len - cut);
+    s_log_len -= cut;
 }
 
-static void ring_push_data(const uint8_t *data, int len)
+static void log_push_data(const uint8_t *data, int len)
 {
+    if (s_log_len + (size_t)len > LOG_BUF_SIZE - 1) {
+        log_trim();
+    }
     for (int i = 0; i < len; i++) {
-        ring_push_char((char)data[i]);
+        char c = (char)data[i];
+        if (c == '\r') continue;
+        if (s_log_len >= LOG_BUF_SIZE - 1) break;
+        s_log_buf[s_log_len++] = c;
     }
+    s_log_buf[s_log_len] = '\0';
 }
 
-static void ring_clear(void)
+static void log_clear(void)
 {
-    s_line_idx = 0;
-    s_line_count = 0;
-    s_cur_col = 0;
-    memset(s_lines, 0, sizeof(s_lines));
+    s_log_len = 0;
+    s_log_buf[0] = '\0';
+    s_removed_lines = 0;
 }
 
 /* ── Status Bar ── */
@@ -106,33 +104,25 @@ static void update_status_bar(void)
 
 static void refresh_log_label(void)
 {
-    static char s_disp_buf[DISP_LINES * (RING_LINE_LEN + 2)];
-    int pos = 0;
+    /* Check follow state before LVGL sees the new text */
+    bool at_bottom = (lv_obj_get_scroll_bottom(s_log_container) <= 4);
+    int32_t old_top = lv_obj_get_scroll_top(s_log_container);
 
-    int total = s_line_count;
-    int show = (total < DISP_LINES) ? total : DISP_LINES;
-    int empty = DISP_LINES - show;
+    lv_label_set_text_static(s_log_label, s_log_buf);
+    lv_obj_invalidate(s_log_container);
 
-    int start = (s_line_idx - show + RING_MAX_LINES) % RING_MAX_LINES;
-    for (int i = 0; i < show; i++) {
-        int idx = (start + i) % RING_MAX_LINES;
-        int len = strlen(s_lines[idx]);
-        if (pos + len + 1 < (int)sizeof(s_disp_buf)) {
-            memcpy(s_disp_buf + pos, s_lines[idx], len);
-            pos += len;
-            s_disp_buf[pos++] = '\n';
-        }
+    if (at_bottom) {
+        lv_obj_scroll_to_y(s_log_container, LV_COORD_MAX, LV_ANIM_OFF);
+    } else if (s_removed_lines > 0) {
+        /* Compensate trimmed lines so the view does not jump */
+        const lv_font_t *font = lv_obj_get_style_text_font(s_log_label, LV_PART_MAIN);
+        int32_t line_h = lv_font_get_line_height(font)
+                       + lv_obj_get_style_text_line_space(s_log_label, LV_PART_MAIN);
+        int32_t new_top = old_top - s_removed_lines * line_h;
+        if (new_top < 0) new_top = 0;
+        lv_obj_scroll_to_y(s_log_container, new_top, LV_ANIM_OFF);
     }
-
-    for (int i = 0; i < empty; i++) {
-        if (pos + 1 < (int)sizeof(s_disp_buf)) {
-            s_disp_buf[pos++] = '\n';
-        }
-    }
-    s_disp_buf[pos] = '\0';
-
-    lv_label_set_text(s_log_label, s_disp_buf);
-    lv_obj_scroll_to_y(s_log_container, LV_COORD_MAX, LV_ANIM_OFF);
+    s_removed_lines = 0;
 }
 
 /* ── Button Callbacks ── */
@@ -229,7 +219,7 @@ static void build_ui(void)
     lv_obj_set_style_radius(s_log_container, 0, 0);
     lv_obj_set_style_pad_all(s_log_container, 0, 0);
     lv_obj_set_scroll_dir(s_log_container, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(s_log_container, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_scrollbar_mode(s_log_container, LV_SCROLLBAR_MODE_AUTO);
 
     s_log_label = lv_label_create(s_log_container);
     lv_obj_set_width(s_log_label, SCREEN_W);
@@ -318,12 +308,12 @@ static void display_task(void *arg)
         int got_data = (xQueueReceive(g_display_queue, &item, pdMS_TO_TICKS(50)) == pdTRUE);
         if (got_data) {
             if (item.uart_idx == s_active_uart) {
-                ring_push_data(item.data, item.len);
+                log_push_data(item.data, item.len);
             }
             /* 一次性排空队列中所有积压数据 */
             while (xQueueReceive(g_display_queue, &item, 0) == pdTRUE) {
                 if (item.uart_idx == s_active_uart) {
-                    ring_push_data(item.data, item.len);
+                    log_push_data(item.data, item.len);
                 }
             }
         }
@@ -334,12 +324,12 @@ static void display_task(void *arg)
         /* 处理按钮请求 */
         int need_status = 0;
         if (s_pending_clear) {
-            ring_clear();
+            log_clear();
             need_status = 1;
         }
         if (s_pending_uart_switch) {
             s_active_uart = !s_active_uart;
-            ring_clear();
+            log_clear();
             need_status = 1;
         }
 
@@ -382,9 +372,6 @@ static esp_err_t touch_rotated_read(esp_lcd_touch_handle_t tp,
         points[0].x = (DRV_LCD_V_RES - 1) - raw_y;
         points[0].y = raw_x;
         points[0].strength = 1;
-        /* 调试日志：触摸板原始坐标 + 映射后的 UI 坐标 */
-        ESP_LOGI(TAG, "touch raw(%u,%u) -> ui(%u,%u)",
-                 raw_x, raw_y, points[0].x, points[0].y);
     } else {
         *count = 0;
     }
@@ -418,7 +405,7 @@ void app_display_start(void)
     ESP_ERROR_CHECK(esp_lv_adapter_start());
 
     s_active_uart = 0;
-    ring_clear();
+    log_clear();
 
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
         build_ui();
@@ -426,7 +413,11 @@ void app_display_start(void)
         esp_lv_adapter_unlock();
     }
 
-    xTaskCreate(display_task, "disp_task", 4096, NULL, 5, &s_display_task_h);
+    BaseType_t ok = xTaskCreate(display_task, "disp_task", 4096, NULL, 5, &s_display_task_h);
+    if (ok != pdPASS) {
+        ESP_LOGE(TAG, "disp_task create FAILED, free heap=%u",
+                 (unsigned)esp_get_free_heap_size());
+    }
     ESP_LOGI(TAG, "Serial monitor UI ready");
 }
 
