@@ -12,6 +12,8 @@
 #include "app_tcp.h"
 #include "app_web.h"
 #include "app_display.h"
+#include "drv_sdcard.h"
+#include "app_sdcard.h"
 
 static uart_bridge_t s_bridge1 = {
     .port = UART_NUM_1, .tx_pin = 2, .rx_pin = 4,
@@ -53,6 +55,11 @@ void app_main(void)
 #endif
     app_web_start();
     app_display_start();
+
+    /* SD 卡：挂载并自检（串口日志） */
+    if (drv_sdcard_init() == ESP_OK) {
+        app_sdcard_self_test();
+    }
 
     /* 内部 RAM 紧张（显示双缓冲占 ~51KB），任务栈放 PSRAM */
 #if APP_NET_UART_FWD_ENABLED
