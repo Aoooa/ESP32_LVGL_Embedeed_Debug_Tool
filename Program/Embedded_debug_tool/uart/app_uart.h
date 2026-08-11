@@ -7,7 +7,12 @@
 #include "freertos/timers.h"
 
 #define APP_UART_MAX_TCP_CLIENTS 3
-#define APP_UART_BCAST_QUEUE_LEN 32
+#define APP_UART_BCAST_QUEUE_LEN   32
+#define APP_UART_DISPLAY_QUEUE_LEN 64
+
+/* TCP/WebSocket 串口数据转发总开关：0=禁用（省 RAM），1=启用。
+ * 禁用时相关队列/任务/推送全部跳过，代码保留 */
+#define APP_NET_UART_FWD_ENABLED 0
 
 typedef struct {
     uart_port_t port;

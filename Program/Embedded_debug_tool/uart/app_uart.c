@@ -79,9 +79,10 @@ void app_uart_fwd_task(void *arg)
     uint8_t buf[1024];
 
     while (1) {
-        int len = drv_uart_read(br->port, buf, sizeof(buf), 100);
+        int len = drv_uart_read(br->port, buf, sizeof(buf), 10);
         if (len <= 0) continue;
 
+#if APP_NET_UART_FWD_ENABLED
         if (g_tcp_bcast_queue) {
             bcast_item_t item;
             memcpy(item.data, buf, len);
@@ -94,6 +95,7 @@ void app_uart_fwd_task(void *arg)
             item.len = len;
             xQueueSend(g_bcast_queue, &item, 0);
         }
+#endif
         if (!br->paused && g_display_queue) {
             disp_item_t di;
             int copy = (len < (int)sizeof(di.data)) ? len : (int)sizeof(di.data);

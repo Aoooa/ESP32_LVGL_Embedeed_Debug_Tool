@@ -28,7 +28,10 @@ void drv_display_init(drv_display_t *disp)
         .miso_io_num = DRV_LCD_PIN_MISO,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
-        .max_transfer_sz = DRV_LCD_H_RES * 40 * sizeof(uint16_t),
+        /* spi_master 为 PSRAM 源缓冲在 ISR 中分配 DMA priv buffer（=事务大小，
+         * 必须内部 RAM）。过大分配失败；esp_lcd_panel_io_spi 按此上限分块连续传输。
+         * 16 行=7.5KB，兼顾分配成功率与事务开销 */
+        .max_transfer_sz = DRV_LCD_H_RES * 16 * sizeof(uint16_t),
     };
     ESP_ERROR_CHECK(spi_bus_initialize(DRV_LCD_HOST, &bus_cfg, SPI_DMA_CH_AUTO));
 

@@ -7,6 +7,7 @@
 #include "nvs_flash.h"
 #include "esp_netif.h"
 #include "esp_event.h"
+#include "esp_cache.h"
 #include "app_uart.h"
 #include "app_wifi.h"
 #include "app_tcp.h"
@@ -39,20 +40,27 @@ void app_main(void)
 
     app_wifi_start();
 
+    g_display_queue = xQueueCreate(APP_UART_DISPLAY_QUEUE_LEN, sizeof(disp_item_t));
+#if APP_NET_UART_FWD_ENABLED
     g_bcast_queue = xQueueCreate(APP_UART_BCAST_QUEUE_LEN, sizeof(bcast_item_t));
     g_tcp_bcast_queue = xQueueCreate(APP_UART_BCAST_QUEUE_LEN, sizeof(bcast_item_t));
-    g_display_queue = xQueueCreate(APP_UART_BCAST_QUEUE_LEN, sizeof(disp_item_t));
+#endif
 
     app_uart_init(&s_bridge1);
     app_uart_init(&s_bridge2);
 
+#if APP_NET_UART_FWD_ENABLED
     app_tcp_start();
+#endif
     app_web_start();
     app_display_start();
 
-    xTaskCreate(app_ws_broadcast_task, "ws_bcast", 4096, NULL, 5, NULL);
-    xTaskCreate(app_uart_fwd_task, "fwd1", 4096, &s_bridge1, 5, NULL);
-    xTaskCreate(app_uart_fwd_task, "fwd2", 4096, &s_bridge2, 5, NULL);
+    /* 内部 RAM 紧张（显示双缓冲占 ~51KB），任务栈放 PSRAM */
+#if APP_NET_UART_FWD_ENABLED
+    xTaskCreateWithCaps(app_ws_broadcast_task, "ws_bcast", 4096, NULL, 5, NULL, MALLOC_CAP_SPIRAM);
+#endif
+    xTaskCreateWithCaps(app_uart_fwd_task, "fwd1", 4096, &s_bridge1, 5, NULL, MALLOC_CAP_SPIRAM);
+    xTaskCreateWithCaps(app_uart_fwd_task, "fwd2", 4096, &s_bridge2, 5, NULL, MALLOC_CAP_SPIRAM);
 
     printf("\n=== Ready ===\n");
     printf(" WiFi: Embedded-debug-tool\n");
