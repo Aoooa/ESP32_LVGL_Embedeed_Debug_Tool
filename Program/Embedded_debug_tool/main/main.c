@@ -7,7 +7,6 @@
 #include "nvs_flash.h"
 #include "esp_netif.h"
 #include "esp_event.h"
-#include "esp_cache.h"
 #include "app_uart.h"
 #include "app_wifi.h"
 #include "app_tcp.h"

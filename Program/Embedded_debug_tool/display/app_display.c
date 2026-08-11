@@ -2,37 +2,26 @@
 #include "drv_display.h"
 #include "app_uart.h"
 #include "esp_lv_adapter.h"
+#include "flow_view.h"
 #include "lvgl.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
-#include "esp_cache.h"
 #include "freertos/FreeRTOS.h"
 #include <stdio.h>
 #include <string.h>
 
 static const char *TAG = "app_display";
 
-/* ── Canvas 终端 ──
- * 正常模式（跟随底部）：数据先解析到 pending 行缓冲（锁外），攒批后
- * memmove 位图窗口 + 批量绘制（锁内），只失效底部行带 —— 93FPS 验证过的路径。
- * 触摸拖动：切到历史模式，从行文本历史（PSRAM）全量重绘窗口。
- * 不调用 esp_cache_msync：纯 CPU 读写 cache 自动一致（官方源码确认 sw 路径无 cache 操作）。 */
-#define TERM_LINE_H      14      /* montserrat_12 行高 */
-#define TERM_CURLINE_MAX 60      /* 当前行字符上限 */
-#define TERM_VISIBLE_MAX 12      /* 可见行数（12×14=168px） */
-#define TERM_HISTORY_MAX 256     /* 历史行数（环形文本） */
+/* ── flow_view 内存/锁钩子 ── */
+static void *fv_psram_alloc(size_t size)
+{
+    return heap_caps_aligned_alloc(64, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+}
 
-static lv_obj_t *s_term_canvas;
-static uint8_t *s_term_buf;
-static char   (*s_hist)[TERM_CURLINE_MAX + 1];
-static char     s_cur_line[TERM_CURLINE_MAX];
-static int      s_cur_len;
-static int32_t  s_cur_w;
-static int      s_row_count;
-static int      s_new_lines;
-static int      s_view_top;
-static int      s_follow = 1;
-static int      s_touch_y;
+static void fv_acquire(void)
+{
+    esp_lv_adapter_lock(-1);
+}
 
 /* ── Layout ── */
 #define SCREEN_W         320
@@ -55,8 +44,8 @@ static lv_obj_t *s_status_uart;
 static lv_obj_t *s_status_info;
 static lv_obj_t *s_status_state;
 static lv_obj_t *s_log_container;
+static lv_obj_t *s_log_view;
 static lv_obj_t *s_fps_label;
-static lv_obj_t *s_scrollbar;
 static lv_obj_t *s_btn_uart;
 static lv_obj_t *s_btn_pause;
 static lv_obj_t *s_btn_pause_lbl;
@@ -82,177 +71,6 @@ static void update_status_bar(void)
     lv_label_set_text(s_btn_pause_lbl, br->paused ? "Resume" : "Pause");
 }
 
-static void term_update_scrollbar(void);   /* 前向声明 */
-
-static void term_clear(void)
-{
-    memset(s_term_buf, 0xFF, (size_t)SCREEN_W * TERM_VISIBLE_MAX * TERM_LINE_H * 2);
-    s_cur_len = 0;
-    s_cur_w = 0;
-    s_row_count = 0;
-    s_new_lines = 0;
-    s_view_top = 0;
-    s_follow = 1;
-    lv_obj_invalidate(s_term_canvas);
-    if (s_scrollbar) term_update_scrollbar();
-}
-
-/* 把一行文本绘制到 canvas 的 y 行（LVGL lock 内） */
-static void term_draw_line(const char *text, int y)
-{
-    if (text[0] == '\0') return;
-
-    lv_layer_t layer;
-    lv_canvas_init_layer(s_term_canvas, &layer);
-    lv_draw_label_dsc_t dsc;
-    lv_draw_label_dsc_init(&dsc);
-    dsc.font = &lv_font_montserrat_12;
-    dsc.color = lv_color_hex(0x1F2937);
-    dsc.text = text;
-    lv_area_t coords = { 4, y, SCREEN_W - 4, y + TERM_LINE_H - 1 };
-    lv_draw_label(&layer, &dsc, &coords);
-    /* finish_layer 内部会 lv_obj_invalidate(canvas) 全幅失效——抑制后手动精确失效 */
-    lv_display_enable_invalidation(lv_display_get_default(), false);
-    lv_canvas_finish_layer(s_term_canvas, &layer);
-    lv_display_enable_invalidation(lv_display_get_default(), true);
-}
-
-/* 位图窗口上移 n 行（锁外：纯内存操作）。
- * 注意：n 可能超过窗口行数（一批多行），此时窗口直接清空重来 */
-static void term_scroll(int n)
-{
-    size_t row_bytes = (size_t)SCREEN_W * 2;
-    size_t win_h = (size_t)TERM_VISIBLE_MAX * TERM_LINE_H;
-    if (n >= TERM_VISIBLE_MAX) {
-        memset(s_term_buf, 0xFF, win_h * row_bytes);
-        return;
-    }
-    size_t rows = (size_t)n * TERM_LINE_H;
-    memmove(s_term_buf, s_term_buf + rows * row_bytes, (win_h - rows) * row_bytes);
-    memset(s_term_buf + (win_h - rows) * row_bytes, 0xFF, rows * row_bytes);
-}
-
-/* 更新右侧滚动指示条（锁内） */
-static void term_update_scrollbar(void)
-{
-    int max_top = s_row_count - TERM_VISIBLE_MAX;
-    if (max_top <= 0 || s_row_count <= TERM_VISIBLE_MAX) {
-        lv_obj_add_flag(s_scrollbar, LV_OBJ_FLAG_HIDDEN);
-        return;
-    }
-    lv_obj_clear_flag(s_scrollbar, LV_OBJ_FLAG_HIDDEN);
-    int vis_h = TERM_VISIBLE_MAX * TERM_LINE_H;
-    int thumb_h = vis_h * vis_h / (s_row_count * TERM_LINE_H);
-    if (thumb_h < 8) thumb_h = 8;
-    if (thumb_h > vis_h) thumb_h = vis_h;
-    int y = (vis_h - thumb_h) * s_view_top / max_top;
-    lv_obj_set_size(s_scrollbar, 4, thumb_h);
-    lv_obj_set_pos(s_scrollbar, SCREEN_W - 4, y);
-}
-
-/* 锁内：从 s_hist 全量重绘可见窗口（最近 TERM_VISIBLE_MAX 行）。
- * 不用 memmove 增量：memmove 改变整个窗口内容，必须全量重绘才正确。
- * 文本源唯一（s_hist），无跨批状态。 */
-static void term_render(void)
-{
-    int n = s_new_lines;
-    if (n <= 0) return;
-
-    memset(s_term_buf, 0xFF, (size_t)SCREEN_W * TERM_VISIBLE_MAX * TERM_LINE_H * 2);
-    int start = s_row_count - TERM_VISIBLE_MAX;
-    if (start < 0) start = 0;
-    for (int k = 0; k < TERM_VISIBLE_MAX; k++) {
-        if (start + k >= s_row_count) break;
-        term_draw_line(s_hist[(start + k) % TERM_HISTORY_MAX], k * TERM_LINE_H);
-    }
-    lv_obj_invalidate(s_term_canvas);
-
-    s_new_lines = 0;
-    s_view_top = s_row_count - TERM_VISIBLE_MAX;
-    if (s_view_top < 0) s_view_top = 0;
-    term_update_scrollbar();
-}
-
-/* 从文本历史重绘整个可见窗口（触摸滚动历史时调用，LVGL lock 内） */
-static void term_redraw_window(void)
-{
-    memset(s_term_buf, 0xFF, (size_t)SCREEN_W * TERM_VISIBLE_MAX * TERM_LINE_H * 2);
-    for (int k = 0; k < TERM_VISIBLE_MAX; k++) {
-        int row = s_view_top + k;
-        if (row < 0 || row >= s_row_count) continue;
-        term_draw_line(s_hist[row % TERM_HISTORY_MAX], k * TERM_LINE_H);
-    }
-    lv_obj_invalidate(s_term_canvas);
-    term_update_scrollbar();
-}
-
-/* 触摸拖动查看历史（canvas 事件，LVGL 线程内） */
-/* 触摸拖动查看历史（canvas 事件，LVGL 线程内）。
- * 拖动灵敏度：7px = 1 行（LINE_H/2）。滑到最底部立即恢复跟随。 */
-static void on_term_touch(lv_event_t *e)
-{
-    lv_event_code_t code = lv_event_get_code(e);
-    lv_indev_t *indev = lv_indev_active();
-    if (!indev) return;
-    lv_point_t p;
-    lv_indev_get_point(indev, &p);
-
-    if (code == LV_EVENT_PRESSED) {
-        s_touch_y = p.y;
-    } else if (code == LV_EVENT_PRESSING) {
-        int dy = p.y - s_touch_y;
-        s_touch_y = p.y;
-        s_follow = 0;
-        s_view_top -= dy * 2 / TERM_LINE_H;
-        int max_top = s_row_count - TERM_VISIBLE_MAX;
-        if (max_top < 0) max_top = 0;
-        if (s_view_top < 0) s_view_top = 0;
-        if (s_view_top > max_top) s_view_top = max_top;
-        if (s_view_top >= max_top) s_follow = 1;   /* 滑到底 → 恢复跟随 */
-        term_redraw_window();
-    } else if (code == LV_EVENT_RELEASED) {
-        if (s_view_top >= s_row_count - TERM_VISIBLE_MAX) {
-            s_follow = 1;
-            s_new_lines = 0;
-            term_redraw_window();   /* 回到最新 */
-        }
-    }
-}
-
-/* 完成一行（锁外：只写历史，不碰 LVGL） */
-static void term_newline(void)
-{
-    if (s_cur_len > 0) {
-        memcpy(s_hist[s_row_count % TERM_HISTORY_MAX], s_cur_line, s_cur_len);
-        s_hist[s_row_count % TERM_HISTORY_MAX][s_cur_len] = '\0';
-        s_row_count++;
-        s_new_lines++;
-    }
-    s_cur_len = 0;
-    s_cur_w = 0;
-}
-
-/* 数据逐字符解析（锁外调用：只读字体宽度 + 写历史，不碰 LVGL API） */
-static void term_process(const uint8_t *data, int len)
-{
-    const lv_font_t *font = &lv_font_montserrat_12;
-    for (int i = 0; i < len; i++) {
-        char c = (char)data[i];
-        if (c == '\r') continue;
-        if (c == '\n') {
-            term_newline();
-            continue;
-        }
-        if (c < 0x20) continue;   /* 其他控制字符跳过 */
-        if (s_cur_len >= TERM_CURLINE_MAX) term_newline();
-        uint32_t next = (uint32_t)(unsigned char)data[i + 1];
-        uint16_t w = lv_font_get_glyph_width(font, (uint32_t)(unsigned char)c, next);
-        if (w == 0) continue;
-        if (s_cur_w + (int32_t)w > SCREEN_W - 8) term_newline();
-        s_cur_line[s_cur_len++] = c;
-        s_cur_w += w;
-    }
-}
 
 /* ── FPS 角标 ── */
 
@@ -350,7 +168,7 @@ static void build_ui(void)
     lv_obj_set_style_bg_opa(sep1, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(sep1, 0, 0);
 
-    /* ── Log Container（canvas 终端宿主，触摸拖动查看历史） ── */
+    /* ── Log Container（flow_view 滚动内容流视图） ── */
     int log_h = SCREEN_H - STATUS_BAR_H - SEP_H * 2 - BTN_BAR_H;
     s_log_container = lv_obj_create(scr);
     lv_obj_set_size(s_log_container, SCREEN_W, log_h);
@@ -362,24 +180,8 @@ static void build_ui(void)
     lv_obj_set_style_pad_all(s_log_container, 0, 0);
     lv_obj_clear_flag(s_log_container, LV_OBJ_FLAG_SCROLLABLE);
 
-    s_term_canvas = lv_canvas_create(s_log_container);
-    lv_obj_set_size(s_term_canvas, SCREEN_W, TERM_VISIBLE_MAX * TERM_LINE_H);
-    lv_canvas_set_buffer(s_term_canvas, s_term_buf, SCREEN_W,
-                          TERM_VISIBLE_MAX * TERM_LINE_H, LV_COLOR_FORMAT_RGB565);
-    lv_obj_add_flag(s_term_canvas, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_clear_flag(s_term_canvas, LV_OBJ_FLAG_SCROLLABLE);
-    term_clear();
-    /* 触摸事件：LVGL filter 是单个事件码（不支持位或），用 LV_EVENT_ALL 接收全部 */
-    lv_obj_add_event_cb(s_term_canvas, on_term_touch, LV_EVENT_ALL, NULL);
-
-    /* 右侧滚动指示条 */
-    s_scrollbar = lv_obj_create(s_log_container);
-    lv_obj_set_size(s_scrollbar, 4, 8);
-    lv_obj_set_style_bg_color(s_scrollbar, lv_color_hex(0x9CA3AF), 0);
-    lv_obj_set_style_bg_opa(s_scrollbar, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(s_scrollbar, 0, 0);
-    lv_obj_set_style_radius(s_scrollbar, 2, 0);
-    lv_obj_set_pos(s_scrollbar, SCREEN_W - 4, 0);
+    s_log_view = flow_view_create(s_log_container);
+    lv_obj_align(s_log_view, LV_ALIGN_TOP_LEFT, 0, 0);
 
     /* ── Separator ── */
     lv_obj_t *sep2 = lv_obj_create(scr);
@@ -468,27 +270,16 @@ static void display_task(void *arg)
     disp_item_t item;
 
     while (1) {
-        /* 等待队列数据，短超时以便及时响应按钮和降低显示延迟 */
+        /* 等待队列数据，短超时以便及时响应按钮 */
         int got_data = (xQueueReceive(g_display_queue, &item, pdMS_TO_TICKS(10)) == pdTRUE);
         if (got_data) {
-            /* 数据解析+位图滚动不涉及 LVGL，锁外处理；绘制/失效在锁内 */
+            /* flow_view_append 内部加锁（模型更新），渲染由组件定时器在 LVGL 线程完成 */
             if (item.uart_idx == s_active_uart) {
-                term_process(item.data, item.len);
+                flow_view_append(s_log_view, (const char *)item.data, item.len);
             }
             while (xQueueReceive(g_display_queue, &item, 0) == pdTRUE) {
                 if (item.uart_idx == s_active_uart) {
-                    term_process(item.data, item.len);
-                }
-            }
-            if (s_new_lines > 0) {
-                if (esp_lv_adapter_lock(-1) == ESP_OK) {
-                    if (s_follow) {
-                        term_render();          /* 跟随：显示最新窗口 */
-                    } else {
-                        term_update_scrollbar(); /* 触摸暂停：数据入历史，只更新位置指示 */
-                    }
-                    s_new_lines = 0;
-                    esp_lv_adapter_unlock();
+                    flow_view_append(s_log_view, (const char *)item.data, item.len);
                 }
             }
         }
@@ -496,17 +287,17 @@ static void display_task(void *arg)
         /* 清除通知（按钮回调可能已发出） */
         xTaskNotifyWait(0, 0, NULL, 0);
 
-        /* 处理按钮请求（term_clear 含 LVGL API，必须在 lock 内） */
+        /* 处理按钮请求 */
         int need_status = 0;
         if (s_pending_clear || s_pending_uart_switch) {
             if (esp_lv_adapter_lock(-1) == ESP_OK) {
                 if (s_pending_clear) {
-                    term_clear();
+                    flow_view_clear(s_log_view);
                     need_status = 1;
                 }
                 if (s_pending_uart_switch) {
                     s_active_uart = !s_active_uart;
-                    term_clear();
+                    flow_view_clear(s_log_view);
                     need_status = 1;
                 }
                 if (need_status) update_status_bar();
@@ -594,16 +385,17 @@ void app_display_start(void)
     ESP_ERROR_CHECK(esp_lv_adapter_start());
 
     s_active_uart = 0;
-    s_cur_len = 0;
-    s_cur_w = 0;
 
-    /* canvas 终端位图（12 行窗口）+ 行文本历史放 PSRAM（纯 CPU 访问，无 DMA 限制） */
-    s_term_buf = heap_caps_aligned_alloc(64, (size_t)SCREEN_W * TERM_VISIBLE_MAX * TERM_LINE_H * 2,
-                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    assert(s_term_buf != NULL);
-    s_hist = heap_caps_malloc((size_t)TERM_HISTORY_MAX * (TERM_CURLINE_MAX + 1),
-                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    assert(s_hist != NULL);
+    /* flow_view 内存钩子：位图/行历史放 PSRAM（纯 CPU 访问，无 DMA 限制） */
+    flow_view_malloc = fv_psram_alloc;
+    flow_view_free = heap_caps_free;
+
+    /* flow_view 锁钩子：与 LVGL 渲染共享同一把递归锁 */
+    static const flow_view_lock_t fv_lock_cb = {
+        .lock = fv_acquire,
+        .unlock = esp_lv_adapter_unlock,
+    };
+    flow_view_set_lock(&fv_lock_cb);
 
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
         build_ui();
