@@ -13,7 +13,7 @@
 #include "app_web.h"
 #include "app_display.h"
 #include "drv_sdcard.h"
-#include "app_sdcard.h"
+#include "esp_lv_adapter.h"
 
 static uart_bridge_t s_bridge1 = {
     .port = UART_NUM_1, .tx_pin = 2, .rx_pin = 4,
@@ -54,11 +54,16 @@ void app_main(void)
     app_tcp_start();
 #endif
     app_web_start();
+
+    /* 先建 UI（文件浏览器显示"SD card not ready"），SD 挂载成功后通知刷新。
+     * SD 与 LCD 共享 SPI2 总线：挂载/枚举期间持 LVGL 锁，独占总线防并发 */
     app_display_start();
 
-    /* SD 卡：挂载并自检（串口日志） */
-    if (drv_sdcard_init() == ESP_OK) {
-        app_sdcard_self_test();
+    if (esp_lv_adapter_lock(-1) == ESP_OK) {
+        if (drv_sdcard_init() == ESP_OK) {
+            app_display_notify_sd_ready();
+        }
+        esp_lv_adapter_unlock();
     }
 
     /* 内部 RAM 紧张（显示双缓冲占 ~51KB），任务栈放 PSRAM */

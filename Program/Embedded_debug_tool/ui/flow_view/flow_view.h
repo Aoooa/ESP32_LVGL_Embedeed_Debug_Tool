@@ -70,4 +70,15 @@ void flow_view_go_to(lv_obj_t *obj, int line);               /* 跳转行号（�
 void flow_view_set_font(lv_obj_t *obj, const lv_font_t *font);
 void flow_view_set_color(lv_obj_t *obj, lv_color_t color);
 
+/* 阅读进度：当前窗口起始行 / 允许的最大起始行（max_top<=0 表示无滚动） */
+int flow_view_get_view_top(lv_obj_t *obj);
+int flow_view_get_max_top(lv_obj_t *obj);
+
+/* 动态调整可见行数（阅读器全屏/带栏切换）：重建位图与 canvas，内容保留重绘 */
+void flow_view_set_visible_lines(lv_obj_t *obj, int visible_lines);
+
+/* 点击回调（单击且无滑动时触发，pos 为屏幕坐标；滚动查看不触发）。 */
+typedef void (*flow_view_clicked_cb_t)(void *user_data, lv_point_t pos);
+void flow_view_set_clicked_cb(lv_obj_t *obj, flow_view_clicked_cb_t cb, void *user_data);
+
 #endif /* FLOW_VIEW_H */

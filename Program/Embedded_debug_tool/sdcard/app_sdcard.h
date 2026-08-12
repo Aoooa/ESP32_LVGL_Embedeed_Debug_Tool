@@ -3,15 +3,20 @@
 
 /* app_sdcard：SD 卡文件浏览（应用层）。
  *
- * 职责：在 SD 卡已挂载（drv_sdcard_init）后，提供目录浏览能力：
- *   列出目录内容（文件/文件夹名、大小、类型）、进入子目录。
- * 当前通过串口日志输出调试；后续接入 UI 后由本层提供数据。
+ * 职责：在 SD 卡已挂载（drv_sdcard_init）后，提供目录枚举能力，
+ * 供 UI（file_browser）消费。
  */
 
 #include "esp_err.h"
+#include <stdbool.h>
+#include <time.h>
 
-/* 启动自检：挂载后列出根目录，并尝试进入第一个文件夹列出内容。
- * 供启动流程/调试调用。 */
-esp_err_t app_sdcard_self_test(void);
+/* 目录条目回调：枚举时逐项调用（name 不含路径，不含 "." / ".."；
+ * mtime 为修改时间（FAT 时间），排序用 */
+typedef void (*app_sdcard_dir_cb_t)(void *ctx, const char *name, bool is_dir,
+                                    long size, time_t mtime);
+
+/* 枚举目录内容（非递归），逐项回调。返回 ESP_OK 或 ESP_FAIL。 */
+esp_err_t app_sdcard_list_dir(const char *path, app_sdcard_dir_cb_t cb, void *ctx);
 
 #endif /* APP_SDCARD_H */

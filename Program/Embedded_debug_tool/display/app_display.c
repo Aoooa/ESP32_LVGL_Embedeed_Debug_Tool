@@ -3,12 +3,19 @@
 #include "app_uart.h"
 #include "esp_lv_adapter.h"
 #include "flow_view.h"
+#include "file_browser.h"
+#include "app_font.h"
 #include "lvgl.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include <stdio.h>
 #include <string.h>
+
+/* ── 界面开关（代码保留，宏控制） ── */
+#ifndef APP_UI_TERMINAL_ENABLED
+#define APP_UI_TERMINAL_ENABLED 0   /* 1=串口终端界面，0=SD 文件浏览器 */
+#endif
 
 static const char *TAG = "app_display";
 
@@ -45,7 +52,7 @@ static lv_obj_t *s_status_info;
 static lv_obj_t *s_status_state;
 static lv_obj_t *s_log_container;
 static lv_obj_t *s_log_view;
-static lv_obj_t *s_fps_label;
+static lv_obj_t *s_file_browser;
 static lv_obj_t *s_btn_uart;
 static lv_obj_t *s_btn_pause;
 static lv_obj_t *s_btn_pause_lbl;
@@ -55,6 +62,7 @@ static lv_obj_t *s_btn_clear;
 
 static void update_status_bar(void)
 {
+#if APP_UI_TERMINAL_ENABLED
     uart_bridge_t *br = g_bridges[s_active_uart];
 
     lv_obj_set_style_bg_color(s_status_dot,
@@ -69,19 +77,6 @@ static void update_status_bar(void)
 
     lv_label_set_text(s_status_state, br->paused ? "PAUSED" : "RUN");
     lv_label_set_text(s_btn_pause_lbl, br->paused ? "Resume" : "Pause");
-}
-
-
-/* ── FPS 角标 ── */
-
-static void fps_timer_cb(lv_timer_t *timer)
-{
-    (void)timer;
-#if CONFIG_ESP_LVGL_ADAPTER_ENABLE_FPS_STATS
-    uint32_t fps = 0;
-    if (esp_lv_adapter_get_fps(NULL, &fps) == ESP_OK) {
-        lv_label_set_text_fmt(s_fps_label, "%lu FPS", (unsigned long)fps);
-    }
 #endif
 }
 
@@ -114,6 +109,7 @@ static void on_btn_clear(lv_event_t *e)
 static void build_ui(void)
 {
     lv_obj_t *scr = lv_screen_active();
+#if APP_UI_TERMINAL_ENABLED
     lv_obj_set_style_bg_color(scr, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_set_flex_flow(scr, LV_FLEX_FLOW_COLUMN);
@@ -249,17 +245,12 @@ static void build_ui(void)
     lv_obj_center(lbl_clear);
     lv_obj_add_event_cb(s_btn_clear, on_btn_clear, LV_EVENT_CLICKED, NULL);
 
-    /* ── FPS 角标（日志区右上角，1Hz 刷新） ── */
-    s_fps_label = lv_label_create(scr);
-    lv_label_set_text(s_fps_label, "");
-    lv_obj_add_flag(s_fps_label, LV_OBJ_FLAG_IGNORE_LAYOUT);   /* 不被 flex 布局移动 */
-    lv_obj_set_style_text_color(s_fps_label, lv_color_hex(0x9CA3AF), 0);
-    lv_obj_set_style_text_font(s_fps_label, &lv_font_montserrat_10, 0);
-    lv_obj_set_style_bg_color(s_fps_label, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_bg_opa(s_fps_label, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_hor(s_fps_label, 2, 0);
-    lv_obj_set_pos(s_fps_label, SCREEN_W - 60, STATUS_BAR_H + SEP_H + 4);
-    lv_timer_create(fps_timer_cb, 1000, NULL);
+#else
+    /* SD 文件浏览器界面（终端 UI 代码保留，由宏控制切换） */
+    lv_obj_set_style_bg_color(scr, lv_color_hex(0x111827), 0);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+    s_file_browser = file_browser_create(scr);
+#endif
 }
 
 /* ── Display Task: 收到数据立刻刷新 ── */
@@ -273,6 +264,7 @@ static void display_task(void *arg)
         /* 等待队列数据，短超时以便及时响应按钮 */
         int got_data = (xQueueReceive(g_display_queue, &item, pdMS_TO_TICKS(10)) == pdTRUE);
         if (got_data) {
+#if APP_UI_TERMINAL_ENABLED
             /* flow_view_append 内部加锁（模型更新），渲染由组件定时器在 LVGL 线程完成 */
             if (item.uart_idx == s_active_uart) {
                 flow_view_append(s_log_view, (const char *)item.data, item.len);
@@ -282,11 +274,13 @@ static void display_task(void *arg)
                     flow_view_append(s_log_view, (const char *)item.data, item.len);
                 }
             }
+#endif
         }
 
         /* 清除通知（按钮回调可能已发出） */
         xTaskNotifyWait(0, 0, NULL, 0);
 
+#if APP_UI_TERMINAL_ENABLED
         /* 处理按钮请求 */
         int need_status = 0;
         if (s_pending_clear || s_pending_uart_switch) {
@@ -307,6 +301,7 @@ static void display_task(void *arg)
 
         s_pending_clear = 0;
         s_pending_uart_switch = 0;
+#endif
     }
 }
 
@@ -372,10 +367,6 @@ void app_display_start(void)
     }
     assert(lv_disp != NULL);
 
-#if CONFIG_ESP_LVGL_ADAPTER_ENABLE_FPS_STATS
-    ESP_ERROR_CHECK(esp_lv_adapter_fps_stats_enable(lv_disp, true));
-#endif
-
     esp_lv_adapter_touch_config_t tp_cfg =
         ESP_LV_ADAPTER_TOUCH_DEFAULT_CONFIG(lv_disp, disp.touch);
     tp_cfg.callbacks.custom_touch_read = touch_rotated_read;
@@ -399,7 +390,9 @@ void app_display_start(void)
 
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
         build_ui();
+#if APP_UI_TERMINAL_ENABLED
         update_status_bar();
+#endif
         esp_lv_adapter_unlock();
     }
 
@@ -425,4 +418,30 @@ void app_display_notify_status(void)
         update_status_bar();
         esp_lv_adapter_unlock();
     }
+}
+
+/* SD 挂载后异步加载中文字体（LVGL 线程执行，加载完成后重绘列表显示中文） */
+static void sd_font_retry_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    app_font_retry();
+    app_font_get(16);
+    file_browser_refresh(s_file_browser);
+}
+
+void app_display_notify_sd_ready(void)
+{
+#if !APP_UI_TERMINAL_ENABLED
+    if (esp_lv_adapter_lock(-1) == ESP_OK) {
+        /* 列表先刷新可用（"SD not ready"立即消失）；
+         * 字体 2.3MB 从 SD 读取较慢，移到 LVGL 定时器异步加载，不阻塞本锁 */
+        file_browser_refresh(s_file_browser);
+        lv_timer_t *t = lv_timer_create(sd_font_retry_timer_cb, 1, NULL);
+        lv_timer_set_repeat_count(t, 1);
+        lv_timer_set_auto_delete(t, true);
+        esp_lv_adapter_unlock();
+    }
+#else
+    (void)0;
+#endif
 }

@@ -223,6 +223,10 @@
         #ifndef LV_MEM_POOL_ALLOC
             #ifdef CONFIG_LV_MEM_POOL_ALLOC
                 #define LV_MEM_POOL_ALLOC CONFIG_LV_MEM_POOL_ALLOC
+            #elif defined(ESP_PLATFORM)
+                /* ESP-IDF：LVGL 内存池分配在 PSRAM（中文字体位图需数百 KB，内部 RAM 不足） */
+                #include "esp_heap_caps.h"
+                #define LV_MEM_POOL_ALLOC(size) heap_caps_malloc((size), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
             #else
                 #undef LV_MEM_POOL_ALLOC
             #endif

@@ -15,6 +15,9 @@ idf_component_register(
         "${MODULE_DIR}/display/app_display.c"
         "${MODULE_DIR}/ui/flow_view/flow_model.c"
         "${MODULE_DIR}/ui/flow_view/flow_view.c"
+        "${MODULE_DIR}/ui/file_browser/file_browser.c"
+        "${MODULE_DIR}/ui/font_manager/app_font.c"
+        "${MODULE_DIR}/fonts/han_sc_16.c"
         "${MODULE_DIR}/sdcard/drv_sdcard.c"
         "${MODULE_DIR}/sdcard/app_sdcard.c"
 
@@ -26,6 +29,8 @@ idf_component_register(
         "${MODULE_DIR}/web"
         "${MODULE_DIR}/display"
         "${MODULE_DIR}/ui/flow_view"
+        "${MODULE_DIR}/ui/file_browser"
+        "${MODULE_DIR}/ui/font_manager"
         "${MODULE_DIR}/sdcard"
 
     PRIV_REQUIRES

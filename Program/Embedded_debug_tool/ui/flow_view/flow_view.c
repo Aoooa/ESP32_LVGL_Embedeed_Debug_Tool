@@ -4,6 +4,7 @@
 #include "core/lv_obj_private.h"
 #include "core/lv_obj_class_private.h"
 #include "misc/lv_timer_private.h"
+#include "esp_log.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -46,7 +47,10 @@ typedef struct {
     const lv_font_t *font;
     lv_color_t color;
     int line_h;                   /* 行高（默认宏，须与字体匹配） */
+    int offset_px;                /* 像素级滚动偏移（0..max_px），平滑滚动 */
     int touch_y;                  /* 触摸跟踪 */
+    flow_view_clicked_cb_t clicked_cb;
+    void *clicked_user_data;
     bool redraw_pending;          /* 外部 API 标记，由刷新定时器消费 */
     lv_timer_t *refresh_timer;
 } flow_view_t;
@@ -92,11 +96,16 @@ static void fv_draw_line(flow_view_t *v, const char *text, uint8_t style, int y)
     lv_display_enable_invalidation(lv_obj_get_display(v->canvas), true);
 }
 
+static int fv_max_px(const flow_view_t *v)
+{
+    return flow_model_max_top(&v->model) * v->line_h;
+}
+
 /* 更新右侧滚动指示条（必须在 LVGL 锁内） */
 static void fv_update_scrollbar(flow_view_t *v)
 {
-    int max_top = flow_model_max_top(&v->model);
-    if (max_top <= 0) {
+    int max_px = fv_max_px(v);
+    if (max_px <= 0) {
         lv_obj_add_flag(v->scrollbar, LV_OBJ_FLAG_HIDDEN);
         return;
     }
@@ -105,26 +114,36 @@ static void fv_update_scrollbar(flow_view_t *v)
     int thumb_h = vis_h * vis_h / (flow_model_line_count(&v->model) * v->line_h);
     if (thumb_h < 8) thumb_h = 8;
     if (thumb_h > vis_h) thumb_h = vis_h;
-    int y = (vis_h - thumb_h) * flow_model_view_top(&v->model) / max_top;
+    int y = (vis_h - thumb_h) * v->offset_px / max_px;
     lv_obj_set_size(v->scrollbar, 4, thumb_h);
     lv_obj_set_pos(v->scrollbar, lv_obj_get_width(v->canvas) - 4, y);
 }
 
-/* 从模型窗口全量重绘位图（必须在 LVGL 锁内） */
+/* 从模型窗口全量重绘位图（必须在 LVGL 锁内）。
+ * 像素级平滑滚动：起始行 = offset_px/line_h，首行画在负偏移处 */
 static void fv_redraw(flow_view_t *v)
 {
     memset(v->bitmap, 0xFF, (size_t)fv_bitmap_bytes(v));
 
+    int start = v->offset_px / v->line_h;
+    int y0 = -(v->offset_px % v->line_h);
     int visible = v->model.visible_lines;
-    int start = flow_model_view_top(&v->model);
-    for (int k = 0; k < visible; k++) {
+    for (int k = 0; k < visible + 1; k++) {
         int row = start + k;
         if (row >= flow_model_line_count(&v->model)) break;
+        int y = y0 + k * v->line_h;
+        if (y + v->line_h <= 0) continue;   /* 顶部移出的行跳过 */
         fv_draw_line(v, flow_model_line(&v->model, row),
-                     flow_model_style(&v->model, row), k * v->line_h);
+                     flow_model_style(&v->model, row), y);
     }
     lv_obj_invalidate(v->canvas);
     fv_update_scrollbar(v);
+}
+
+/* 像素偏移 → 同步模型行号（进度/滚动条换算用） */
+static void fv_sync_row(flow_view_t *v)
+{
+    flow_model_set_view_top(&v->model, v->offset_px / v->line_h);
 }
 
 /* ── 刷新定时器（LVGL 线程内运行，统一渲染） ── */
@@ -138,7 +157,8 @@ static void fv_timer_cb(lv_timer_t *timer)
     v->redraw_pending = false;
 
     if (flow_model_is_following(&v->model)) {
-        flow_model_set_view_top(&v->model, flow_model_max_top(&v->model));
+        v->offset_px = fv_max_px(v);
+        fv_sync_row(v);
     }
     fv_redraw(v);
 }
@@ -161,15 +181,21 @@ static void fv_canvas_event(lv_event_t *e)
     } else if (code == LV_EVENT_PRESSING) {
         int dy = p.y - v->touch_y;
         v->touch_y = p.y;
-        flow_model_set_follow(&v->model, false);   /* 触摸即暂停跟随（滑到底时由 set_view_top 恢复） */
-        flow_model_set_view_top(&v->model,
-                                flow_model_view_top(&v->model) - dy * 2 / v->line_h);
+        int max_px = fv_max_px(v);
+        v->offset_px -= dy;   /* 1:1 跟手 */
+        if (v->offset_px < 0) v->offset_px = 0;
+        if (v->offset_px > max_px) v->offset_px = max_px;
+        flow_model_set_follow(&v->model, v->offset_px >= max_px);
+        fv_sync_row(v);
         fv_redraw(v);
     } else if (code == LV_EVENT_RELEASED) {
-        if (flow_model_view_top(&v->model) >= flow_model_max_top(&v->model)) {
+        if (v->offset_px >= fv_max_px(v)) {
             flow_model_set_follow(&v->model, true);
             v->redraw_pending = true;
         }
+    } else if (code == LV_EVENT_CLICKED) {
+        /* 单击（无滑动）：触发点击回调（带屏幕坐标） */
+        if (v->clicked_cb) v->clicked_cb(v->clicked_user_data, p);
     }
 }
 
@@ -183,6 +209,7 @@ static void fv_constructor(const lv_obj_class_t *class_p, lv_obj_t *obj)
     v->font = &lv_font_montserrat_12;
     v->color = lv_color_hex(0x1F2937);
     v->line_h = FLOW_VIEW_LINE_HEIGHT_DEF;
+    v->offset_px = 0;
     v->touch_y = 0;
     v->redraw_pending = false;
     v->refresh_timer = NULL;
@@ -287,6 +314,7 @@ void flow_view_load_text(lv_obj_t *obj, const char *text)
     fv_lock();
     if (v->model.lines) {
         flow_model_load_text(&v->model, text);
+        v->offset_px = 0;
         v->redraw_pending = true;
     }
     fv_unlock();
@@ -298,6 +326,7 @@ void flow_view_clear(lv_obj_t *obj)
     fv_lock();
     if (v->model.lines) {
         flow_model_clear(&v->model);
+        v->offset_px = 0;
         v->redraw_pending = true;
     }
     fv_unlock();
@@ -342,6 +371,7 @@ void flow_view_set_max_lines(lv_obj_t *obj, int max_lines)
         flow_model_init(&v->model, lines, styles, max_lines,
                         v->model.visible_lines,
                         lv_obj_get_width(v->canvas) - 8, fv_glyph_w, (void *)v->font);
+        v->offset_px = 0;
         v->redraw_pending = true;
     } else {
         flow_view_free(lines);
@@ -364,7 +394,9 @@ void flow_view_go_to(lv_obj_t *obj, int line)
     flow_view_t *v = (flow_view_t *)obj;
     fv_lock();
     if (v->model.lines) {
+        flow_model_set_follow(&v->model, false);   /* 主动跳转：退出跟随，否则滑到底后会被拉回 */
         flow_model_set_view_top(&v->model, line);
+        v->offset_px = flow_model_view_top(&v->model) * v->line_h;
         v->redraw_pending = true;
     }
     fv_unlock();
@@ -376,7 +408,9 @@ void flow_view_set_font(lv_obj_t *obj, const lv_font_t *font)
     fv_lock();
     if (v->model.lines && font) {
         v->font = font;
+        v->line_h = lv_font_get_line_height(font);   /* 行高随字体（中文行高更大） */
         v->model.glyph_ctx = (void *)font;
+        v->offset_px = flow_model_view_top(&v->model) * v->line_h;   /* 按行号保持阅读位置 */
         v->redraw_pending = true;
     }
     fv_unlock();
@@ -390,5 +424,59 @@ void flow_view_set_color(lv_obj_t *obj, lv_color_t color)
         v->color = color;
         v->redraw_pending = true;
     }
+    fv_unlock();
+}
+
+int flow_view_get_view_top(lv_obj_t *obj)
+{
+    flow_view_t *v = (flow_view_t *)obj;
+    fv_lock();
+    int top = v->model.lines ? flow_model_view_top(&v->model) : 0;
+    fv_unlock();
+    return top;
+}
+
+int flow_view_get_max_top(lv_obj_t *obj)
+{
+    flow_view_t *v = (flow_view_t *)obj;
+    fv_lock();
+    int max = v->model.lines ? flow_model_max_top(&v->model) : 0;
+    fv_unlock();
+    return max;
+}
+
+void flow_view_set_visible_lines(lv_obj_t *obj, int visible_lines)
+{
+    flow_view_t *v = (flow_view_t *)obj;
+    fv_lock();
+    if (!v->model.lines || visible_lines < 1) {
+        fv_unlock();
+        return;
+    }
+    int w = lv_obj_get_width(v->canvas);
+    int h = visible_lines * v->line_h;
+    uint8_t *buf = flow_view_malloc((size_t)w * h * 2);
+    if (!buf) {
+        fv_unlock();
+        return;
+    }
+    memset(buf, 0xFF, (size_t)w * h * 2);
+    flow_view_free(v->bitmap);
+    v->bitmap = buf;
+    v->model.visible_lines = visible_lines;
+    v->offset_px = 0;
+    lv_obj_set_size(v->canvas, w, h);
+    lv_canvas_set_buffer(v->canvas, buf, w, h, LV_COLOR_FORMAT_RGB565);
+    lv_obj_set_size(obj, w, h);   /* 对象尺寸与位图一致，消除底部空余 */
+    v->redraw_pending = true;
+    fv_unlock();
+}
+
+void flow_view_set_clicked_cb(lv_obj_t *obj, flow_view_clicked_cb_t cb, void *user_data)
+{
+    flow_view_t *v = (flow_view_t *)obj;
+    fv_lock();
+    v->clicked_cb = cb;
+    v->clicked_user_data = user_data;
     fv_unlock();
 }
