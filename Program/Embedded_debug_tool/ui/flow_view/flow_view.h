@@ -81,4 +81,8 @@ void flow_view_set_visible_lines(lv_obj_t *obj, int visible_lines);
 typedef void (*flow_view_clicked_cb_t)(void *user_data, lv_point_t pos);
 void flow_view_set_clicked_cb(lv_obj_t *obj, flow_view_clicked_cb_t cb, void *user_data);
 
+/* 滚动位置回调（offset_px 变化时，硬件 0x37 滚动同步用） */
+typedef void (*flow_view_scroll_cb_t)(void *user_data, int offset_px);
+void flow_view_set_scroll_cb(lv_obj_t *obj, flow_view_scroll_cb_t cb, void *user_data);
+
 #endif /* FLOW_VIEW_H */

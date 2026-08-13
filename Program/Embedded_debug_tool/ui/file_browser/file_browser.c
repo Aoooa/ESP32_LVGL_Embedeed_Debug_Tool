@@ -3,6 +3,7 @@
 #include "file_browser.h"
 #include "drv_sdcard.h"
 #include "app_sdcard.h"
+#include "drv_display.h"
 #include "flow_view.h"
 #include "app_font.h"
 #include "misc/lv_timer_private.h"
@@ -32,10 +33,17 @@
 #define FB_READER_TITLE_H     28     /* 顶部状态栏高度 */
 
 /* 点击屏幕中心区域（约 120x80）才切换按钮显隐 */
-#define FB_HIDE_X1  100
-#define FB_HIDE_X2  220
-#define FB_HIDE_Y1  80
-#define FB_HIDE_Y2  160
+/* 屏幕尺寸动态化：跟随 LVGL 逻辑分辨率（横竖屏通用） */
+static int fb_screen_w(void)
+{
+    lv_display_t *d = lv_display_get_default();
+    return d ? lv_display_get_horizontal_resolution(d) : 320;
+}
+static int fb_screen_h(void)
+{
+    lv_display_t *d = lv_display_get_default();
+    return d ? lv_display_get_vertical_resolution(d) : 240;
+}
 
 /* 阅读文本行数：canvas 固定全屏行数，按钮栏以覆盖方式遮挡底部文字 */
 #define FB_READER_LINES   17   /* 英文 12px 时的全屏行数（17x14=238px）；中文按行高动态重算 */
@@ -437,6 +445,7 @@ static void fb_open_reader(fb_t *fb, const char *path)
     buf[rd] = '\0';
 
     fb->reader_active = true;
+
     fb->ui_hidden = false;   /* 默认打开上下栏 */
 
     /* 只切换阅读覆盖层，不触碰浏览器对象树；canvas 固定全屏行数 */
@@ -455,7 +464,7 @@ static void fb_open_reader(fb_t *fb, const char *path)
     lv_font_t *cn = app_font_get(16);
     lv_font_t *rf = cn ? cn : &lv_font_montserrat_12;
     flow_view_set_font(fb->reader_view, rf);
-    int lines = (240 + lv_font_get_line_height(rf) - 1) / lv_font_get_line_height(rf);
+    int lines = (fb_screen_h() + lv_font_get_line_height(rf) - 1) / lv_font_get_line_height(rf);
     flow_view_set_visible_lines(fb->reader_view, lines);
 
     flow_view_load_text(fb->reader_view, buf);
@@ -470,6 +479,7 @@ static void fb_open_reader(fb_t *fb, const char *path)
      * 气泡按 0 宽定位会错位到滑动条末尾 */
     lv_obj_update_layout(fb->reader_root);
     fb_update_progress(fb);
+
 }
 
 /* 阅读器关闭后的列表刷新（延迟一帧执行，避免与隐藏同帧重入导致撕裂） */
@@ -515,8 +525,9 @@ static void fb_chrome_anim(fb_t *fb, bool show)
     /* 底部栏：下方滑入/滑出 */
     lv_anim_set_var(&a, fb->reader_bar);
     lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_obj_set_y);
-    lv_anim_set_values(&a, show ? 240 : 240 - FB_READER_BTN_BAR_H - FB_READER_BAR_BOTTOM,
-                       show ? 240 - FB_READER_BTN_BAR_H - FB_READER_BAR_BOTTOM : 240);
+    int sh = fb_screen_h();
+    lv_anim_set_values(&a, show ? sh : sh - FB_READER_BTN_BAR_H - FB_READER_BAR_BOTTOM,
+                       show ? sh - FB_READER_BTN_BAR_H - FB_READER_BAR_BOTTOM : sh);
     if (!show) lv_anim_set_ready_cb(&a, fb_chrome_ready_cb);
     lv_anim_start(&a);
 }
@@ -535,8 +546,8 @@ static void fb_reader_tap_event(void *user_data, lv_point_t pos)
 {
     fb_t *fb = user_data;
     if (!fb || !fb->reader_active) return;
-    if (pos.x < FB_HIDE_X1 || pos.x > FB_HIDE_X2 ||
-        pos.y < FB_HIDE_Y1 || pos.y > FB_HIDE_Y2) {
+    if (pos.x < fb_screen_w() / 3 || pos.x > fb_screen_w() * 2 / 3 ||
+        pos.y < fb_screen_h() / 3 || pos.y > fb_screen_h() * 2 / 3) {
         return;   /* 仅中心区域触发 */
     }
     fb->ui_hidden = !fb->ui_hidden;
@@ -725,7 +736,7 @@ lv_obj_t *file_browser_create(lv_obj_t *parent)
 
     lv_obj_t *btns[3] = { fb->btn_up, fb->btn_root, fb->btn_sort };
     for (int i = 0; i < 3; i++) {
-        lv_obj_set_size(btns[i], 90, 28);
+        lv_obj_set_size(btns[i], (fb_screen_w() - 6 * 2 - 6 * 2) / 3, 28);   /* 屏宽自适应均分（横竖屏通用） */
         lv_obj_set_style_bg_color(btns[i], FB_BTN_BG, 0);
         lv_obj_set_style_bg_opa(btns[i], LV_OPA_COVER, 0);
         lv_obj_set_style_border_color(btns[i], FB_BTN_BORDER, 0);
@@ -778,6 +789,7 @@ lv_obj_t *file_browser_create(lv_obj_t *parent)
 
     fb->btn_reader_up = lv_button_create(fb->reader_title);
     lv_obj_set_size(fb->btn_reader_up, 28, 28);
+    lv_obj_set_ext_click_area(fb->btn_reader_up, 30);   /* 触摸区扩大（屏幕边缘按钮，手指中心偏右点不中） */
     lv_obj_set_flex_flow(fb->btn_reader_up, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(fb->btn_reader_up, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_all(fb->btn_reader_up, 0, 0);
@@ -806,7 +818,7 @@ lv_obj_t *file_browser_create(lv_obj_t *parent)
      * set_pos 而非 align（防布局重算与滑入动画冲突） */
     fb->reader_bar = lv_obj_create(fb->reader_root);
     lv_obj_set_size(fb->reader_bar, lv_pct(100), FB_READER_BTN_BAR_H);
-    lv_obj_set_pos(fb->reader_bar, 0, 240 - FB_READER_BTN_BAR_H - FB_READER_BAR_BOTTOM);
+    lv_obj_set_pos(fb->reader_bar, 0, fb_screen_h() - FB_READER_BTN_BAR_H - FB_READER_BAR_BOTTOM);
     lv_obj_add_flag(fb->reader_bar, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
     lv_obj_set_style_bg_opa(fb->reader_bar, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(fb->reader_bar, 0, 0);

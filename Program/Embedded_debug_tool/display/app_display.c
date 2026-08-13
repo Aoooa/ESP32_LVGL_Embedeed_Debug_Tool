@@ -80,6 +80,23 @@ static void update_status_bar(void)
 #endif
 }
 
+/* ── 硬件滚动接口（保留：驱动层 0x33/0x37 命令；完整滚动（flush 映射）留待未来优化） ──
+ * 注意：需组合 A（硬件竖屏 swap=false）时 0x37 轴 = 屏幕垂直。
+ * app_display_hw_scroll_set：同步 0x37 偏移；app_display_hw_scroll_enable：设置滚动区。
+ * 当前阅读器未启用硬件滚动（软件滚动），接口供后续优化使用。 */
+void app_display_hw_scroll_set(int offset, int height)
+{
+    int h = height > 0 ? height : 240;
+    drv_display_set_scroll_start(offset % h);
+}
+
+void app_display_hw_scroll_enable(bool en)
+{
+    if (en) {
+        drv_display_set_scroll_area(0, 240);
+    }
+}
+
 /* ── Button Callbacks ── */
 
 static void on_btn_uart(lv_event_t *e)
@@ -306,11 +323,10 @@ static void display_task(void *arg)
 }
 
 /*
- * CST816S ignores swap_xy/mirror flags in its get_xy callback,
- * so touch rotation must be done in software. Panel is rotated
- * via swap_xy + mirror_y (=270° CW effective), requiring:
- *   display_x = (V_RES-1) - raw_y
- *   display_y = raw_x
+ * 触摸坐标旋转：CST816S 原始坐标 → LVGL 逻辑坐标。
+ * 按当前 LVGL 分辨率自动选择映射（横竖屏通用）：
+ * - 横屏（320x240）：x = (V_RES-1) - raw_y, y = raw_x（CST816S 竖屏原始坐标旋转）
+ * - 竖屏（240x320）：直连（raw_x, raw_y）
  */
 static esp_err_t touch_rotated_read(esp_lcd_touch_handle_t tp,
                                      esp_lcd_touch_point_data_t *points,
@@ -328,8 +344,16 @@ static esp_err_t touch_rotated_read(esp_lcd_touch_handle_t tp,
 
     if (cnt > 0) {
         *count = 1;
-        points[0].x = (DRV_LCD_V_RES - 1) - raw_y;
-        points[0].y = raw_x;
+        lv_display_t *d = lv_display_get_default();
+        bool landscape = d && lv_display_get_horizontal_resolution(d) > lv_display_get_vertical_resolution(d);
+        if (landscape) {
+            /* 横屏逻辑 + 驱动旋转 270（交叉组合）：LVGL x = (V_RES-1) - raw_y, y = raw_x */
+            points[0].x = (DRV_LCD_V_RES - 1) - raw_y;
+            points[0].y = raw_x;
+        } else {
+            points[0].x = raw_x;
+            points[0].y = raw_y;
+        }
         points[0].strength = 1;
     } else {
         *count = 0;
@@ -351,7 +375,9 @@ void app_display_start(void)
         ESP_LV_ADAPTER_DISPLAY_CONFIG(
             disp.panel, disp.io,
             ESP_LV_ADAPTER_DISPLAY_PROFILE_SPI_WITHOUT_PSRAM_DEFAULT_CONFIG(
-                DRV_LCD_V_RES, DRV_LCD_H_RES, ESP_LV_ADAPTER_ROTATE_0),
+                APP_DISPLAY_ORIENTATION ? DRV_LCD_V_RES : DRV_LCD_H_RES,
+                APP_DISPLAY_ORIENTATION ? DRV_LCD_H_RES : DRV_LCD_V_RES,
+                ESP_LV_ADAPTER_ROTATE_0),
             ESP_LV_ADAPTER_TEAR_AVOID_MODE_NONE,
             ESP_LV_ADAPTER_TE_SYNC_DISABLED());
     /* PSRAM 缓冲会让 spi_master 在 ISR 中分配内部 DMA priv buffer（每次 flush），
@@ -366,6 +392,11 @@ void app_display_start(void)
         lv_disp = esp_lv_adapter_register_display(&disp_cfg);
     }
     assert(lv_disp != NULL);
+
+    /* 编译期方向（宏 APP_DISPLAY_ORIENTATION）：竖屏 = swap(false)，横屏 = swap(true)。
+     * 使用 adapter 原 flush（颜色字节序正确）；注册后重设硬件旋转（adapter 可能 reset panel）。 */
+    drv_display_set_hw_rotation(APP_DISPLAY_ORIENTATION ? true : false, false,
+                                APP_DISPLAY_ORIENTATION ? true : false);
 
     esp_lv_adapter_touch_config_t tp_cfg =
         ESP_LV_ADAPTER_TOUCH_DEFAULT_CONFIG(lv_disp, disp.touch);

@@ -39,4 +39,15 @@ typedef struct {
  */
 void drv_display_init(drv_display_t *disp);
 
+/* ST7789 硬件滚动（纯文字滚动，无需重传全屏） */
+void drv_display_set_scroll_area(int top, int height);  /* 0x33 VSCRDEF */
+void drv_display_set_scroll_start(int line);            /* 0x37 VSCRSADD */
+esp_lcd_panel_io_handle_t drv_display_get_io(void);     /* 直接发命令用 */
+esp_lcd_panel_handle_t drv_display_get_panel(void);     /* 直接写 RAM 用 */
+
+/* 硬件旋转（RAM 布局）：0x37 滚动轴 = RAM 行
+ * swap=true（横屏布局）：RAM 行 = 屏幕水平 → 0x37 水平滚动
+ * swap=false（竖屏布局）：RAM 行 = 屏幕垂直 → 0x37 垂直滚动 */
+void drv_display_set_hw_rotation(bool swap, bool mirror_x, bool mirror_y);
+
 #endif

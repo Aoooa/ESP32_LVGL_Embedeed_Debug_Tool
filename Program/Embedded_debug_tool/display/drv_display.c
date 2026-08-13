@@ -7,9 +7,57 @@
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lcd_panel_st7789.h"
 #include "esp_lcd_touch_cst816s.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
+#include <stdint.h>
+#include <string.h>
 
 static const char *TAG = "drv_display";
+
+/* 全局句柄（滚动/旋转等需要直接操作 io/panel） */
+static drv_display_t s_disp;
+
+/* ST7789 硬件滚动（阅读器纯文字滚动用，无需重传全屏）：
+ * 0x33 VSCRDEF 滚动区（TFA 顶固定 + VSA 滚动区高 + BFA 底固定），
+ * 0x37 VSCRSADD 滚动起始地址（按扫描线，1 行像素粒度） */
+void drv_display_set_scroll_area(int top, int height)
+{
+    uint8_t p[6] = {
+        (uint8_t)(top >> 8), (uint8_t)(top & 0xFF),
+        (uint8_t)(height >> 8), (uint8_t)(height & 0xFF),
+        0, 0
+    };
+    esp_err_t ret = esp_lcd_panel_io_tx_param(s_disp.io, 0x33, p, sizeof(p));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "0x33 tx_param failed: %s", esp_err_to_name(ret));
+    }
+}
+
+void drv_display_set_scroll_start(int line)
+{
+    uint8_t p[2] = { (uint8_t)(line >> 8), (uint8_t)(line & 0xFF) };
+    esp_err_t ret = esp_lcd_panel_io_tx_param(s_disp.io, 0x37, p, sizeof(p));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "0x37 tx_param failed: %s", esp_err_to_name(ret));
+    }
+}
+
+esp_lcd_panel_io_handle_t drv_display_get_io(void)
+{
+    return s_disp.io;
+}
+
+esp_lcd_panel_handle_t drv_display_get_panel(void)
+{
+    return s_disp.panel;
+}
+
+void drv_display_set_hw_rotation(bool swap, bool mirror_x, bool mirror_y)
+{
+    if (!s_disp.panel) return;
+    esp_lcd_panel_swap_xy(s_disp.panel, swap);
+    esp_lcd_panel_mirror(s_disp.panel, mirror_x, mirror_y);
+}
 
 void drv_display_init(drv_display_t *disp)
 {
@@ -58,11 +106,13 @@ void drv_display_init(drv_display_t *disp)
     ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(io_handle, &panel_cfg, &disp->panel));
     ESP_ERROR_CHECK(esp_lcd_panel_reset(disp->panel));
     ESP_ERROR_CHECK(esp_lcd_panel_init(disp->panel));
-    ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(disp->panel, true));
-    ESP_ERROR_CHECK(esp_lcd_panel_mirror(disp->panel, false, true));
+    ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(disp->panel, false));
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(disp->panel, false, false));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(disp->panel, true));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(disp->panel, true));
     ESP_LOGI(TAG, "LCD ST7789 ready: %dx%d", DRV_LCD_H_RES, DRV_LCD_V_RES);
+
+    s_disp = *disp;   /* 全部初始化完成后保存全局句柄（滚动命令用） */
 
     /* I2C 总线 */
     i2c_master_bus_handle_t i2c_bus = NULL;
