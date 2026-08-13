@@ -27,4 +27,7 @@ const char *file_browser_get_current_path(lv_obj_t *obj);
 /* 重新枚举当前目录（SD 挂载完成后调用，刷新列表） */
 void file_browser_refresh(lv_obj_t *obj);
 
+/* 屏幕旋转后重排（list 高度/按钮宽按新分辨率；阅读器打开时重建） */
+void file_browser_relayout(lv_obj_t *obj);
+
 #endif /* FILE_BROWSER_H */

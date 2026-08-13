@@ -141,6 +141,7 @@ typedef struct {
     bool ui_hidden;             /* true=纯阅读（标题栏/底部栏隐藏） */
     bool pending_reader;        /* 待打开的 txt（事件回调置位，定时器执行） */
     char pending_reader_path[FB_PATH_MAX];
+    char reader_path[FB_PATH_MAX];  /* 当前打开的 txt（旋转重建用） */
 } fb_t;
 
 static fb_t *fb_get(lv_obj_t *obj)
@@ -152,6 +153,8 @@ static void fb_item_event(lv_event_t *e);
 static void fb_btn_event(lv_event_t *e);
 static void fb_reader_btn_event(lv_event_t *e);
 static void fb_list_event(lv_event_t *e);
+static void fb_open_reader(fb_t *fb, const char *path);
+static void fb_close_reader(fb_t *fb);
 
 /* ── 导航 ── */
 
@@ -291,6 +294,32 @@ static void fb_refresh(fb_t *fb)
     if (fb->pending_scroll > 0) {
         lv_obj_scroll_to_y(fb->list, fb->pending_scroll, LV_ANIM_OFF);
         fb->pending_scroll = -1;
+    }
+}
+
+/* 屏幕旋转后重排：list 高度/按钮宽按新屏尺寸重算；
+ * 阅读器打开时按新分辨率重建（行数/宽度自适应，滚动位置回到开头） */
+void file_browser_relayout(lv_obj_t *obj)
+{
+    fb_t *fb = fb_get(obj);
+    if (!fb) return;
+
+    /* 强制布局：set_resolution 后 pct(100%) 尺寸惰性未刷新，父高/子宽需先更新 */
+    lv_obj_update_layout(obj);
+
+    lv_obj_t *parent = lv_obj_get_parent(obj);
+    if (parent) {
+        int list_h = lv_obj_get_height(parent) - FB_PATH_LABEL_H - FB_BTN_BAR_H;
+        lv_obj_set_size(fb->list, lv_pct(100), list_h);
+    }
+    int btn_w = (fb_screen_w() - 6 * 2 - 6 * 2) / 3;
+    lv_obj_set_size(fb->btn_up, btn_w, 28);
+    lv_obj_set_size(fb->btn_root, btn_w, 28);
+    lv_obj_set_size(fb->btn_sort, btn_w, 28);
+
+    if (fb->reader_active && fb->reader_path[0]) {
+        fb_close_reader(fb);
+        fb_open_reader(fb, fb->reader_path);
     }
 }
 
@@ -445,6 +474,7 @@ static void fb_open_reader(fb_t *fb, const char *path)
     buf[rd] = '\0';
 
     fb->reader_active = true;
+    strncpy(fb->reader_path, path, sizeof(fb->reader_path) - 1);
 
     fb->ui_hidden = false;   /* 默认打开上下栏 */
 
@@ -464,6 +494,8 @@ static void fb_open_reader(fb_t *fb, const char *path)
     lv_font_t *cn = app_font_get(16);
     lv_font_t *rf = cn ? cn : &lv_font_montserrat_12;
     flow_view_set_font(fb->reader_view, rf);
+    /* 底部栏按当前屏高重新定位（旋转后屏高变化） */
+    lv_obj_set_pos(fb->reader_bar, 0, fb_screen_h() - FB_READER_BTN_BAR_H - FB_READER_BAR_BOTTOM);
     int lines = (fb_screen_h() + lv_font_get_line_height(rf) - 1) / lv_font_get_line_height(rf);
     flow_view_set_visible_lines(fb->reader_view, lines);
 

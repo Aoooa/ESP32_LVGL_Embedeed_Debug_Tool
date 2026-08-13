@@ -39,6 +39,7 @@ static void fv_acquire(void)
 
 /* ── State ── */
 static int s_active_uart;
+static int s_orientation_deg;   /* 当前逻辑方向 0/90/180/270（0=竖屏 240x320） */
 
 /* ── Flags (button callbacks → display_task) ── */
 static volatile int s_pending_clear;
@@ -95,6 +96,41 @@ void app_display_hw_scroll_enable(bool en)
     if (en) {
         drv_display_set_scroll_area(0, 240);
     }
+}
+
+/* ── 运行时旋转（官方路径：LVGL 逻辑分辨率 + 硬件 MADCTL 同向切换） ──
+ * SPI 面板官方不用软件旋转（lv_display_set_rotation 与 adapter 直写 flush 不兼容），
+ * 旋转 = 硬件 MADCTL（esp_lcd_panel_swap_xy/mirror 发 0x36 命令），LVGL 只换分辨率。
+ * 硬件 MADCTL 矩阵（官方 lcd_orientation_helper，绝对标志，基准 0°=竖屏）：
+ *   0°  (F,F,F)    90°  (T,T,F)    180° (F,T,T)    270° (T,F,T)
+ * 调用上下文：LVGL 线程（定时器/事件回调）或持有 esp_lv_adapter_lock。 */
+void app_display_set_rotation(int deg)
+{
+    deg = ((deg % 360) + 360) % 360;
+    if (deg % 90 != 0) {
+        ESP_LOGW(TAG, "invalid rotation %d°, only 0/90/180/270", deg);
+        return;
+    }
+    if (deg == s_orientation_deg) return;
+
+    lv_display_t *disp = lv_display_get_default();
+    if (!disp) return;
+
+    bool swap = (deg == 90 || deg == 270);
+    /* 1. LVGL 逻辑分辨率（SIZE_CHANGED + 全屏重绘由 LVGL 内部处理） */
+    lv_display_set_resolution(disp, swap ? DRV_LCD_V_RES : DRV_LCD_H_RES,
+                              swap ? DRV_LCD_H_RES : DRV_LCD_V_RES);
+    /* 2. 硬件 MADCTL */
+    bool mx = (deg == 90 || deg == 180);
+    bool my = (deg == 180 || deg == 270);
+    drv_display_set_hw_rotation(swap, mx, my);
+    /* 3. UI 重排（list 高度/按钮宽；阅读器按新分辨率重建） */
+    file_browser_relayout(s_file_browser);
+
+    s_orientation_deg = deg;
+    ESP_LOGI(TAG, "orientation %d° (LVGL %dx%d)", deg,
+             (int)lv_display_get_horizontal_resolution(disp),
+             (int)lv_display_get_vertical_resolution(disp));
 }
 
 /* ── Button Callbacks ── */
@@ -324,9 +360,11 @@ static void display_task(void *arg)
 
 /*
  * 触摸坐标旋转：CST816S 原始坐标 → LVGL 逻辑坐标。
- * 按当前 LVGL 分辨率自动选择映射（横竖屏通用）：
- * - 横屏（320x240）：x = (V_RES-1) - raw_y, y = raw_x（CST816S 竖屏原始坐标旋转）
- * - 竖屏（240x320）：直连（raw_x, raw_y）
+ * 4 方向映射（与官方 touch_rotation_helper 矩阵一致，面板 240x320 物理）：
+ *   0°  (240x320 逻辑，硬件竖屏)：直连（已验证）
+ *   90° (320x240 逻辑，硬件 swap+mirror_x)：x=(320-1)-raw_y, y=raw_x（已验证）
+ *   180°：x=(240-1)-raw_x, y=(320-1)-raw_y
+ *   270°：x=raw_y, y=(240-1)-raw_x
  */
 static esp_err_t touch_rotated_read(esp_lcd_touch_handle_t tp,
                                      esp_lcd_touch_point_data_t *points,
@@ -344,15 +382,25 @@ static esp_err_t touch_rotated_read(esp_lcd_touch_handle_t tp,
 
     if (cnt > 0) {
         *count = 1;
-        lv_display_t *d = lv_display_get_default();
-        bool landscape = d && lv_display_get_horizontal_resolution(d) > lv_display_get_vertical_resolution(d);
-        if (landscape) {
-            /* 横屏逻辑 + 驱动旋转 270（交叉组合）：LVGL x = (V_RES-1) - raw_y, y = raw_x */
+        switch (s_orientation_deg) {
+        case 90:
+            /* 实测基准：第一版 (319-raw_y, raw_x) 显示正确但触摸差 180°，
+             * 逻辑坐标翻转修正：x=raw_y, y=(240-1)-raw_x */
+            points[0].x = raw_y;
+            points[0].y = (DRV_LCD_H_RES - 1) - raw_x;
+            break;
+        case 180:
+            points[0].x = (DRV_LCD_H_RES - 1) - raw_x;
+            points[0].y = (DRV_LCD_V_RES - 1) - raw_y;
+            break;
+        case 270:
             points[0].x = (DRV_LCD_V_RES - 1) - raw_y;
             points[0].y = raw_x;
-        } else {
+            break;
+        default:   /* 0°：竖屏直连 */
             points[0].x = raw_x;
             points[0].y = raw_y;
+            break;
         }
         points[0].strength = 1;
     } else {
@@ -374,9 +422,11 @@ void app_display_start(void)
     esp_lv_adapter_display_config_t disp_cfg =
         ESP_LV_ADAPTER_DISPLAY_CONFIG(
             disp.panel, disp.io,
+            /* 固定注册 320x240（宽=320）：draw buffer 320x40 双缓冲，
+             * partial tile 按 area 宽动态 reshape，横竖方向均不越界。
+             * 内部 RAM = 320x40x2x2 = 51.2KB（组合 B 横屏已实测可运行） */
             ESP_LV_ADAPTER_DISPLAY_PROFILE_SPI_WITHOUT_PSRAM_DEFAULT_CONFIG(
-                APP_DISPLAY_ORIENTATION ? DRV_LCD_V_RES : DRV_LCD_H_RES,
-                APP_DISPLAY_ORIENTATION ? DRV_LCD_H_RES : DRV_LCD_V_RES,
+                DRV_LCD_V_RES, DRV_LCD_H_RES,
                 ESP_LV_ADAPTER_ROTATE_0),
             ESP_LV_ADAPTER_TEAR_AVOID_MODE_NONE,
             ESP_LV_ADAPTER_TE_SYNC_DISABLED());
@@ -393,10 +443,10 @@ void app_display_start(void)
     }
     assert(lv_disp != NULL);
 
-    /* 编译期方向（宏 APP_DISPLAY_ORIENTATION）：竖屏 = swap(false)，横屏 = swap(true)。
-     * 使用 adapter 原 flush（颜色字节序正确）；注册后重设硬件旋转（adapter 可能 reset panel）。 */
-    drv_display_set_hw_rotation(APP_DISPLAY_ORIENTATION ? true : false, false,
-                                APP_DISPLAY_ORIENTATION ? true : false);
+    /* 初始方向：竖屏（逻辑 240x320 + 硬件 MADCTL 0°，与注册的 320x240 交换） */
+    lv_display_set_resolution(lv_disp, DRV_LCD_H_RES, DRV_LCD_V_RES);
+    drv_display_set_hw_rotation(false, false, false);
+    s_orientation_deg = 0;
 
     esp_lv_adapter_touch_config_t tp_cfg =
         ESP_LV_ADAPTER_TOUCH_DEFAULT_CONFIG(lv_disp, disp.touch);
@@ -433,6 +483,7 @@ void app_display_start(void)
         ESP_LOGE(TAG, "disp_task create FAILED, free heap=%u",
                  (unsigned)esp_get_free_heap_size());
     }
+
     ESP_LOGI(TAG, "Serial monitor UI ready");
 }
 
