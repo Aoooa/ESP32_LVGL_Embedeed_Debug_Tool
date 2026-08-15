@@ -5,6 +5,7 @@
 #include "core/lv_obj_class_private.h"
 #include "misc/lv_timer_private.h"
 #include "esp_log.h"
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -59,6 +60,8 @@ typedef struct {
     void *scroll_user_data;
     bool redraw_pending;          /* 外部 API 标记，由刷新定时器消费 */
     lv_timer_t *refresh_timer;
+    flow_view_line_provider_t provider;   /* 外部行数据源（阅读器大文件模式） */
+    void *provider_ctx;
 } flow_view_t;
 
 #define MY_CLASS (&flow_view_class)
@@ -79,11 +82,42 @@ static int fv_bitmap_bytes(const flow_view_t *v)
     return w * h * 2;
 }
 
+/* 数据源就绪：内部 model 或外部 provider 任一可用（位图必须已分配） */
+static bool fv_ready(const flow_view_t *v)
+{
+    return v->bitmap && (v->model.lines || v->provider.count);
+}
+
+/* 行数：provider 优先（内部 model 模式行为不变） */
+static int fv_line_count(const flow_view_t *v)
+{
+    if (v->provider.count) return v->provider.count(v->provider_ctx);
+    return flow_model_line_count(&v->model);
+}
+
+/* 允许的最大起始行 */
+static int fv_max_top(const flow_view_t *v)
+{
+    int max = fv_line_count(v) - v->model.visible_lines;
+    return max > 0 ? max : 0;
+}
+
+/* 取行文本（provider 返回 NULL 时由 fv_draw_line 渲染占位符） */
+static const char *fv_line_text(flow_view_t *v, int row, uint8_t *style)
+{
+    if (v->provider.count) {
+        return v->provider.line(v->provider_ctx, row, style);
+    }
+    if (style) *style = flow_model_style(&v->model, row);
+    return flow_model_line(&v->model, row);
+}
+
 /* 把一行文本绘制到位图的 y 行（必须在 LVGL 锁内） */
 static void fv_draw_line(flow_view_t *v, const char *text, uint8_t style, int y)
 {
     (void)style;   /* 样式表预留：后续按 style 选择前景色/图标 */
 
+    if (!text) text = "...";   /* 外部数据源未命中：占位符 */
     if (text[0] == '\0') return;
 
     lv_layer_t layer;
@@ -104,7 +138,9 @@ static void fv_draw_line(flow_view_t *v, const char *text, uint8_t style, int y)
 
 static int fv_max_px(const flow_view_t *v)
 {
-    return flow_model_max_top(&v->model) * v->line_h;
+    int max = fv_max_top(v);
+    if (max > INT32_MAX / v->line_h) return INT32_MAX;   /* 超大文件防溢出 */
+    return max * v->line_h;
 }
 
 /* 更新右侧滚动指示条（必须在 LVGL 锁内） */
@@ -117,7 +153,7 @@ static void fv_update_scrollbar(flow_view_t *v)
     }
     lv_obj_clear_flag(v->scrollbar, LV_OBJ_FLAG_HIDDEN);
     int vis_h = lv_obj_get_height(v->canvas);
-    int thumb_h = vis_h * vis_h / (flow_model_line_count(&v->model) * v->line_h);
+    int thumb_h = vis_h * vis_h / (fv_line_count(v) * v->line_h);
     if (thumb_h < 8) thumb_h = 8;
     if (thumb_h > vis_h) thumb_h = vis_h;
     int y = (vis_h - thumb_h) * v->offset_px / max_px;
@@ -136,11 +172,11 @@ static void fv_full_redraw(flow_view_t *v)
     int visible = v->model.visible_lines;
     for (int k = 0; k < visible + 1; k++) {
         int row = start + k;
-        if (row >= flow_model_line_count(&v->model)) break;
+        if (row >= fv_line_count(v)) break;
         int y = y0 + k * v->line_h;
         if (y + v->line_h <= 0) continue;   /* 顶部移出的行跳过 */
-        fv_draw_line(v, flow_model_line(&v->model, row),
-                     flow_model_style(&v->model, row), y);
+        uint8_t st = 0;
+        fv_draw_line(v, fv_line_text(v, row, &st), st, y);
     }
     lv_obj_invalidate(v->canvas);
     fv_update_scrollbar(v);
@@ -153,12 +189,12 @@ static void fv_draw_rows_in(flow_view_t *v, int y0, int y1)
     int first_y = -(v->offset_px % v->line_h);
     for (int k = 0; k < v->model.visible_lines + 1; k++) {
         int row = start + k;
-        if (row >= flow_model_line_count(&v->model)) break;
+        if (row >= fv_line_count(v)) break;
         int y = first_y + k * v->line_h;
         if (y + v->line_h <= y0) continue;      /* 完全在区域上方 */
         if (y > y1) break;                      /* 完全在区域下方 */
-        fv_draw_line(v, flow_model_line(&v->model, row),
-                     flow_model_style(&v->model, row), y);
+        uint8_t st = 0;
+        fv_draw_line(v, fv_line_text(v, row, &st), st, y);
     }
 }
 
@@ -196,10 +232,16 @@ static void fv_redraw(flow_view_t *v)
     fv_update_scrollbar(v);
 }
 
-/* 像素偏移 → 同步模型行号（进度/滚动条换算用） */
+/* 像素偏移 → 同步模型行号（进度/滚动条换算用）。
+ * 直接写 view_top：内部 model 在 provider 模式下行数为 0，其钳制会使
+ * 滚动位置恒为 0 */
 static void fv_sync_row(flow_view_t *v)
 {
-    flow_model_set_view_top(&v->model, v->offset_px / v->line_h);
+    int top = v->offset_px / v->line_h;
+    int max = fv_max_top(v);
+    if (top < 0) top = 0;
+    if (top > max) top = max;
+    v->model.view_top = top;
     if (v->scroll_cb) v->scroll_cb(v->scroll_user_data, v->offset_px);
 }
 
@@ -208,7 +250,7 @@ static void fv_sync_row(flow_view_t *v)
 static void fv_timer_cb(lv_timer_t *timer)
 {
     flow_view_t *v = timer->user_data;
-    if (!v->model.lines) return;   /* 构造分配失败：组件不可用 */
+    if (!fv_ready(v)) return;   /* 构造分配失败：组件不可用 */
 
     if (!v->redraw_pending) return;
     v->redraw_pending = false;
@@ -226,7 +268,7 @@ static void fv_timer_cb(lv_timer_t *timer)
 static void fv_canvas_event(lv_event_t *e)
 {
     flow_view_t *v = lv_event_get_user_data(e);
-    if (!v->model.lines) return;   /* 构造分配失败：组件不可用 */
+    if (!fv_ready(v)) return;   /* 构造分配失败：组件不可用 */
     lv_event_code_t code = lv_event_get_code(e);
     lv_indev_t *indev = lv_indev_active();
     if (!indev) return;
@@ -357,7 +399,7 @@ void flow_view_append(lv_obj_t *obj, const char *data, size_t len)
 {
     flow_view_t *v = (flow_view_t *)obj;
     fv_lock();
-    if (v->model.lines) {
+    if (fv_ready(v)) {
         flow_model_append(&v->model, data, len);
         v->redraw_pending = true;
         v->force_redraw = true;
@@ -369,7 +411,7 @@ void flow_view_append_line(lv_obj_t *obj, const char *line, uint8_t style)
 {
     flow_view_t *v = (flow_view_t *)obj;
     fv_lock();
-    if (v->model.lines) {
+    if (fv_ready(v)) {
         flow_model_append_line(&v->model, line, style);
         v->redraw_pending = true;
         v->force_redraw = true;
@@ -381,7 +423,7 @@ void flow_view_load_text(lv_obj_t *obj, const char *text)
 {
     flow_view_t *v = (flow_view_t *)obj;
     fv_lock();
-    if (v->model.lines) {
+    if (fv_ready(v)) {
         flow_model_load_text(&v->model, text);
         v->offset_px = 0;
         v->redraw_pending = true;
@@ -390,11 +432,22 @@ void flow_view_load_text(lv_obj_t *obj, const char *text)
     fv_unlock();
 }
 
+void flow_view_append_text(lv_obj_t *obj, const char *text, size_t len)
+{
+    flow_view_t *v = (flow_view_t *)obj;
+    fv_lock();
+    if (fv_ready(v) && text && len > 0) {
+        flow_model_append(&v->model, text, len);
+        v->redraw_pending = true;   /* 增量重绘，由调用方在加载完成后统一刷新 */
+    }
+    fv_unlock();
+}
+
 void flow_view_clear(lv_obj_t *obj)
 {
     flow_view_t *v = (flow_view_t *)obj;
     fv_lock();
-    if (v->model.lines) {
+    if (fv_ready(v)) {
         flow_model_clear(&v->model);
         v->offset_px = 0;
         v->redraw_pending = true;
@@ -407,7 +460,7 @@ void flow_view_set_follow(lv_obj_t *obj, bool follow)
 {
     flow_view_t *v = (flow_view_t *)obj;
     fv_lock();
-    if (v->model.lines) {
+    if (fv_ready(v)) {
         flow_model_set_follow(&v->model, follow);
         if (follow) {
             v->redraw_pending = true;
@@ -421,7 +474,7 @@ bool flow_view_is_following(lv_obj_t *obj)
 {
     flow_view_t *v = (flow_view_t *)obj;
     fv_lock();
-    bool r = v->model.lines ? flow_model_is_following(&v->model) : true;
+    bool r = fv_ready(v) ? flow_model_is_following(&v->model) : true;
     fv_unlock();
     return r;
 }
@@ -459,7 +512,7 @@ int flow_view_get_line_count(lv_obj_t *obj)
 {
     flow_view_t *v = (flow_view_t *)obj;
     fv_lock();
-    int n = v->model.lines ? flow_model_line_count(&v->model) : 0;
+    int n = fv_ready(v) ? fv_line_count(v) : 0;
     fv_unlock();
     return n;
 }
@@ -468,10 +521,15 @@ void flow_view_go_to(lv_obj_t *obj, int line)
 {
     flow_view_t *v = (flow_view_t *)obj;
     fv_lock();
-    if (v->model.lines) {
+    if (fv_ready(v)) {
         flow_model_set_follow(&v->model, false);   /* 主动跳转：退出跟随，否则滑到底后会被拉回 */
-        flow_model_set_view_top(&v->model, line);
-        v->offset_px = flow_model_view_top(&v->model) * v->line_h;
+        /* 用 fv_max_top 钳制（provider 感知）：内部 model 在 provider 模式
+         * 下行数为 0，其钳制会把跳转目标压到 0 */
+        int max = fv_max_top(v);
+        if (line < 0) line = 0;
+        if (line > max) line = max;
+        v->model.view_top = line;
+        v->offset_px = line * v->line_h;
         v->redraw_pending = true;
         v->force_redraw = true;
     }
@@ -482,7 +540,7 @@ void flow_view_set_font(lv_obj_t *obj, const lv_font_t *font)
 {
     flow_view_t *v = (flow_view_t *)obj;
     fv_lock();
-    if (v->model.lines && font) {
+    if (fv_ready(v) && font) {
         v->font = font;
         v->line_h = lv_font_get_line_height(font);   /* 行高随字体（中文行高更大） */
         v->model.glyph_ctx = (void *)font;
@@ -497,7 +555,7 @@ void flow_view_set_color(lv_obj_t *obj, lv_color_t color)
 {
     flow_view_t *v = (flow_view_t *)obj;
     fv_lock();
-    if (v->model.lines) {
+    if (fv_ready(v)) {
         v->color = color;
         v->redraw_pending = true;
         v->force_redraw = true;
@@ -518,7 +576,7 @@ int flow_view_get_max_top(lv_obj_t *obj)
 {
     flow_view_t *v = (flow_view_t *)obj;
     fv_lock();
-    int max = v->model.lines ? flow_model_max_top(&v->model) : 0;
+    int max = fv_ready(v) ? fv_max_top(v) : 0;
     fv_unlock();
     return max;
 }
@@ -527,7 +585,7 @@ void flow_view_set_visible_lines(lv_obj_t *obj, int visible_lines)
 {
     flow_view_t *v = (flow_view_t *)obj;
     fv_lock();
-    if (!v->model.lines || visible_lines < 1) {
+    if (!fv_ready(v) || visible_lines < 1) {
         fv_unlock();
         return;
     }
@@ -557,6 +615,24 @@ void flow_view_set_clicked_cb(lv_obj_t *obj, flow_view_clicked_cb_t cb, void *us
     fv_lock();
     v->clicked_cb = cb;
     v->clicked_user_data = user_data;
+    fv_unlock();
+}
+
+void flow_view_set_line_provider(lv_obj_t *obj, const flow_view_line_provider_t *provider,
+                                 void *ctx)
+{
+    flow_view_t *v = (flow_view_t *)obj;
+    fv_lock();
+    if (provider) {
+        v->provider = *provider;
+        v->provider_ctx = ctx;
+    } else {
+        v->provider.count = NULL;
+        v->provider.line = NULL;
+        v->provider_ctx = NULL;
+    }
+    /* 不触发重绘：由后续 go_to/滚动/append 驱动（阅读器在索引完成前
+     * 不渲染，避免提前取行触发文件读取） */
     fv_unlock();
 }
 

@@ -65,6 +65,11 @@ bool flow_view_is_following(lv_obj_t *obj);
 
 /* ── 配置 ── */
 void flow_view_set_max_lines(lv_obj_t *obj, int max_lines);   /* 历史容量（重新分配缓冲） */
+
+/* 追加文本（流式加载用）：内部按 UTF-8 逐字符解析折行，分段调用安全
+ * （跨段行正确延续）。批量加载期间不触发重绘，完成后调用
+ * flow_view_go_to / flow_view_request_redraw 统一刷新 */
+void flow_view_append_text(lv_obj_t *obj, const char *text, size_t len);
 int  flow_view_get_line_count(lv_obj_t *obj);
 void flow_view_go_to(lv_obj_t *obj, int line);               /* 跳转行号（阅读器） */
 void flow_view_set_font(lv_obj_t *obj, const lv_font_t *font);
@@ -80,6 +85,17 @@ void flow_view_set_visible_lines(lv_obj_t *obj, int visible_lines);
 /* 点击回调（单击且无滑动时触发，pos 为屏幕坐标；滚动查看不触发）。 */
 typedef void (*flow_view_clicked_cb_t)(void *user_data, lv_point_t pos);
 void flow_view_set_clicked_cb(lv_obj_t *obj, flow_view_clicked_cb_t cb, void *user_data);
+
+/* 外部行数据源（阅读器大文件模式）：行文本/行数由外部提供，
+ * 内部 model 模式与 provider 模式二选一（set 后 provider 优先）。
+ * count() 返回当前已知总行数；line() 返回第 row 行文本，
+ * 返回 NULL 表示该行暂不可读（渲染为占位符）。均在渲染线程调用。 */
+typedef struct {
+    int (*count)(void *ctx);
+    const char *(*line)(void *ctx, int row, uint8_t *style);
+} flow_view_line_provider_t;
+void flow_view_set_line_provider(lv_obj_t *obj, const flow_view_line_provider_t *provider,
+                                 void *ctx);
 
 /* 滚动位置回调（offset_px 变化时，硬件 0x37 滚动同步用） */
 typedef void (*flow_view_scroll_cb_t)(void *user_data, int offset_px);

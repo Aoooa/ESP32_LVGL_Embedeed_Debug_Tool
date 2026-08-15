@@ -21,6 +21,12 @@
  * 返回 <= 0 表示该字符无字形（跳过）。 */
 typedef int32_t (*flow_glyph_w_cb_t)(void *ctx, uint32_t code, uint32_t next);
 
+/* 行 break 回调（索引/统计用）：每完成一行调用一次。
+ * byte_off = 该行结束位置在当前流中的绝对字节偏移（下一个字符的位置，
+ * 折行/换行均适用，跨 append 调用延续）；line_no = 完成后的总行数。
+ * NULL 时不调用，无额外开销。 */
+typedef void (*flow_model_break_cb_t)(void *ctx, size_t byte_off, uint32_t line_no);
+
 /* 内容流模型实例（全部状态在此，支持多实例） */
 typedef struct {
     char  (*lines)[FLOW_VIEW_LINE_CHARS_DEF + 1];  /* 行文本环形缓冲（外部提供） */
@@ -36,6 +42,12 @@ typedef struct {
     char  cur[FLOW_VIEW_LINE_CHARS_DEF];   /* 正在输入的行 */
     int   cur_len;
     int32_t cur_w;
+    size_t stream_off;           /* 当前流累计字节偏移（跨 append 延续） */
+    flow_model_break_cb_t break_cb;  /* 行 break 回调（NULL 不调用） */
+    void *break_ctx;
+    char  pend[4];               /* 跨 append 的未完多字节字符（续字节缓冲） */
+    int   pend_len;              /* 已收集续字节数 */
+    int   pend_total;            /* 目标字符总字节数 */
 } flow_model_t;
 
 /* 初始化/重置模型。lines/styles 由调用方提供（行数 = max_lines）。 */
@@ -49,6 +61,9 @@ void flow_model_append(flow_model_t *m, const char *data, size_t len);
 
 /* 直接追加一行完整文本（自动结束未完成行；超长截断；style 用于着色预留） */
 void flow_model_append_line(flow_model_t *m, const char *line, uint8_t style);
+
+/* 设置行 break 回调（索引/统计用；NULL 取消） */
+void flow_model_set_break_cb(flow_model_t *m, flow_model_break_cb_t cb, void *ctx);
 
 /* 整段文本加载（内部等价于 append 全部） */
 void flow_model_load_text(flow_model_t *m, const char *text);

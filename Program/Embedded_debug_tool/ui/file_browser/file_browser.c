@@ -6,6 +6,7 @@
 #include "drv_display.h"
 #include "flow_view.h"
 #include "app_font.h"
+#include "reader.h"
 #include "misc/lv_timer_private.h"
 #include "core/lv_obj_private.h"
 #include "esp_log.h"
@@ -14,7 +15,6 @@
 #include <stdlib.h>
 #include <time.h>
 #include <strings.h>
-#include <sys/stat.h>
 
 #define FB_PATH_MAX   128
 #define FB_PATH_LABEL_H 28
@@ -22,7 +22,8 @@
 #define FB_ROW_H        34       /* 列表项高度 */
 #define FB_ENTRY_MAX    512      /* 单目录条目上限 */
 #define FB_ENTRY_NAME_MAX 96
-#define FB_READER_MAX    (512 * 1024)   /* txt 阅读文件大小上限 */
+
+/* 阅读器：按需加载（ui/reader），文件大小仅受 PSRAM 索引空间限制 */
 
 /* 阅读界面配色（白底黑字，与浏览器深色区分） */
 #define FB_READER_BG          lv_color_hex(0xFFFFFF)
@@ -142,6 +143,11 @@ typedef struct {
     bool pending_reader;        /* 待打开的 txt（事件回调置位，定时器执行） */
     char pending_reader_path[FB_PATH_MAX];
     char reader_path[FB_PATH_MAX];  /* 当前打开的 txt（旋转重建用） */
+    /* 按需加载数据层（ui/reader） */
+    reader_t *reader;           /* 当前 txt 的数据层（NULL=未打开） */
+    lv_obj_t *reader_index_lbl; /* 索引中提示（"索引中 x%"） */
+    bool reader_indexing;       /* true=后台索引进行中 */
+    int reader_line_w;          /* 打开时的折行像素宽（旋转判断索引是否失效） */
 } fb_t;
 
 static fb_t *fb_get(lv_obj_t *obj)
@@ -155,6 +161,7 @@ static void fb_reader_btn_event(lv_event_t *e);
 static void fb_list_event(lv_event_t *e);
 static void fb_open_reader(fb_t *fb, const char *path);
 static void fb_close_reader(fb_t *fb);
+static void fb_update_progress(fb_t *fb);
 
 /* ── 导航 ── */
 
@@ -318,8 +325,21 @@ void file_browser_relayout(lv_obj_t *obj)
     lv_obj_set_size(fb->btn_sort, btn_w, 28);
 
     if (fb->reader_active && fb->reader_path[0]) {
-        fb_close_reader(fb);
-        fb_open_reader(fb, fb->reader_path);
+        /* 宽度变化 → 折行规则变化 → 索引失效 → 重建 reader（重新索引）；
+         * 仅高度/行数变化 → 只重设可见行数（数据层不动，无重扫） */
+        int lw = fb_screen_w() - 8;
+        if (!fb->reader || fb->reader_line_w != lw) {
+            fb_close_reader(fb);
+            fb_open_reader(fb, fb->reader_path);
+        } else {
+            lv_font_t *cn = app_font_get(16);
+            lv_font_t *rf = cn ? cn : &lv_font_montserrat_12;
+            flow_view_set_font(fb->reader_view, rf);
+            int lines = (fb_screen_h() + lv_font_get_line_height(rf) - 1) / lv_font_get_line_height(rf);
+            flow_view_set_visible_lines(fb->reader_view, lines);
+            lv_obj_set_pos(fb->reader_bar, 0, fb_screen_h() - FB_READER_BTN_BAR_H - FB_READER_BAR_BOTTOM);
+            if (!fb->reader_indexing) fb_update_progress(fb);
+        }
     }
 }
 
@@ -407,7 +427,7 @@ static void fb_prog_event(lv_event_t *e)
     int w = lv_obj_get_width(obj);
     int h = lv_obj_get_height(obj);
     int max = fb->prog_max > 0 ? fb->prog_max : 1;
-    int v = (p.x - obj->coords.x1 - h / 2) * max / (w - h);
+    int v = (int)((long long)(p.x - obj->coords.x1 - h / 2) * max / (w - h));
     if (v < 0) v = 0;
     if (v > max) v = max;
     fb->prog_val = v;
@@ -428,7 +448,7 @@ static void fb_update_progress(fb_t *fb)
         return;
     }
     int top = flow_view_get_view_top(fb->reader_view);
-    int pct = top * 100 / max;
+    int pct = (int)((long long)top * 100 / max);   /* 超大文件（>21M 行）防溢出 */
     if (pct > 100) pct = 100;
     lv_label_set_text_fmt(fb->bubble, "%d%%", pct);
     fb->prog_max = max;
@@ -440,7 +460,22 @@ static void fb_update_progress(fb_t *fb)
 static void fb_progress_timer(lv_timer_t *t)
 {
     fb_t *fb = t->user_data;
-    if (fb->reader_active) fb_update_progress(fb);
+    if (!fb || !fb->reader_active) return;
+
+    /* 索引中：更新进度提示；索引完成后进入阅读模式 */
+    if (fb->reader_indexing) {
+        lv_label_set_text_fmt(fb->reader_index_lbl, "索引中 %d%%",
+                              reader_progress(fb->reader));
+        if (!reader_is_indexing(fb->reader)) {
+            fb->reader_indexing = false;
+            lv_obj_add_flag(fb->reader_index_lbl, LV_OBJ_FLAG_HIDDEN);
+            /* 进入阅读：回到开头（触发首屏渲染与初始进度） */
+            flow_view_go_to(fb->reader_view, 0);
+            fb_update_progress(fb);
+        }
+        return;
+    }
+    fb_update_progress(fb);
 }
 
 /* 判断是否为 .txt（大小写不敏感） */
@@ -453,25 +488,11 @@ static bool fb_is_txt(const char *name)
 
 static void fb_open_reader(fb_t *fb, const char *path)
 {
-    struct stat st;
-    if (stat(path, &st) != 0 || st.st_size <= 0 || st.st_size > FB_READER_MAX) {
-        ESP_LOGW(FB_TAG, "open reader: stat fail or size %lld out of range", (long long)st.st_size);
-        return;
+    /* 防重复打开：延迟窗口内连点两个 txt 时先关旧 reader（否则旧索引任务泄漏） */
+    if (fb->reader) {
+        ESP_LOGW(FB_TAG, "open reader: close previous");
+        fb_close_reader(fb);
     }
-    char *buf = malloc((size_t)st.st_size + 1);
-    if (!buf) {
-        ESP_LOGW(FB_TAG, "open reader: malloc %lld failed", (long long)st.st_size);
-        return;
-    }
-    FILE *f = fopen(path, "r");
-    if (!f) {
-        ESP_LOGW(FB_TAG, "open reader: fopen failed");
-        free(buf);
-        return;
-    }
-    size_t rd = fread(buf, 1, (size_t)st.st_size, f);
-    fclose(f);
-    buf[rd] = '\0';
 
     fb->reader_active = true;
     strncpy(fb->reader_path, path, sizeof(fb->reader_path) - 1);
@@ -499,19 +520,23 @@ static void fb_open_reader(fb_t *fb, const char *path)
     int lines = (fb_screen_h() + lv_font_get_line_height(rf) - 1) / lv_font_get_line_height(rf);
     flow_view_set_visible_lines(fb->reader_view, lines);
 
-    flow_view_load_text(fb->reader_view, buf);
-    flow_view_set_follow(fb->reader_view, false);
-    flow_view_go_to(fb->reader_view, 0);
-    free(buf);
-    /* 进度条范围 = 行号（0..max_top），与实际阅读位置一一对应 */
-    int max = flow_view_get_max_top(fb->reader_view);
-    fb->prog_max = max > 0 ? max : 1;
-    fb->prog_val = 0;
-    /* 强制布局：prog 宽度为百分比(lv_pct)，未布局前宽度为 0，
-     * 气泡按 0 宽定位会错位到滑动条末尾 */
-    lv_obj_update_layout(fb->reader_root);
-    fb_update_progress(fb);
+    /* 按需加载数据层：后台索引 → 完成后经 provider 读取（见 fb_progress_timer）；
+     * 索引完成前不 go_to（避免提前渲染触发读文件与索引任务抢 SPI 总线） */
+    int lw = fb_screen_w() - 8;
+    fb->reader = reader_open(path, lw, rf);
+    if (!fb->reader) {
+        ESP_LOGW(FB_TAG, "open reader: reader_open failed");
+        fb_close_reader(fb);
+        return;
+    }
+    fb->reader_line_w = lw;
+    fb->reader_indexing = true;
+    const flow_view_line_provider_t prov = { reader_count, reader_line };
+    flow_view_set_line_provider(fb->reader_view, &prov, fb->reader);
 
+    lv_obj_clear_flag(fb->reader_index_lbl, LV_OBJ_FLAG_HIDDEN);
+    lv_label_set_text(fb->reader_index_lbl, "索引中 0%");
+    lv_obj_update_layout(fb->reader_root);
 }
 
 /* 阅读器关闭后的列表刷新（延迟一帧执行，避免与隐藏同帧重入导致撕裂） */
@@ -524,10 +549,18 @@ static void fb_close_reader_refresh(lv_timer_t *t)
 static void fb_close_reader(fb_t *fb)
 {
     fb->reader_active = false;
+    fb->reader_indexing = false;
+    if (fb->reader) {
+        /* 先断开数据源再释放，防止渲染定时器访问已释放的 reader */
+        flow_view_set_line_provider(fb->reader_view, NULL, NULL);
+        reader_close(fb->reader);
+        fb->reader = NULL;
+    }
     lv_obj_add_flag(fb->reader_root, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(fb->reader_title, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(fb->reader_bar, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(fb->bubble, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(fb->reader_index_lbl, LV_OBJ_FLAG_HIDDEN);
     /* 列表重建延迟到下一帧 LVGL 循环，避开事件回调上下文 */
     lv_timer_t *t = lv_timer_create(fb_close_reader_refresh, 1, fb);
     lv_timer_set_repeat_count(t, 1);
@@ -593,6 +626,10 @@ static void fb_open_reader_deferred(lv_timer_t *t)
 {
     fb_t *fb = t->user_data;
     if (!fb->pending_reader) return;
+    if (fb->reader_active) {
+        fb->pending_reader = false;   /* 已有阅读器在打开中：忽略本次点击 */
+        return;
+    }
     fb->pending_reader = false;
     fb_open_reader(fb, fb->pending_reader_path);
 }
@@ -892,6 +929,13 @@ lv_obj_t *file_browser_create(lv_obj_t *parent)
     lv_obj_add_event_cb(fb->prog, fb_prog_event, LV_EVENT_ALL, fb);
 
     fb->progress_timer = lv_timer_create(fb_progress_timer, 500, fb);
+
+    /* 索引中提示（阅读覆盖层中央，索引完成后隐藏） */
+    fb->reader_index_lbl = lv_label_create(fb->reader_root);
+    lv_obj_center(fb->reader_index_lbl);
+    lv_obj_set_style_text_color(fb->reader_index_lbl, FB_READER_TEXT, 0);
+    lv_obj_set_style_text_font(fb->reader_index_lbl, fb_ui_font(), 0);
+    lv_obj_add_flag(fb->reader_index_lbl, LV_OBJ_FLAG_HIDDEN);
 
     fb_refresh(fb);
     return obj;
