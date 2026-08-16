@@ -4,6 +4,7 @@
 #include "esp_lv_adapter.h"
 #include "flow_view.h"
 #include "file_browser.h"
+#include "launcher.h"
 #include "app_font.h"
 #include "lvgl.h"
 #include "esp_log.h"
@@ -13,6 +14,9 @@
 #include <string.h>
 
 /* ── 界面开关（代码保留，宏控制） ── */
+#ifndef APP_UI_LAUNCHER_ENABLED
+#define APP_UI_LAUNCHER_ENABLED 1   /* 1=桌面启动器（默认），0=旧界面 */
+#endif
 #ifndef APP_UI_TERMINAL_ENABLED
 #define APP_UI_TERMINAL_ENABLED 0   /* 1=串口终端界面，0=SD 文件浏览器 */
 #endif
@@ -54,6 +58,7 @@ static lv_obj_t *s_status_state;
 static lv_obj_t *s_log_container;
 static lv_obj_t *s_log_view;
 static lv_obj_t *s_file_browser;
+static lv_obj_t *s_launcher;
 static lv_obj_t *s_btn_uart;
 static lv_obj_t *s_btn_pause;
 static lv_obj_t *s_btn_pause_lbl;
@@ -125,7 +130,13 @@ void app_display_set_rotation(int deg)
     bool my = (deg == 180 || deg == 270);
     drv_display_set_hw_rotation(swap, mx, my);
     /* 3. UI 重排（list 高度/按钮宽；阅读器按新分辨率重建） */
+#if APP_UI_LAUNCHER_ENABLED
+    launcher_relayout(s_launcher);
+#elif APP_UI_TERMINAL_ENABLED
+    /* 终端界面固定分辨率布局，无需重排 */
+#else
     file_browser_relayout(s_file_browser);
+#endif
 
     s_orientation_deg = deg;
     ESP_LOGI(TAG, "orientation %d° (LVGL %dx%d)", deg,
@@ -162,7 +173,12 @@ static void on_btn_clear(lv_event_t *e)
 static void build_ui(void)
 {
     lv_obj_t *scr = lv_screen_active();
-#if APP_UI_TERMINAL_ENABLED
+#if APP_UI_LAUNCHER_ENABLED
+    /* 桌面启动器（默认界面）：黑夜主题起步，全屏背景由 launcher root 承担 */
+    lv_obj_set_style_bg_color(scr, lv_color_hex(0x0D0D0D), 0);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+    s_launcher = launcher_create(scr);
+#elif APP_UI_TERMINAL_ENABLED
     lv_obj_set_style_bg_color(scr, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_set_flex_flow(scr, LV_FLEX_FLOW_COLUMN);
@@ -513,7 +529,10 @@ static void sd_font_retry_timer_cb(lv_timer_t *t)
 
 void app_display_notify_sd_ready(void)
 {
-#if !APP_UI_TERMINAL_ENABLED
+#if APP_UI_LAUNCHER_ENABLED
+    /* 启动器不依赖 SD，无需处理 */
+    (void)0;
+#elif !APP_UI_TERMINAL_ENABLED
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
         /* 列表先刷新可用（"SD not ready"立即消失）；
          * 字体 2.3MB 从 SD 读取较慢，移到 LVGL 定时器异步加载，不阻塞本锁 */
