@@ -17,8 +17,10 @@ static const char *const s_app_texts[APP_COUNT] = {
 /* ── 主题色 ── */
 #define ACCENT_COLOR     0x39C5BB   /* 初音绿：卡片边框固定色 */
 #define THEME_DARK_BG    0x0D0D0D
+#define THEME_DARK_CARD  0x161616   /* 卡片底色（不透明：transform layer 用 RGB565，渲染快一倍） */
 #define THEME_DARK_TEXT  0xFFFFFF
 #define THEME_LIGHT_BG   0xF5F5F5
+#define THEME_LIGHT_CARD 0xFFFFFF
 #define THEME_LIGHT_TEXT 0x374151
 
 /* ── 布局参数 ── */
@@ -108,10 +110,12 @@ static void launcher_update_cards(void)
         int t = unit - dist;              /* 靠近中央 → t 大 */
         if (t < 0) t = 0;
         if (t > unit) t = unit;
-        /* 量化 1/16 步进（≈每 6px 滚动变一级），减少 transform 重绘频率 */
-        int tq = (t * 16 + unit / 2) / unit;
-        int32_t sx = LV_SCALE_NONE + tq * (SCALE_MAX_X - LV_SCALE_NONE) / 16;
-        int32_t sy = LV_SCALE_NONE + tq * (SCALE_MAX_Y - LV_SCALE_NONE) / 16;
+        /* 量化 1/4 步进（≈每 25px 滚动变一级）；tq<2（放大<1.05x）跳过
+         * transform 重建——1.025x 与 1.0x 视觉无差，但省掉大部分层重建 */
+        int tq = (t * 4 + unit / 2) / unit;
+        if (tq < 2) tq = 0;
+        int32_t sx = LV_SCALE_NONE + tq * (SCALE_MAX_X - LV_SCALE_NONE) / 4;
+        int32_t sy = LV_SCALE_NONE + tq * (SCALE_MAX_Y - LV_SCALE_NONE) / 4;
         if (sx != s_launcher.prev_sx[i]) {
             s_launcher.prev_sx[i] = sx;
             lv_obj_set_style_transform_scale_x(s_launcher.cards[i], sx, 0);
@@ -289,8 +293,11 @@ static void launcher_theme_exec(void *var, int32_t v)
 static void launcher_apply_text_theme(void)
 {
     lv_color_t c = s_launcher.dark ? lv_color_hex(THEME_DARK_TEXT) : lv_color_hex(THEME_LIGHT_TEXT);
+    lv_color_t bc = s_launcher.dark ? lv_color_hex(THEME_DARK_CARD) : lv_color_hex(THEME_LIGHT_CARD);
     for (int i = 0; i < APP_COUNT; i++) {
         lv_obj_set_style_text_color(s_launcher.text_labels[i], c, 0);
+        lv_obj_set_style_bg_color(s_launcher.cards[i], bc, 0);
+        lv_obj_set_style_bg_color(s_launcher.text_labels[i], bc, 0);
     }
 }
 
@@ -324,7 +331,9 @@ static void launcher_build_cards(void)
         /* 事件冒泡：按压卡片/文字时 PRESSED/RELEASED 必须传到 drum（吸附用）；
          * 保留 SCROLL_CHAIN：按住卡片拖动时滚动传递给滚筒 */
         lv_obj_add_flag(card, LV_OBJ_FLAG_EVENT_BUBBLE);
-        lv_obj_set_style_bg_opa(card, LV_OPA_TRANSP, 0);
+        /* 不透明卡片底：transform layer 无需 alpha → RGB565，渲染开销减半 */
+        lv_obj_set_style_bg_color(card, lv_color_hex(THEME_DARK_CARD), 0);
+        lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
         lv_obj_set_style_pad_all(card, 0, 0);
         /* 斜切边框：默认边框/圆角全关，由 DRAW_MAIN 自定义绘制 */
         lv_obj_set_style_border_width(card, 0, 0);
@@ -339,6 +348,10 @@ static void launcher_build_cards(void)
         lv_obj_add_flag(lbl, LV_OBJ_FLAG_EVENT_BUBBLE);
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
         lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
+        /* label 加不透明背景（与卡片同色）：COVER_CHECK 全覆盖 →
+         * transform layer 用 RGB565（而非 ARGB8888），缩放渲染快一倍 */
+        lv_obj_set_style_bg_color(lbl, lv_color_hex(THEME_DARK_CARD), 0);
+        lv_obj_set_style_bg_opa(lbl, LV_OPA_COVER, 0);
         s_launcher.text_labels[i] = lbl;
     }
     launcher_apply_text_theme();
