@@ -1,17 +1,39 @@
 #include "launcher.h"
+#include "file_browser.h"
+#include "bookshelf.h"
+#include "net_console.h"
+#include "app_display.h"
 #include <string.h>
 #include <math.h>
+#include <stdio.h>
 
-/* ── App 占位表（纯文字占位，每卡最多 3 行，每行 ≤15 字符防折行） ── */
+/* ── App 卡片表（每卡最多 3 行，每行 ≤15 字符防折行） ── */
 #define APP_COUNT 6
 
-static const char *const s_app_texts[APP_COUNT] = {
-    "UART 1\nSerial bridge\nTCP :8080",
-    "WiFi AP\nDebug console\n192.168.4.1",
-    "Web UI\nHTTP + WS\n192.168.4.1",
-    "File Browser\nSD card files\nTXT reader",
-    "TXT Reader\nLarge files\nOn-demand",
-    "Clock\nTime display\nPlaceholder",
+/* 卡片类型：可启动 app / 占位 */
+typedef enum { APP_TYPE_LAUNCH, APP_TYPE_PLACEHOLDER } app_type_t;
+
+/* APP 图标（LV_SYMBOL，montserrat_28 含 FontAwesome 字形） */
+static const char *const s_app_icons[APP_COUNT] = {
+    LV_SYMBOL_DIRECTORY,   /* Files */
+    LV_SYMBOL_FILE,        /* Reader（图书/文档） */
+    LV_SYMBOL_USB,         /* UART */
+    LV_SYMBOL_WIFI,        /* Net */
+    LV_SYMBOL_SETTINGS,    /* Slot 5 */
+    LV_SYMBOL_POWER,       /* Slot 6 */
+};
+
+static const struct {
+    const char *name;       /* APP 名称（简约，居中大字显示） */
+    app_type_t type;        /* 占位或可启动 */
+    launch_app_id_t id;     /* type=LAUNCH 时的 app id */
+} s_apps[APP_COUNT] = {
+    { "Files",  APP_TYPE_LAUNCH,     LAUNCH_APP_FILES },
+    { "Reader", APP_TYPE_LAUNCH,     LAUNCH_APP_READER },
+    { "UART",   APP_TYPE_LAUNCH,     LAUNCH_APP_UART },
+    { "Net",    APP_TYPE_LAUNCH,     LAUNCH_APP_NET },
+    { "Slot 5", APP_TYPE_PLACEHOLDER, 0 },
+    { "Slot 6", APP_TYPE_PLACEHOLDER, 0 },
 };
 
 /* ── 主题色 ── */
@@ -54,6 +76,7 @@ typedef struct {
     lv_obj_t *root;
     lv_obj_t *drum;
     lv_obj_t *cards[APP_COUNT];
+    lv_obj_t *icon_labels[APP_COUNT];   /* 白色图标（LV_SYMBOL，固定白色） */
     lv_obj_t *text_labels[APP_COUNT];
 
     /* 调速拨轮 */
@@ -332,6 +355,92 @@ static void launcher_build_wheel(void)
     lv_timer_pause(s_launcher.wheel_timer);
 }
 
+/* ── APP 管理：启动创建全屏界面（覆盖启动器），退出销毁回桌面 ── */
+static void *s_app_obj;                /* 当前 APP 实例（NULL=桌面） */
+static void (*s_app_destroy)(void *);  /* 销毁回调 */
+static launch_app_id_t s_app_id;       /* 当前 APP 类型（SD 通知转发用） */
+
+/* 销毁包装（统一 void* 签名） */
+static void app_destroy_files(void *p) { file_browser_destroy((lv_obj_t *)p); }
+static void app_destroy_bookshelf(void *p) { bookshelf_destroy((bookshelf_t *)p); }
+static void app_destroy_terminal(void *p) { app_display_terminal_destroy((lv_obj_t *)p); }
+static void app_destroy_net_console(void *p) { net_console_destroy((net_console_t *)p); }
+
+void launcher_app_launch(launch_app_id_t id)
+{
+    if (s_app_obj) return;   /* 已有 APP 在运行，忽略 */
+    lv_obj_t *scr = lv_screen_active();
+    switch (id) {
+    case LAUNCH_APP_FILES:
+        s_app_obj = file_browser_create(scr, launcher_app_close, NULL);
+        s_app_destroy = app_destroy_files;
+        break;
+    case LAUNCH_APP_READER:
+        s_app_obj = bookshelf_create(scr, launcher_app_close, NULL);
+        s_app_destroy = app_destroy_bookshelf;
+        break;
+    case LAUNCH_APP_UART:
+        /* 复用 app_display 原有终端界面（原样 + 左上角返回按钮） */
+        s_app_obj = app_display_terminal_create(scr, launcher_app_close, NULL);
+        s_app_destroy = app_destroy_terminal;
+        break;
+    case LAUNCH_APP_NET:
+        s_app_obj = net_console_create(scr, launcher_app_close, NULL);
+        s_app_destroy = app_destroy_net_console;
+        break;
+    default:
+        return;
+    }
+    s_app_id = id;
+}
+
+void launcher_app_close(void *ctx)
+{
+    (void)ctx;
+    if (s_app_obj && s_app_destroy) {
+        s_app_destroy(s_app_obj);
+    }
+    s_app_obj = NULL;
+    s_app_destroy = NULL;
+}
+
+bool launcher_app_running(void)
+{
+    return s_app_obj != NULL;
+}
+
+void launcher_notify_sd_ready(void)
+{
+    if (!s_app_obj) return;
+    if (s_app_id == LAUNCH_APP_FILES) {
+        file_browser_refresh(s_app_obj);
+    } else if (s_app_id == LAUNCH_APP_READER) {
+        bookshelf_refresh(s_app_obj);
+    }
+}
+
+/* 全局手势：屏幕左边缘右滑 → 返回上一级（关闭当前 APP 回桌面）。
+ * 手势由触摸 read_cb 检测（adapter：起点左 30px 内、水平右滑≥60px），
+ * LVGL 分发 LV_EVENT_GESTURE 到 indev 回调，这里统一收口。 */
+static void on_indev_gesture(lv_event_t *e)
+{
+    (void)e;
+    if (launcher_app_running()) {
+        launcher_app_close(NULL);
+    }
+}
+
+/* 卡片点击：可启动卡 → 启动 APP；占位卡无操作 */
+static void on_card_event(lv_event_t *e)
+{
+    lv_obj_t *card = lv_event_get_target_obj(e);
+    int i = (int)(intptr_t)lv_obj_get_user_data(card);
+    if (i < 0 || i >= APP_COUNT) return;
+    if (s_apps[i].type == APP_TYPE_LAUNCH) {
+        launcher_app_launch(s_apps[i].id);
+    }
+}
+
 static void launcher_build_cards(void)
 {
     for (int i = 0; i < APP_COUNT; i++) {
@@ -348,14 +457,25 @@ static void launcher_build_cards(void)
         lv_obj_set_style_border_width(card, CARD_BORDER, 0);
         lv_obj_set_style_radius(card, CARD_RADIUS, 0);
         lv_obj_set_style_pad_all(card, 0, 0);
+        /* 卡片点击 → 启动对应 APP（占位卡无操作） */
+        lv_obj_set_user_data(card, (void *)(intptr_t)i);
+        lv_obj_add_event_cb(card, on_card_event, LV_EVENT_CLICKED, NULL);
         s_launcher.cards[i] = card;
 
-        /* 纯文字内容（最多 3 行，LONG_WRAP + 定宽折行保护，水平居中） */
+        /* 卡片内容：白色图标 + APP 名称（relayout 固定定位：图标左对齐竖线） */
+        lv_obj_t *icon_lbl = lv_label_create(card);
+        lv_label_set_text(icon_lbl, s_app_icons[i]);
+        lv_obj_add_flag(icon_lbl, LV_OBJ_FLAG_EVENT_BUBBLE);
+        lv_obj_set_style_text_font(icon_lbl, &lv_font_montserrat_28, 0);
+        lv_obj_set_style_text_color(icon_lbl, lv_color_hex(0xFFFFFF), 0);   /* 固定白色 */
+        lv_obj_set_style_bg_color(icon_lbl, lv_color_hex(THEME_DARK_CARD), 0);
+        lv_obj_set_style_bg_opa(icon_lbl, LV_OPA_COVER, 0);
+        s_launcher.icon_labels[i] = icon_lbl;
+
         lv_obj_t *lbl = lv_label_create(card);
-        lv_label_set_text(lbl, s_app_texts[i]);
-        lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(lbl, s_apps[i].name);
         lv_obj_add_flag(lbl, LV_OBJ_FLAG_EVENT_BUBBLE);
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_28, 0);
         lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_bg_color(lbl, lv_color_hex(THEME_DARK_CARD), 0);
         lv_obj_set_style_bg_opa(lbl, LV_OPA_COVER, 0);
@@ -384,14 +504,13 @@ static void launcher_relayout_core(void)
     lv_obj_set_style_pad_top(s_launcher.drum, s_launcher.gap, 0);
     lv_obj_set_style_pad_bottom(s_launcher.drum, s_launcher.gap, 0);
 
-    /* 卡片布局：y_i = i × unit，首卡顶 = 内容顶（pad_top 之下），左缘对齐 */
-    int label_w = s_launcher.card_w - 2 * CARD_W_PAD;
+    /* 卡片布局：y_i = i × unit，首卡顶 = 内容顶（pad_top 之下），左缘对齐。
+     * 内容：白色图标贴左（x=16，所有卡片同一竖线），名称挨着图标右侧 */
     for (int i = 0; i < APP_COUNT; i++) {
         lv_obj_set_size(s_launcher.cards[i], s_launcher.card_w, s_launcher.card_h);
         lv_obj_set_pos(s_launcher.cards[i], 0, i * s_launcher.unit);
-        /* 文字垂直居中于卡片 */
-        lv_obj_set_width(s_launcher.text_labels[i], label_w);
-        lv_obj_center(s_launcher.text_labels[i]);
+        lv_obj_align(s_launcher.icon_labels[i], LV_ALIGN_LEFT_MID, 16, 0);
+        lv_obj_align(s_launcher.text_labels[i], LV_ALIGN_LEFT_MID, 54, 0);
     }
 
     /* 保持当前滚动位置（clamp 到新滚动域） */
@@ -444,6 +563,18 @@ lv_obj_t *launcher_create(lv_obj_t *parent)
     launcher_build_cards();
     launcher_build_wheel();
     launcher_relayout_core();
+
+    /* 注册手势返回（触摸 indev 的事件回调） */
+    {
+        lv_indev_t *indev = lv_indev_get_next(NULL);
+        for (; indev; indev = lv_indev_get_next(indev)) {
+            if (lv_indev_get_type(indev) == LV_INDEV_TYPE_POINTER) {
+                lv_indev_add_event_cb(indev, on_indev_gesture, LV_EVENT_GESTURE, NULL);
+                break;
+            }
+        }
+    }
+
 
     return root;
 }

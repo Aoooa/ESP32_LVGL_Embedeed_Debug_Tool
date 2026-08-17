@@ -1,6 +1,8 @@
 #ifndef APP_DISPLAY_H
 #define APP_DISPLAY_H
 
+#include "lvgl.h"
+
 #include <stdbool.h>
 
 /*
@@ -23,6 +25,12 @@
  */
 
 void app_display_start(void);
+
+/* 终端界面 APP（原终端 UI 原样 + 左上角返回按钮；back_cb=NULL 不显示按钮）。
+ * 由 launcher 作为 APP 启动/销毁（单实例）。 */
+typedef void (*app_display_back_cb_t)(void *ctx);
+lv_obj_t *app_display_terminal_create(lv_obj_t *parent, app_display_back_cb_t back_cb, void *ctx);
+void app_display_terminal_destroy(lv_obj_t *root);
 void app_display_set_info(const char *ip, int uart1_port, int uart2_port);
 void app_display_notify_status(void);
 void app_display_notify_sd_ready(void);   /* SD 挂载完成后刷新文件浏览器 */

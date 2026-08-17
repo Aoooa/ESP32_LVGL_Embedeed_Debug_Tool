@@ -48,6 +48,7 @@ static int s_orientation_deg;   /* 当前逻辑方向 0/90/180/270（0=竖屏 24
 /* ── Flags (button callbacks → display_task) ── */
 static volatile int s_pending_clear;
 static volatile int s_pending_uart_switch;
+static volatile int s_pending_swipe_back;   /* 左缘右滑返回手势 */
 static TaskHandle_t s_display_task_h;
 
 /* ── LVGL Objects ── */
@@ -57,7 +58,9 @@ static lv_obj_t *s_status_info;
 static lv_obj_t *s_status_state;
 static lv_obj_t *s_log_container;
 static lv_obj_t *s_log_view;
+#if !APP_UI_LAUNCHER_ENABLED
 static lv_obj_t *s_file_browser;
+#endif
 static lv_obj_t *s_launcher;
 static lv_obj_t *s_btn_uart;
 static lv_obj_t *s_btn_pause;
@@ -68,7 +71,8 @@ static lv_obj_t *s_btn_clear;
 
 static void update_status_bar(void)
 {
-#if APP_UI_TERMINAL_ENABLED
+#if 1
+    if (!s_status_dot) return;
     uart_bridge_t *br = g_bridges[s_active_uart];
 
     lv_obj_set_style_bg_color(s_status_dot,
@@ -131,9 +135,14 @@ void app_display_set_rotation(int deg)
     drv_display_set_hw_rotation(swap, mx, my);
     /* 3. UI 重排（list 高度/按钮宽；阅读器按新分辨率重建） */
 #if APP_UI_LAUNCHER_ENABLED
+    /* APP 打开期间旋转：关闭当前 APP 回桌面（APP 无独立 relayout） */
+    if (launcher_app_running()) {
+        launcher_app_close(NULL);
+    }
     launcher_relayout(s_launcher);
 #elif APP_UI_TERMINAL_ENABLED
-    /* 终端界面固定分辨率布局，无需重排 */
+    /* 终端界面由共享创建函数构建（桌面模式无返回按钮） */
+    app_display_terminal_create(scr, NULL, NULL);
 #else
     file_browser_relayout(s_file_browser);
 #endif
@@ -192,7 +201,7 @@ static void build_ui(void)
     lv_obj_set_style_bg_opa(status_bar, LV_OPA_COVER, 0);
     lv_obj_set_style_border_side(status_bar, LV_BORDER_SIDE_NONE, 0);
     lv_obj_set_style_radius(status_bar, 0, 0);
-    lv_obj_set_style_pad_hor(status_bar, 8, 0);
+
     lv_obj_set_style_pad_ver(status_bar, 6, 0);
     lv_obj_set_flex_flow(status_bar, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(status_bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -322,6 +331,178 @@ static void build_ui(void)
 #endif
 }
 
+/* ── 终端界面 APP（原终端 UI 原样构建，追加左上角返回按钮；back_cb=NULL 时不显示） ── */
+
+lv_obj_t *app_display_terminal_create(lv_obj_t *parent, app_display_back_cb_t back_cb, void *ctx)
+{
+    /* 尺寸跟随当前逻辑分辨率（横/竖屏通用） */
+    int sw = lv_display_get_horizontal_resolution(lv_display_get_default());
+    int sh = lv_display_get_vertical_resolution(lv_display_get_default());
+
+    lv_obj_t *root = lv_obj_create(parent);
+    lv_obj_set_size(root, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(root, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
+    lv_obj_set_flex_flow(root, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(root, 0, 0);
+    lv_obj_set_style_pad_gap(root, 0, 0);
+    lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
+
+
+    /* ── Status Bar ── */
+    lv_obj_t *status_bar = lv_obj_create(root);
+    lv_obj_set_size(status_bar, sw, STATUS_BAR_H);
+    lv_obj_set_style_pad_hor(status_bar, 8, 0);
+    lv_obj_set_style_bg_color(status_bar, lv_color_hex(0xF9FAFB), 0);
+    lv_obj_set_style_bg_opa(status_bar, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_side(status_bar, LV_BORDER_SIDE_NONE, 0);
+    lv_obj_set_style_radius(status_bar, 0, 0);
+    lv_obj_set_style_pad_hor(status_bar, 8, 0);
+    lv_obj_set_style_pad_ver(status_bar, 6, 0);
+    lv_obj_set_flex_flow(status_bar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(status_bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_gap(status_bar, 6, 0);
+
+    s_status_dot = lv_obj_create(status_bar);
+    lv_obj_set_size(s_status_dot, 8, 8);
+    lv_obj_set_style_radius(s_status_dot, 4, 0);
+    lv_obj_set_style_bg_color(s_status_dot, lv_color_hex(0x22C55E), 0);
+    lv_obj_set_style_bg_opa(s_status_dot, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_status_dot, 0, 0);
+
+    s_status_uart = lv_label_create(status_bar);
+    lv_label_set_text(s_status_uart, "1");
+    lv_obj_set_style_text_color(s_status_uart, lv_color_hex(0x111111), 0);
+    lv_obj_set_style_text_font(s_status_uart, &lv_font_montserrat_12, 0);
+
+    s_status_info = lv_label_create(status_bar);
+    lv_label_set_text(s_status_info, "");
+    lv_obj_set_style_text_color(s_status_info, lv_color_hex(0x9CA3AF), 0);
+    lv_obj_set_style_text_font(s_status_info, &lv_font_montserrat_10, 0);
+
+    lv_obj_t *spacer = lv_obj_create(status_bar);
+    lv_obj_set_size(spacer, 1, 1);
+    lv_obj_set_style_bg_opa(spacer, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(spacer, 0, 0);
+    lv_obj_set_flex_grow(spacer, 1);
+
+    s_status_state = lv_label_create(status_bar);
+    lv_label_set_text(s_status_state, "RUN");
+    lv_obj_set_style_text_color(s_status_state, lv_color_hex(0x22C55E), 0);
+    lv_obj_set_style_text_font(s_status_state, &lv_font_montserrat_12, 0);
+
+    /* ── Separator ── */
+    lv_obj_t *sep1 = lv_obj_create(root);
+    lv_obj_set_size(sep1, sw, SEP_H);
+    lv_obj_set_style_bg_color(sep1, lv_color_hex(0xE5E7EB), 0);
+    lv_obj_set_style_bg_opa(sep1, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(sep1, 0, 0);
+
+    /* ── Log Container（flow_view 滚动内容流视图） ── */
+    int log_h = sh - STATUS_BAR_H - SEP_H * 2 - BTN_BAR_H;
+    s_log_container = lv_obj_create(root);
+    lv_obj_set_size(s_log_container, sw, log_h);
+    lv_obj_set_flex_grow(s_log_container, 1);
+    lv_obj_set_style_bg_color(s_log_container, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_opa(s_log_container, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_log_container, 0, 0);
+    lv_obj_set_style_radius(s_log_container, 0, 0);
+    lv_obj_set_style_pad_all(s_log_container, 0, 0);
+    lv_obj_clear_flag(s_log_container, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_log_view = flow_view_create(s_log_container);
+    lv_obj_align(s_log_view, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    /* ── Separator ── */
+    lv_obj_t *sep2 = lv_obj_create(root);
+    lv_obj_set_size(sep2, sw, SEP_H);
+    lv_obj_set_style_bg_color(sep2, lv_color_hex(0xE5E7EB), 0);
+    lv_obj_set_style_bg_opa(sep2, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(sep2, 0, 0);
+
+    /* ── Button Bar ── */
+    lv_obj_t *btn_bar = lv_obj_create(root);
+    lv_obj_set_size(btn_bar, sw, BTN_BAR_H);
+    lv_obj_set_style_bg_color(btn_bar, lv_color_hex(0xF9FAFB), 0);
+    lv_obj_set_style_bg_opa(btn_bar, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_side(btn_bar, LV_BORDER_SIDE_NONE, 0);
+    lv_obj_set_style_radius(btn_bar, 0, 0);
+    lv_obj_set_style_pad_hor(btn_bar, 8, 0);
+    lv_obj_set_style_pad_ver(btn_bar, 4, 0);
+    lv_obj_set_flex_flow(btn_bar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(btn_bar, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_gap(btn_bar, 6, 0);
+
+    int btn_w = (sw - 16 - 12) / 3;
+    int btn_h = BTN_BAR_H - 8;
+
+    static lv_style_t btn_style;
+    lv_style_init(&btn_style);
+    lv_style_set_bg_color(&btn_style, lv_color_hex(0xFFFFFF));
+    lv_style_set_bg_opa(&btn_style, LV_OPA_COVER);
+    lv_style_set_border_color(&btn_style, lv_color_hex(0xD1D5DB));
+    lv_style_set_border_width(&btn_style, 1);
+    lv_style_set_radius(&btn_style, 6);
+    lv_style_set_text_color(&btn_style, lv_color_hex(0x374151));
+    lv_style_set_text_font(&btn_style, &lv_font_montserrat_12);
+
+    /* UART 切换按钮 */
+    s_btn_uart = lv_button_create(btn_bar);
+    lv_obj_add_style(s_btn_uart, &btn_style, 0);
+    lv_obj_set_size(s_btn_uart, btn_w, btn_h);
+    lv_obj_set_style_min_width(s_btn_uart, btn_w, 0);
+    lv_obj_t *lbl_uart = lv_label_create(s_btn_uart);
+    lv_label_set_text(lbl_uart, "UART");
+    lv_obj_set_width(lbl_uart, btn_w - 4);
+    lv_obj_center(lbl_uart);
+    lv_obj_add_event_cb(s_btn_uart, on_btn_uart, LV_EVENT_CLICKED, NULL);
+
+    /* 暂停按钮 */
+    s_btn_pause = lv_button_create(btn_bar);
+    lv_obj_add_style(s_btn_pause, &btn_style, 0);
+    lv_obj_set_size(s_btn_pause, btn_w, btn_h);
+    lv_obj_set_style_min_width(s_btn_pause, btn_w, 0);
+    s_btn_pause_lbl = lv_label_create(s_btn_pause);
+    lv_label_set_text(s_btn_pause_lbl, "Pause");
+    lv_obj_set_width(s_btn_pause_lbl, btn_w - 4);
+    lv_obj_center(s_btn_pause_lbl);
+    lv_obj_add_event_cb(s_btn_pause, on_btn_pause, LV_EVENT_CLICKED, NULL);
+
+    /* 清空按钮 */
+    s_btn_clear = lv_button_create(btn_bar);
+    lv_obj_add_style(s_btn_clear, &btn_style, 0);
+    lv_obj_set_size(s_btn_clear, btn_w, btn_h);
+    lv_obj_set_style_min_width(s_btn_clear, btn_w, 0);
+    lv_obj_t *lbl_clear = lv_label_create(s_btn_clear);
+    lv_label_set_text(lbl_clear, "Clear");
+    lv_obj_set_width(lbl_clear, btn_w - 4);
+    lv_obj_center(lbl_clear);
+    lv_obj_add_event_cb(s_btn_clear, on_btn_clear, LV_EVENT_CLICKED, NULL);
+
+    update_status_bar();
+    return root;
+}
+
+void app_display_terminal_destroy(lv_obj_t *root)
+{
+    s_log_view = NULL;
+    s_log_container = NULL;
+    s_status_dot = NULL;
+    s_status_uart = NULL;
+    s_status_info = NULL;
+    s_status_state = NULL;
+    s_btn_uart = NULL;
+    s_btn_pause = NULL;
+    s_btn_clear = NULL;
+    s_btn_pause_lbl = NULL;
+    if (root) {
+        /* 闪屏修复：先隐藏 + 立即刷新一帧（露出桌面），再删除全屏对象 */
+        lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
+        lv_refr_now(NULL);
+        lv_obj_delete(root);
+    }
+}
+
 /* ── Display Task: 收到数据立刻刷新 ── */
 
 static void display_task(void *arg)
@@ -333,13 +514,13 @@ static void display_task(void *arg)
         /* 等待队列数据，短超时以便及时响应按钮 */
         int got_data = (xQueueReceive(g_display_queue, &item, pdMS_TO_TICKS(10)) == pdTRUE);
         if (got_data) {
-#if APP_UI_TERMINAL_ENABLED
+#if 1
             /* flow_view_append 内部加锁（模型更新），渲染由组件定时器在 LVGL 线程完成 */
-            if (item.uart_idx == s_active_uart) {
+            if (item.uart_idx == s_active_uart && s_log_view) {
                 flow_view_append(s_log_view, (const char *)item.data, item.len);
             }
             while (xQueueReceive(g_display_queue, &item, 0) == pdTRUE) {
-                if (item.uart_idx == s_active_uart) {
+                if (item.uart_idx == s_active_uart && s_log_view) {
                     flow_view_append(s_log_view, (const char *)item.data, item.len);
                 }
             }
@@ -349,13 +530,13 @@ static void display_task(void *arg)
         /* 清除通知（按钮回调可能已发出） */
         xTaskNotifyWait(0, 0, NULL, 0);
 
-#if APP_UI_TERMINAL_ENABLED
+#if 1
         /* 处理按钮请求 */
         int need_status = 0;
         if (s_pending_clear || s_pending_uart_switch) {
             if (esp_lv_adapter_lock(-1) == ESP_OK) {
                 if (s_pending_clear) {
-                    flow_view_clear(s_log_view);
+                    if (s_log_view) flow_view_clear(s_log_view);
                     need_status = 1;
                 }
                 if (s_pending_uart_switch) {
@@ -370,9 +551,30 @@ static void display_task(void *arg)
 
         s_pending_clear = 0;
         s_pending_uart_switch = 0;
+
+        /* 左缘右滑返回手势：APP 打开时回桌面 */
+        if (s_pending_swipe_back) {
+            s_pending_swipe_back = 0;
+            if (esp_lv_adapter_lock(-1) == ESP_OK) {
+                launcher_app_close(NULL);
+                esp_lv_adapter_unlock();
+            }
+        }
 #endif
     }
 }
+
+/* ── 左缘右滑返回手势（自研：LVGL 单指 SWIPE 识别器未实现） ── */
+#define SWIPE_EDGE_X      15     /* 起点距逻辑左边缘 ≤15px 才触发（严格贴边） */
+#define SWIPE_MIN_DX      40     /* 累计水平右移 ≥40px 即触发返回（移动中触发，不等释放） */
+#define SWIPE_CANDIDATE_DX 25    /* 累计右移 >25px 即判定为返回手势候选 → 本次 press 禁单击 */
+#define SWIPE_OUT_X       -1000  /* 候选确认后上报的屏幕外坐标（令 LVGL act_obj=NULL 抑制 CLICKED） */
+#define SWIPE_OUT_Y       -1000
+static bool s_swipe_tracking;
+static lv_coord_t s_swipe_start_x, s_swipe_start_y;
+static lv_coord_t s_swipe_last_x, s_swipe_last_y;
+static bool s_swipe_candidate;   /* 本次 press 已是返回手势候选（禁单击） */
+static bool s_swipe_triggered;   /* 本次 press 已触发返回 */
 
 /*
  * 触摸坐标旋转：CST816S 原始坐标 → LVGL 逻辑坐标。
@@ -422,6 +624,58 @@ static esp_err_t touch_rotated_read(esp_lcd_touch_handle_t tp,
     } else {
         *count = 0;
     }
+
+    /* 左缘右滑返回手势：移动中累计判定（不等释放），识别候选后抑制单击。
+     * 全程用本帧真实逻辑坐标（points 尚未被改写）跟踪/判定 */
+    if (cnt > 0) {
+        lv_coord_t lx = points[0].x;
+        lv_coord_t ly = points[0].y;
+        if (!s_swipe_tracking) {
+            s_swipe_tracking = true;
+            s_swipe_candidate = false;
+            s_swipe_triggered = false;
+            s_swipe_start_x = lx;
+            s_swipe_start_y = ly;
+        }
+        s_swipe_last_x = lx;
+        s_swipe_last_y = ly;
+
+        if (!s_swipe_candidate && !s_swipe_triggered) {
+            int dx = lx - s_swipe_start_x;
+            if (s_swipe_start_x <= SWIPE_EDGE_X) {
+                /* 候选：dx>25 即禁单击（只判起点贴边 + 位移，Y 不限） */
+                if (dx > SWIPE_CANDIDATE_DX) {
+                    s_swipe_candidate = true;
+                }
+                /* 触发：dx≥40 → 立即返回（不等释放，Y 轴偏差不限）。
+                 * 触发后本帧上报 RELEASED，让 LVGL 先释放按住再删 APP，
+                 * 避免按住中删对象导致整屏重绘闪烁 */
+                if (dx >= SWIPE_MIN_DX) {
+                    s_swipe_triggered = true;
+                    s_pending_swipe_back = 1;
+                }
+            }
+        }
+    } else if (s_swipe_tracking) {
+        s_swipe_tracking = false;
+    }
+
+    /* 候选手势已确认（未触发）→ 上报屏幕外坐标，令 LVGL pointer_search_obj 返回 NULL →
+     * act_obj=NULL，释放时 indev_obj_act 为假 → 不派发 CLICKED（对不可滚动对象也有效）。
+     * 保持 PRESSED（*count=1）直到触发返回或真实释放。
+     * 已触发返回 → 持续上报 RELEASED 直到手指抬起，避免重新 PRESSED 造成二次点击 */
+    if (cnt > 0) {
+        if (s_swipe_triggered) {
+            *count = 0;
+            points[0].x = SWIPE_OUT_X;
+            points[0].y = SWIPE_OUT_Y;
+        } else if (s_swipe_candidate) {
+            *count = 1;
+            points[0].x = SWIPE_OUT_X;
+            points[0].y = SWIPE_OUT_Y;
+        }
+    }
+
     return ESP_OK;
 }
 
@@ -487,7 +741,7 @@ void app_display_start(void)
 
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
         build_ui();
-#if APP_UI_TERMINAL_ENABLED
+#if 1
         update_status_bar();
 #endif
         esp_lv_adapter_unlock();
@@ -518,31 +772,22 @@ void app_display_notify_status(void)
     }
 }
 
-/* SD 挂载后异步加载中文字体（LVGL 线程执行，加载完成后重绘列表显示中文） */
+/* SD 挂载后异步加载中文字体（LVGL 线程执行，加载完成后刷新当前 APP 列表） */
 static void sd_font_retry_timer_cb(lv_timer_t *t)
 {
     (void)t;
     app_font_retry();
     app_font_get(16);
-    file_browser_refresh(s_file_browser);
+    launcher_notify_sd_ready();
 }
 
 void app_display_notify_sd_ready(void)
 {
-#if APP_UI_LAUNCHER_ENABLED
-    /* 启动器不依赖 SD，无需处理 */
-    (void)0;
-#elif !APP_UI_TERMINAL_ENABLED
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
-        /* 列表先刷新可用（"SD not ready"立即消失）；
-         * 字体 2.3MB 从 SD 读取较慢，移到 LVGL 定时器异步加载，不阻塞本锁 */
-        file_browser_refresh(s_file_browser);
+        /* 字体 2.3MB 从 SD 读取较慢，移到 LVGL 定时器异步加载，不阻塞本锁 */
         lv_timer_t *t = lv_timer_create(sd_font_retry_timer_cb, 1, NULL);
         lv_timer_set_repeat_count(t, 1);
         lv_timer_set_auto_delete(t, true);
         esp_lv_adapter_unlock();
     }
-#else
-    (void)0;
-#endif
 }

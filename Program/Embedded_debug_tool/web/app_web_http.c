@@ -165,8 +165,18 @@ static esp_err_t page_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+void app_web_stop(void)
+{
+    if (g_httpd) {
+        httpd_stop(g_httpd);
+        g_httpd = NULL;
+    }
+}
+
 void app_web_start(void)
 {
+    if (g_httpd) return;   /* 已在运行（stop 后可重新 start） */
+
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.max_uri_handlers = 8;
     config.stack_size = 16384;

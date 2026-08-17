@@ -20,6 +20,9 @@ idf_component_register(
         "${MODULE_DIR}/ui/font_manager/app_font.c"
         "${MODULE_DIR}/ui/reader/reader_index.c"
         "${MODULE_DIR}/ui/reader/reader.c"
+        "${MODULE_DIR}/ui/reader/reader_view.c"
+        "${MODULE_DIR}/ui/bookshelf/bookshelf.c"
+        "${MODULE_DIR}/ui/net_console/net_console.c"
         "${MODULE_DIR}/fonts/han_sc_16.c"
         "${MODULE_DIR}/sdcard/drv_sdcard.c"
         "${MODULE_DIR}/sdcard/app_sdcard.c"
@@ -36,6 +39,8 @@ idf_component_register(
         "${MODULE_DIR}/ui/launcher"
         "${MODULE_DIR}/ui/font_manager"
         "${MODULE_DIR}/ui/reader"
+        "${MODULE_DIR}/ui/bookshelf"
+        "${MODULE_DIR}/ui/net_console"
         "${MODULE_DIR}/sdcard"
 
     PRIV_REQUIRES

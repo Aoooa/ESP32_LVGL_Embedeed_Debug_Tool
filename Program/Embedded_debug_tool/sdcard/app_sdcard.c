@@ -35,15 +35,8 @@ esp_err_t app_sdcard_list_dir(const char *path, app_sdcard_dir_cb_t cb, void *ct
         }
         if (sdcard_is_hidden(ent->d_name)) continue;
         if (cb) {
-            char full[512];
-            snprintf(full, sizeof(full), "%.190s/%s", path, ent->d_name);
-            struct stat st;
             long size = 0;
             time_t mtime = 0;
-            if (stat(full, &st) == 0) {
-                size = (long)st.st_size;
-                mtime = st.st_mtime;
-            }
             cb(ctx, ent->d_name, ent->d_type == DT_DIR, size, mtime);
         }
     }

@@ -6,7 +6,7 @@
 #include "drv_display.h"
 #include "flow_view.h"
 #include "app_font.h"
-#include "reader.h"
+#include "reader_view.h"
 #include "misc/lv_timer_private.h"
 #include "core/lv_obj_private.h"
 #include "esp_log.h"
@@ -23,17 +23,6 @@
 #define FB_ENTRY_MAX    512      /* 单目录条目上限 */
 #define FB_ENTRY_NAME_MAX 96
 
-/* 阅读器：按需加载（ui/reader），文件大小仅受 PSRAM 索引空间限制 */
-
-/* 阅读界面配色（白底黑字，与浏览器深色区分） */
-#define FB_READER_BG          lv_color_hex(0xFFFFFF)
-#define FB_READER_TEXT        lv_color_hex(0x111111)
-#define FB_READER_BTN_BORDER  lv_color_hex(0xD1D5DB)
-#define FB_READER_BTN_BAR_H   44     /* 底部容器高 = 气泡区(24) + 进度条(12) + 边距；透明无视觉影响 */
-#define FB_READER_BAR_BOTTOM  6      /* 底部栏距屏幕底边距（便于触摸） */
-#define FB_READER_TITLE_H     28     /* 顶部状态栏高度 */
-
-/* 点击屏幕中心区域（约 120x80）才切换按钮显隐 */
 /* 屏幕尺寸动态化：跟随 LVGL 逻辑分辨率（横竖屏通用） */
 static int fb_screen_w(void)
 {
@@ -46,9 +35,6 @@ static int fb_screen_h(void)
     return d ? lv_display_get_vertical_resolution(d) : 240;
 }
 
-/* 阅读文本行数：canvas 固定全屏行数，按钮栏以覆盖方式遮挡底部文字 */
-#define FB_READER_LINES   17   /* 英文 12px 时的全屏行数（17x14=238px）；中文按行高动态重算 */
-
 /* 中文字体（SD /fonts/，缺失时回退英文）；UI 主字体 16px */
 static lv_font_t *fb_ui_font(void)
 {
@@ -60,7 +46,7 @@ static const char *FB_TAG = "file_browser";
 
 /* 列表项 user_data：完整路径 + 类型 */
 typedef struct {
-    char path[FB_PATH_MAX];
+    char path[FB_PATH_MAX + 128];   /* 完整路径（为长文件名/目录名留余量） */
     bool is_dir;
 } fb_row_data_t;
 
@@ -126,28 +112,14 @@ typedef struct {
     struct { char path[FB_PATH_MAX]; int32_t scroll_y; } stack[8];
     int depth;
     int32_t pending_scroll; /* 刷新后需恢复的滚动位置（<0 = 不恢复） */
-    /* 阅读界面：全屏覆盖层（只切换本层显隐，不触碰浏览器对象树） */
-    lv_obj_t *reader_root;      /* 阅读覆盖层（初始隐藏） */
-    lv_obj_t *reader_title;     /* 顶部状态栏：↑ 返回 + 当前 txt 文件名 */
-    lv_obj_t *reader_title_label;
-    lv_obj_t *bubble;           /* 进度百分比气泡（黄椭圆，飘在进度条头部） */
-    lv_obj_t *prog;             /* 自绘进度条（轨道/指示/滑块完全可控） */
-    int prog_val;               /* 进度条当前值（行号 0..prog_max） */
-    int prog_max;               /* 进度条范围上限 = max_top */
-    lv_obj_t *reader_view;      /* flow_view：txt 内容 */
-    lv_obj_t *reader_bar;       /* 阅读模式底部栏（进度条 + 气泡） */
-    lv_obj_t *btn_reader_up;    /* 返回浏览器 */
-    lv_timer_t *progress_timer;
-    bool reader_active;
-    bool ui_hidden;             /* true=纯阅读（标题栏/底部栏隐藏） */
+    /* 阅读界面：共享组件 reader_view（全屏覆盖层，浏览器/书架共用） */
+    reader_view_t *rv;
     bool pending_reader;        /* 待打开的 txt（事件回调置位，定时器执行） */
     char pending_reader_path[FB_PATH_MAX];
-    char reader_path[FB_PATH_MAX];  /* 当前打开的 txt（旋转重建用） */
-    /* 按需加载数据层（ui/reader） */
-    reader_t *reader;           /* 当前 txt 的数据层（NULL=未打开） */
-    lv_obj_t *reader_index_lbl; /* 索引中提示（"索引中 x%"） */
-    bool reader_indexing;       /* true=后台索引进行中 */
-    int reader_line_w;          /* 打开时的折行像素宽（旋转判断索引是否失效） */
+    file_browser_back_cb_t back_cb;   /* APP 模式返回回调（NULL=不显示按钮） */
+    void *back_ctx;
+    lv_timer_t *defer_timer;    /* 延迟打开定时器（destroy 时取消） */
+    lv_timer_t *refresh_timer;  /* 阅读器关闭后的列表刷新定时器 */
 } fb_t;
 
 static fb_t *fb_get(lv_obj_t *obj)
@@ -157,11 +129,7 @@ static fb_t *fb_get(lv_obj_t *obj)
 
 static void fb_item_event(lv_event_t *e);
 static void fb_btn_event(lv_event_t *e);
-static void fb_reader_btn_event(lv_event_t *e);
 static void fb_list_event(lv_event_t *e);
-static void fb_open_reader(fb_t *fb, const char *path);
-static void fb_close_reader(fb_t *fb);
-static void fb_update_progress(fb_t *fb);
 
 /* ── 导航 ── */
 
@@ -231,7 +199,7 @@ static lv_obj_t *fb_add_row(fb_t *fb, const char *name, bool is_dir)
     /* 存完整路径 + 类型（点击时判断进入文件夹或阅读 txt） */
     fb_row_data_t *rd = malloc(sizeof(fb_row_data_t));
     if (rd) {
-        snprintf(rd->path, sizeof(rd->path), "%.100s/%.24s", fb->cur, name);
+        snprintf(rd->path, sizeof(rd->path), "%s/%s", fb->cur, name);
         rd->is_dir = is_dir;
         lv_obj_set_user_data(row, rd);
     }
@@ -254,10 +222,25 @@ static void fb_entry_cb(void *ctx, const char *name, bool is_dir, long size, tim
     (void)size;
 }
 
+/* 释放列表行数据（lv_obj_clean 不会释放 user_data）后清空列表 */
+static void fb_free_rows(lv_obj_t *list)
+{
+    uint32_t n = lv_obj_get_child_count(list);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *child = lv_obj_get_child(list, i);
+        fb_row_data_t *rd = lv_obj_get_user_data(child);
+        if (rd) {
+            free(rd);
+            lv_obj_set_user_data(child, NULL);
+        }
+    }
+    lv_obj_clean(list);
+}
+
 /* 刷新当前目录：清空列表 + 重新枚举 + 排序 + 重建 */
 static void fb_refresh(fb_t *fb)
 {
-    lv_obj_clean(fb->list);
+    fb_free_rows(fb->list);
     lv_label_set_long_mode(fb->path_label, LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
     lv_label_set_text(fb->path_label, fb->cur);
     lv_label_set_text_fmt(fb->lbl_sort, "%s %d", LV_SYMBOL_REFRESH, fb->sort_mode + 1);
@@ -323,160 +306,9 @@ void file_browser_relayout(lv_obj_t *obj)
     lv_obj_set_size(fb->btn_up, btn_w, 28);
     lv_obj_set_size(fb->btn_root, btn_w, 28);
     lv_obj_set_size(fb->btn_sort, btn_w, 28);
-
-    if (fb->reader_active && fb->reader_path[0]) {
-        /* 宽度变化 → 折行规则变化 → 索引失效 → 重建 reader（重新索引）；
-         * 仅高度/行数变化 → 只重设可见行数（数据层不动，无重扫） */
-        int lw = fb_screen_w() - 8;
-        if (!fb->reader || fb->reader_line_w != lw) {
-            fb_close_reader(fb);
-            fb_open_reader(fb, fb->reader_path);
-        } else {
-            lv_font_t *cn = app_font_get(16);
-            lv_font_t *rf = cn ? cn : &lv_font_montserrat_12;
-            flow_view_set_font(fb->reader_view, rf);
-            int lines = (fb_screen_h() + lv_font_get_line_height(rf) - 1) / lv_font_get_line_height(rf);
-            flow_view_set_visible_lines(fb->reader_view, lines);
-            lv_obj_set_pos(fb->reader_bar, 0, fb_screen_h() - FB_READER_BTN_BAR_H - FB_READER_BAR_BOTTOM);
-            if (!fb->reader_indexing) fb_update_progress(fb);
-        }
-    }
 }
 
-/* ── 阅读界面（txt） ── */
-
-/* 气泡定位：飘在进度条头部（knob）上方（bar 容器内，随 bar 动画同步）。
- * 进度条值为行号，换算成百分比定位；y 固定 = 进度条上方 4px（bar 内） */
-static void fb_position_bubble(fb_t *fb)
-{
-    if (!fb->prog || !fb->bubble) return;
-    int sw = lv_obj_get_width(fb->prog);
-    int sh = lv_obj_get_height(fb->prog);
-    int bw = lv_obj_get_width(fb->bubble);
-    int sx = lv_obj_get_x(fb->prog);
-    int max = fb->prog_max > 0 ? fb->prog_max : 1;
-    int pct = fb->prog_val * 100 / max;
-    if (pct > 100) pct = 100;
-    int x = sx + pct * sw / 100 - bw / 2;
-    if (x < sx) x = sx;
-    if (x > sx + sw - bw) x = sx + sw - bw;
-    /* align 立即更新 coords（set_x/y 只改 style，IGNORE_LAYOUT 对象布局跳过不更新） */
-    lv_obj_align(fb->bubble, LV_ALIGN_TOP_LEFT, x, FB_READER_BTN_BAR_H - sh - lv_obj_get_height(fb->bubble) - 4);
-}
-
-/* 自绘进度条：轨道/指示/滑块完全可控。
- * 关键设计：0% 时滑块圆与轨道端半圆同心重合；指示器从轨道左端开始，
- * 拖动后 0% 位置整体变深灰（无 lv_slider 的 pad 浅灰缺陷） */
-#define FB_PROG_TRACK  lv_color_hex(0x9CA3AF)
-#define FB_PROG_INDIC  lv_color_hex(0x6B7280)
-#define FB_PROG_KNOB   lv_color_hex(0x374151)
-
-static void fb_prog_draw(lv_event_t *e)
-{
-    fb_t *fb = lv_event_get_user_data(e);
-    lv_obj_t *obj = lv_event_get_target(e);
-    lv_layer_t *layer = lv_event_get_layer(e);
-    if (!fb) return;
-    int w = lv_obj_get_width(obj);
-    int h = lv_obj_get_height(obj);
-    int r = h / 2;
-    int track_w = w - h;   /* 两端半圆区域 */
-
-    lv_area_t a = obj->coords;
-    lv_draw_rect_dsc_t dsc;
-    lv_draw_rect_dsc_init(&dsc);
-    dsc.bg_opa = LV_OPA_COVER;
-    dsc.radius = r;
-
-    /* 轨道 */
-    dsc.bg_color = FB_PROG_TRACK;
-    lv_draw_rect(layer, &dsc, &a);
-
-    /* 指示器：从轨道左端（含半圆）到滑块中心 */
-    int max = fb->prog_max > 0 ? fb->prog_max : 1;
-    int v = fb->prog_val;
-    if (v < 0) v = 0;
-    if (v > max) v = max;
-    int ind_w = r + track_w * v / max;
-    if (v > 0) {
-        a.x2 = a.x1 + ind_w - 1;
-        dsc.bg_color = FB_PROG_INDIC;
-        lv_draw_rect(layer, &dsc, &a);
-    }
-
-    /* 滑块：中心 = 指示端点（0% 时与轨道端半圆同心重合） */
-    int cx = a.x1 + r + track_w * v / max;
-    lv_area_t k = { cx - r, a.y1, cx + r - 1, a.y2 };
-    dsc.bg_color = FB_PROG_KNOB;
-    dsc.radius = r;
-    lv_draw_rect(layer, &dsc, &k);
-}
-
-/* 进度条触摸：按下/拖动直接跳转到触摸位置（行号） */
-static void fb_prog_event(lv_event_t *e)
-{
-    fb_t *fb = lv_event_get_user_data(e);
-    if (!fb || !fb->reader_active) return;
-    lv_event_code_t c = lv_event_get_code(e);
-    if (c != LV_EVENT_PRESSED && c != LV_EVENT_PRESSING) return;
-    lv_indev_t *indev = lv_indev_active();
-    if (!indev) return;
-    lv_point_t p;
-    lv_indev_get_point(indev, &p);
-    lv_obj_t *obj = lv_event_get_target(e);
-    int w = lv_obj_get_width(obj);
-    int h = lv_obj_get_height(obj);
-    int max = fb->prog_max > 0 ? fb->prog_max : 1;
-    int v = (int)((long long)(p.x - obj->coords.x1 - h / 2) * max / (w - h));
-    if (v < 0) v = 0;
-    if (v > max) v = max;
-    fb->prog_val = v;
-    flow_view_go_to(fb->reader_view, v);
-    fb_position_bubble(fb);
-    lv_obj_invalidate(obj);
-}
-
-static void fb_update_progress(fb_t *fb)
-{
-    int max = flow_view_get_max_top(fb->reader_view);
-    if (max <= 0) {
-        lv_label_set_text(fb->bubble, "100%");
-        fb->prog_max = 1;
-        fb->prog_val = 0;
-        if (fb->prog) lv_obj_invalidate(fb->prog);
-        fb_position_bubble(fb);
-        return;
-    }
-    int top = flow_view_get_view_top(fb->reader_view);
-    int pct = (int)((long long)top * 100 / max);   /* 超大文件（>21M 行）防溢出 */
-    if (pct > 100) pct = 100;
-    lv_label_set_text_fmt(fb->bubble, "%d%%", pct);
-    fb->prog_max = max;
-    fb->prog_val = top;
-    if (fb->prog) lv_obj_invalidate(fb->prog);
-    fb_position_bubble(fb);
-}
-
-static void fb_progress_timer(lv_timer_t *t)
-{
-    fb_t *fb = t->user_data;
-    if (!fb || !fb->reader_active) return;
-
-    /* 索引中：更新进度提示；索引完成后进入阅读模式 */
-    if (fb->reader_indexing) {
-        lv_label_set_text_fmt(fb->reader_index_lbl, "索引中 %d%%",
-                              reader_progress(fb->reader));
-        if (!reader_is_indexing(fb->reader)) {
-            fb->reader_indexing = false;
-            lv_obj_add_flag(fb->reader_index_lbl, LV_OBJ_FLAG_HIDDEN);
-            /* 进入阅读：回到开头（触发首屏渲染与初始进度） */
-            flow_view_go_to(fb->reader_view, 0);
-            fb_update_progress(fb);
-        }
-        return;
-    }
-    fb_update_progress(fb);
-}
+/* ── 阅读器（共享组件 reader_view） ── */
 
 /* 判断是否为 .txt（大小写不敏感） */
 static bool fb_is_txt(const char *name)
@@ -486,154 +318,39 @@ static bool fb_is_txt(const char *name)
     return strcasecmp(name + n - 4, ".txt") == 0;
 }
 
-static void fb_open_reader(fb_t *fb, const char *path)
-{
-    /* 防重复打开：延迟窗口内连点两个 txt 时先关旧 reader（否则旧索引任务泄漏） */
-    if (fb->reader) {
-        ESP_LOGW(FB_TAG, "open reader: close previous");
-        fb_close_reader(fb);
-    }
-
-    fb->reader_active = true;
-    strncpy(fb->reader_path, path, sizeof(fb->reader_path) - 1);
-
-    fb->ui_hidden = false;   /* 默认打开上下栏 */
-
-    /* 只切换阅读覆盖层，不触碰浏览器对象树；canvas 固定全屏行数 */
-    lv_obj_clear_flag(fb->reader_root, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(fb->reader_title, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(fb->reader_bar, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(fb->bubble, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_remove_state(fb->btn_reader_up, LV_STATE_DISABLED);
-
-    /* 顶部状态栏：当前文件名（含后缀） */
-    const char *base = strrchr(path, '/');
-    base = base ? base + 1 : path;
-    lv_label_set_text(fb->reader_title_label, base);
-
-    /* 阅读字体：中文字体（缺失回退英文）；行数向上取整铺满全屏（无底部空白） */
-    lv_font_t *cn = app_font_get(16);
-    lv_font_t *rf = cn ? cn : &lv_font_montserrat_12;
-    flow_view_set_font(fb->reader_view, rf);
-    /* 底部栏按当前屏高重新定位（旋转后屏高变化） */
-    lv_obj_set_pos(fb->reader_bar, 0, fb_screen_h() - FB_READER_BTN_BAR_H - FB_READER_BAR_BOTTOM);
-    int lines = (fb_screen_h() + lv_font_get_line_height(rf) - 1) / lv_font_get_line_height(rf);
-    flow_view_set_visible_lines(fb->reader_view, lines);
-
-    /* 按需加载数据层：后台索引 → 完成后经 provider 读取（见 fb_progress_timer）；
-     * 索引完成前不 go_to（避免提前渲染触发读文件与索引任务抢 SPI 总线） */
-    int lw = fb_screen_w() - 8;
-    fb->reader = reader_open(path, lw, rf);
-    if (!fb->reader) {
-        ESP_LOGW(FB_TAG, "open reader: reader_open failed");
-        fb_close_reader(fb);
-        return;
-    }
-    fb->reader_line_w = lw;
-    fb->reader_indexing = true;
-    const flow_view_line_provider_t prov = { reader_count, reader_line };
-    flow_view_set_line_provider(fb->reader_view, &prov, fb->reader);
-
-    lv_obj_clear_flag(fb->reader_index_lbl, LV_OBJ_FLAG_HIDDEN);
-    lv_label_set_text(fb->reader_index_lbl, "索引中 0%");
-    lv_obj_update_layout(fb->reader_root);
-}
-
-/* 阅读器关闭后的列表刷新（延迟一帧执行，避免与隐藏同帧重入导致撕裂） */
-static void fb_close_reader_refresh(lv_timer_t *t)
+/* 阅读器关闭后的列表刷新（延迟一帧执行，避开事件回调上下文） */
+static void fb_reader_back_refresh(lv_timer_t *t)
 {
     fb_t *fb = t->user_data;
+    fb->refresh_timer = NULL;
     if (fb) fb_refresh(fb);
 }
 
-static void fb_close_reader(fb_t *fb)
+/* reader_view 返回按钮：关闭阅读器后回浏览器列表 */
+static void fb_reader_back(void *ctx)
 {
-    fb->reader_active = false;
-    fb->reader_indexing = false;
-    if (fb->reader) {
-        /* 先断开数据源再释放，防止渲染定时器访问已释放的 reader */
-        flow_view_set_line_provider(fb->reader_view, NULL, NULL);
-        reader_close(fb->reader);
-        fb->reader = NULL;
-    }
-    lv_obj_add_flag(fb->reader_root, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(fb->reader_title, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(fb->reader_bar, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(fb->bubble, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(fb->reader_index_lbl, LV_OBJ_FLAG_HIDDEN);
-    /* 列表重建延迟到下一帧 LVGL 循环，避开事件回调上下文 */
-    lv_timer_t *t = lv_timer_create(fb_close_reader_refresh, 1, fb);
-    lv_timer_set_repeat_count(t, 1);
-    lv_timer_set_auto_delete(t, true);
+    fb_t *fb = ctx;
+    if (!fb) return;
+    fb->refresh_timer = lv_timer_create(fb_reader_back_refresh, 1, fb);
+    lv_timer_set_repeat_count(fb->refresh_timer, 1);
 }
-
-/* 点击屏幕中心区域：切换标题栏/底部栏显隐（带上下滑入滑出动画） */
-static void fb_chrome_ready_cb(lv_anim_t *a);
-static void fb_chrome_anim(fb_t *fb, bool show)
-{
-    if (show) {
-        lv_obj_clear_flag(fb->reader_title, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(fb->reader_bar, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(fb->bubble, LV_OBJ_FLAG_HIDDEN);
-        fb_position_bubble(fb);
-    }
-    lv_anim_t a;
-    lv_anim_init(&a);
-    lv_anim_set_time(&a, 180);
-    lv_anim_set_user_data(&a, fb);
-    /* 顶部状态栏：上方滑入/滑出 */
-    lv_anim_set_var(&a, fb->reader_title);
-    lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_obj_set_y);
-    lv_anim_set_values(&a, show ? -FB_READER_TITLE_H : 0,
-                       show ? 0 : -FB_READER_TITLE_H);
-    lv_anim_start(&a);
-    /* 底部栏：下方滑入/滑出 */
-    lv_anim_set_var(&a, fb->reader_bar);
-    lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_obj_set_y);
-    int sh = fb_screen_h();
-    lv_anim_set_values(&a, show ? sh : sh - FB_READER_BTN_BAR_H - FB_READER_BAR_BOTTOM,
-                       show ? sh - FB_READER_BTN_BAR_H - FB_READER_BAR_BOTTOM : sh);
-    if (!show) lv_anim_set_ready_cb(&a, fb_chrome_ready_cb);
-    lv_anim_start(&a);
-}
-
-static void fb_chrome_ready_cb(lv_anim_t *a)
-{
-    fb_t *fb = a->user_data;
-    if (fb) {
-        lv_obj_add_flag(fb->reader_title, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(fb->reader_bar, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(fb->bubble, LV_OBJ_FLAG_HIDDEN);
-    }
-}
-
-static void fb_reader_tap_event(void *user_data, lv_point_t pos)
-{
-    fb_t *fb = user_data;
-    if (!fb || !fb->reader_active) return;
-    if (pos.x < fb_screen_w() / 3 || pos.x > fb_screen_w() * 2 / 3 ||
-        pos.y < fb_screen_h() / 3 || pos.y > fb_screen_h() * 2 / 3) {
-        return;   /* 仅中心区域触发 */
-    }
-    fb->ui_hidden = !fb->ui_hidden;
-    fb_chrome_anim(fb, !fb->ui_hidden);
-}
-
-static void fb_reader_tap_event(void *user_data, lv_point_t pos);
 
 /* 延迟打开阅读（一次性定时器，下一帧 LVGL 循环执行，避开 indev 事件上下文） */
 static void fb_open_reader_deferred(lv_timer_t *t)
 {
     fb_t *fb = t->user_data;
-    if (!fb->pending_reader) return;
-    if (fb->reader_active) {
-        fb->pending_reader = false;   /* 已有阅读器在打开中：忽略本次点击 */
-        return;
-    }
+    fb->defer_timer = NULL;
+    if (!fb || !fb->pending_reader) return;
     fb->pending_reader = false;
-    fb_open_reader(fb, fb->pending_reader_path);
+    if (!reader_view_active(fb->rv)) {
+        reader_view_open(fb->rv, fb->pending_reader_path);
+    }
 }
 
+/* ── 阅读界面（txt） ── */
+
+/* 气泡定位：飘在进度条头部（knob）上方（bar 容器内，随 bar 动画同步）。
+ * 进度条值为行号，换算成百分比定位；y 固定 = 进度条上方 4px（bar 内） */
 /* ── 事件 ── */
 
 /* 列表项点击：文件夹进入下级；.txt 打开阅读；其他文件无操作 */
@@ -665,9 +382,8 @@ static void fb_item_event(lv_event_t *e)
         strncpy(fb->pending_reader_path, rd->path, sizeof(fb->pending_reader_path) - 1);
         fb->pending_reader_path[sizeof(fb->pending_reader_path) - 1] = '\0';
         fb->pending_reader = true;
-        lv_timer_t *t = lv_timer_create(fb_open_reader_deferred, 1, fb);
-        lv_timer_set_repeat_count(t, 1);
-        lv_timer_set_auto_delete(t, true);
+        fb->defer_timer = lv_timer_create(fb_open_reader_deferred, 1, fb);
+        lv_timer_set_repeat_count(fb->defer_timer, 1);
         free(rd);
         lv_obj_set_user_data(row, NULL);
     } else {
@@ -683,20 +399,6 @@ static void fb_btn_event(lv_event_t *e)
     if (!fb || lv_event_get_code(e) != LV_EVENT_CLICKED) return;
 
     lv_obj_t *t = lv_event_get_target_obj(e);
-
-    if (fb->reader_active) {
-        /* 阅读模式：↑=返回浏览器，⌂=回根目录（浏览器按钮被覆盖层遮挡，防御处理） */
-        if (t == fb->btn_up) {
-            fb_close_reader(fb);
-        } else if (t == fb->btn_root) {
-            fb_close_reader(fb);
-            fb->depth = 0;
-            fb->pending_scroll = -1;
-            strncpy(fb->cur, fb->root, sizeof(fb->cur) - 1);
-            fb_refresh(fb);
-        }
-        return;
-    }
 
     if (t == fb->btn_up) {
         /* 返回上一级：恢复进入前的位置 */
@@ -720,14 +422,6 @@ static void fb_btn_event(lv_event_t *e)
 }
 
 /* 阅读模式顶部状态栏按钮：↑=返回浏览器（文件所在目录） */
-static void fb_reader_btn_event(lv_event_t *e)
-{
-    fb_t *fb = fb_get(lv_event_get_user_data(e));
-    if (!fb || !fb->reader_active || lv_event_get_code(e) != LV_EVENT_CLICKED) return;
-    fb_close_reader(fb);
-}
-
-/* 滑动滚动时清除列表项的按下态（避免滑动误触发选择动画） */
 static void fb_list_event(lv_event_t *e)
 {
     fb_t *fb = fb_get(lv_event_get_user_data(e));
@@ -740,7 +434,7 @@ static void fb_list_event(lv_event_t *e)
 
 /* ── 创建 ── */
 
-lv_obj_t *file_browser_create(lv_obj_t *parent)
+lv_obj_t *file_browser_create(lv_obj_t *parent, file_browser_back_cb_t back_cb, void *ctx)
 {
     lv_obj_t *obj = lv_obj_create(parent);
     lv_obj_set_size(obj, lv_pct(100), lv_pct(100));
@@ -756,9 +450,11 @@ lv_obj_t *file_browser_create(lv_obj_t *parent)
     strncpy(fb->root, DRV_SDCARD_MOUNT_POINT, sizeof(fb->root) - 1);
     strncpy(fb->cur, fb->root, sizeof(fb->cur) - 1);
     fb->pending_scroll = -1;
+    fb->back_cb = back_cb;
+    fb->back_ctx = ctx;
     lv_obj_set_user_data(obj, fb);
 
-    /* 顶部路径 */
+    /* 顶部路径（返回按钮右侧） */
     fb->path_label = lv_label_create(obj);
     lv_obj_set_size(fb->path_label, lv_pct(100), FB_PATH_LABEL_H);
     lv_obj_align(fb->path_label, LV_ALIGN_TOP_LEFT, 8, 0);
@@ -816,126 +512,9 @@ lv_obj_t *file_browser_create(lv_obj_t *parent)
     }
 
     /* ── 阅读界面（全屏覆盖层，白底黑字；初始隐藏；只切换本层显隐） ── */
-    fb->reader_root = lv_obj_create(obj);
-    lv_obj_set_size(fb->reader_root, lv_pct(100), lv_pct(100));
-    lv_obj_set_style_bg_color(fb->reader_root, FB_READER_BG, 0);
-    lv_obj_set_style_bg_opa(fb->reader_root, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(fb->reader_root, 0, 0);
-    lv_obj_set_style_radius(fb->reader_root, 0, 0);
-    lv_obj_set_style_pad_all(fb->reader_root, 0, 0);
-    lv_obj_clear_flag(fb->reader_root, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(fb->reader_root, LV_OBJ_FLAG_HIDDEN);
-
-    /* 阅读内容（flow_view：整段文本 + 触摸滚动，白底黑字；尺寸由行数决定） */
-    fb->reader_view = flow_view_create(fb->reader_root);
-    lv_obj_set_pos(fb->reader_view, 0, 0);
-    lv_obj_set_style_bg_color(fb->reader_view, FB_READER_BG, 0);
-    flow_view_set_color(fb->reader_view, FB_READER_TEXT);
-    flow_view_set_follow(fb->reader_view, false);
-    flow_view_set_visible_lines(fb->reader_view, FB_READER_LINES);
-    /* 点击屏幕中心区域：切换标题栏/底部栏显隐（组件内点击回调，滚动不触发） */
-    flow_view_set_clicked_cb(fb->reader_view, fb_reader_tap_event, fb);
-
-    /* 顶部状态栏：↑ 返回按钮（左上角，紧贴边缘）+ 当前 txt 文件名（居中）；
-     * 初始隐藏，点击中心弹出；底部一分界线。用 set_pos 而非 align：
-     * align 会注册 style_align，布局刷新时按父高重算 y，与滑入动画冲突 */
-    fb->reader_title = lv_obj_create(fb->reader_root);
-    lv_obj_set_size(fb->reader_title, lv_pct(100), 28);
-    lv_obj_set_pos(fb->reader_title, 0, 0);
-    lv_obj_set_style_bg_color(fb->reader_title, FB_READER_BG, 0);
-    lv_obj_set_style_bg_opa(fb->reader_title, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(fb->reader_title, 1, 0);
-    lv_obj_set_style_border_side(fb->reader_title, LV_BORDER_SIDE_BOTTOM, 0);
-    lv_obj_set_style_border_color(fb->reader_title, FB_READER_BTN_BORDER, 0);
-    lv_obj_set_style_radius(fb->reader_title, 0, 0);
-    lv_obj_set_style_pad_hor(fb->reader_title, 0, 0);
-    lv_obj_set_style_pad_ver(fb->reader_title, 0, 0);
-    lv_obj_set_style_pad_gap(fb->reader_title, 0, 0);
-    lv_obj_set_flex_flow(fb->reader_title, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(fb->reader_title, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
-    lv_obj_clear_flag(fb->reader_title, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(fb->reader_title, LV_OBJ_FLAG_HIDDEN);
-
-    fb->btn_reader_up = lv_button_create(fb->reader_title);
-    lv_obj_set_size(fb->btn_reader_up, 28, 28);
-    lv_obj_set_ext_click_area(fb->btn_reader_up, 30);   /* 触摸区扩大（屏幕边缘按钮，手指中心偏右点不中） */
-    lv_obj_set_flex_flow(fb->btn_reader_up, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(fb->btn_reader_up, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_all(fb->btn_reader_up, 0, 0);
-    lv_obj_set_style_bg_color(fb->btn_reader_up, FB_READER_BG, 0);
-    lv_obj_set_style_bg_opa(fb->btn_reader_up, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(fb->btn_reader_up, FB_READER_BTN_BORDER, 0);
-    lv_obj_set_style_border_width(fb->btn_reader_up, 1, 0);
-    lv_obj_set_style_radius(fb->btn_reader_up, 6, 0);
-    lv_obj_set_style_text_color(fb->btn_reader_up, FB_READER_TEXT, 0);
-    lv_obj_add_event_cb(fb->btn_reader_up, fb_reader_btn_event, LV_EVENT_CLICKED, obj);
-    lv_obj_t *lbl_r_up = lv_label_create(fb->btn_reader_up);
-    lv_label_set_text(lbl_r_up, LV_SYMBOL_LEFT);
-
-    fb->reader_title_label = lv_label_create(fb->reader_title);
-    lv_obj_set_flex_grow(fb->reader_title_label, 1);
-    lv_obj_set_height(fb->reader_title_label, LV_SIZE_CONTENT);
-    lv_obj_set_style_text_color(fb->reader_title_label, FB_READER_TEXT, 0);
-    lv_obj_set_style_text_font(fb->reader_title_label, fb_ui_font(), 0);
-    lv_obj_set_style_text_align(fb->reader_title_label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_text(fb->reader_title_label, "");
-
-    /* 阅读模式底部栏（初始隐藏，点击中心弹出）：
-     * 无背景悬浮：透明 + 无分界线，进度条悬浮于文字之上，文字透出。
-     * LVGL 9 lv_obj 默认裁剪子对象：必须加 OVERFLOW_VISIBLE，
-     * 否则气泡（负 y 在容器上方）和滑块超出部分被裁掉。
-     * set_pos 而非 align（防布局重算与滑入动画冲突） */
-    fb->reader_bar = lv_obj_create(fb->reader_root);
-    lv_obj_set_size(fb->reader_bar, lv_pct(100), FB_READER_BTN_BAR_H);
-    lv_obj_set_pos(fb->reader_bar, 0, fb_screen_h() - FB_READER_BTN_BAR_H - FB_READER_BAR_BOTTOM);
-    lv_obj_add_flag(fb->reader_bar, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
-    lv_obj_set_style_bg_opa(fb->reader_bar, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(fb->reader_bar, 0, 0);
-    lv_obj_set_style_radius(fb->reader_bar, 0, 0);
-    lv_obj_set_style_pad_all(fb->reader_bar, 0, 0);
-    lv_obj_set_style_pad_gap(fb->reader_bar, 0, 0);
-    lv_obj_set_flex_flow(fb->reader_bar, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(fb->reader_bar, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER);
-    lv_obj_add_flag(fb->reader_bar, LV_OBJ_FLAG_HIDDEN);
-
-    /* 百分比气泡：黄色椭圆，飘在进度条头部（knob）上方。
-     * 放在透明 bar 容器内，随 bar 滑入滑出动画同步移动。
-     * 必须 IGNORE_LAYOUT：bar 是 flex 容器，否则气泡 x/y 被 flex 布局接管覆盖 */
-    fb->bubble = lv_label_create(fb->reader_bar);
-    lv_obj_add_flag(fb->bubble, LV_OBJ_FLAG_IGNORE_LAYOUT);
-    lv_obj_set_style_bg_color(fb->bubble, lv_color_hex(0xFBBF24), 0);
-    lv_obj_set_style_bg_opa(fb->bubble, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(fb->bubble, 9, 0);
-    lv_obj_set_style_text_color(fb->bubble, lv_color_hex(0x111111), 0);
-    lv_obj_set_style_text_font(fb->bubble, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_pad_hor(fb->bubble, 6, 0);
-    lv_obj_set_style_pad_ver(fb->bubble, 1, 0);
-    lv_obj_add_flag(fb->bubble, LV_OBJ_FLAG_HIDDEN);
-    lv_label_set_text(fb->bubble, "0%");
-
-    /* 自绘进度条：轨道/指示/滑块完全可控（0% 重合 + 指示器满端），
-     * 悬浮于 bar 底部，60% 半透明，触摸区上下扩展 */
-    fb->prog = lv_obj_create(fb->reader_bar);
-    lv_obj_set_size(fb->prog, lv_pct(88), 12);
-    lv_obj_add_flag(fb->prog, LV_OBJ_FLAG_IGNORE_LAYOUT);   /* 不参与 flex，位置对齐控制 */
-    lv_obj_align(fb->prog, LV_ALIGN_BOTTOM_MID, 0, 0);      /* bar 内底部居中（无动画，align 安全） */
-    lv_obj_set_style_opa(fb->prog, LV_OPA_60, 0);
-    lv_obj_set_style_bg_opa(fb->prog, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(fb->prog, 0, 0);
-    lv_obj_set_style_radius(fb->prog, 0, 0);
-    lv_obj_set_style_pad_all(fb->prog, 0, 0);
-    lv_obj_set_ext_click_area(fb->prog, 10);   /* 触摸命中区上下各扩 10px，视觉不变 */
-    lv_obj_add_event_cb(fb->prog, fb_prog_draw, LV_EVENT_DRAW_MAIN, fb);
-    lv_obj_add_event_cb(fb->prog, fb_prog_event, LV_EVENT_ALL, fb);
-
-    fb->progress_timer = lv_timer_create(fb_progress_timer, 500, fb);
-
-    /* 索引中提示（阅读覆盖层中央，索引完成后隐藏） */
-    fb->reader_index_lbl = lv_label_create(fb->reader_root);
-    lv_obj_center(fb->reader_index_lbl);
-    lv_obj_set_style_text_color(fb->reader_index_lbl, FB_READER_TEXT, 0);
-    lv_obj_set_style_text_font(fb->reader_index_lbl, fb_ui_font(), 0);
-    lv_obj_add_flag(fb->reader_index_lbl, LV_OBJ_FLAG_HIDDEN);
+    /* 阅读界面：共享组件 reader_view（全屏覆盖层，返回按钮回浏览器列表） */
+    fb->rv = reader_view_create(obj);
+    if (fb->rv) reader_view_set_back_cb(fb->rv, fb_reader_back, fb);
 
     fb_refresh(fb);
     return obj;
@@ -961,4 +540,23 @@ void file_browser_refresh(lv_obj_t *obj)
 {
     fb_t *fb = fb_get(obj);
     if (fb) fb_refresh(fb);
+}
+void file_browser_destroy(lv_obj_t *obj)
+{
+    fb_t *fb = fb_get(obj);
+    if (!fb) return;
+    if (fb->defer_timer) lv_timer_delete(fb->defer_timer);
+    if (fb->refresh_timer) lv_timer_delete(fb->refresh_timer);
+    /* 释放列表行数据（lv_obj_delete 不会释放 user_data） */
+    uint32_t n = lv_obj_get_child_count(fb->list);
+    for (uint32_t i = 0; i < n; i++) {
+        fb_row_data_t *rd = lv_obj_get_user_data(lv_obj_get_child(fb->list, i));
+        if (rd) free(rd);
+    }
+    if (fb->rv) reader_view_destroy(fb->rv);
+    free(fb);
+    /* 闪屏修复：先隐藏 + 立即刷新一帧（露出桌面），再删除全屏对象 */
+    lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN);
+    lv_refr_now(NULL);
+    lv_obj_delete(obj);
 }
