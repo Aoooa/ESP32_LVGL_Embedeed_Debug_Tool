@@ -47,6 +47,7 @@ static const struct {
 
 /* ── 主题色 ── */
 #define ACCENT_COLOR     0x39C5BB   /* 初音绿：卡片边框固定色 */
+#define ACCENT_COLOR_HI  0x6FE3D8   /* 初音绿加亮（按下边框/内光晕） */
 #define THEME_DARK_BG    0x0D0D0D
 #define THEME_DARK_CARD  0x161616   /* 卡片底色（不透明） */
 #define THEME_DARK_TEXT  0xFFFFFF
@@ -270,7 +271,6 @@ static void launcher_apply_text_theme(void)
     for (int i = 0; i < APP_COUNT; i++) {
         lv_obj_set_style_text_color(s_launcher.text_labels[i], c, 0);
         lv_obj_set_style_bg_color(s_launcher.cards[i], bc, 0);
-        lv_obj_set_style_bg_color(s_launcher.text_labels[i], bc, 0);
     }
 }
 
@@ -552,6 +552,14 @@ static void launcher_build_cards(void)
         lv_obj_set_style_border_width(card, CARD_BORDER, 0);
         lv_obj_set_style_radius(card, CARD_RADIUS, 0);
         lv_obj_set_style_pad_all(card, 0, 0);
+        /* 按下效果：边框绿色加亮 + 整体轻微缩小（含图标/文字）。
+         * 用 transform_scale（256=100%，250≈97.7%，长宽各缩约 3px）——
+         * 父对象 transform 会作用于子对象绘制，图标/文字同步缩放；
+         * 注意勿用 transform_width/height（只改绘制边界，不缩内容） */
+        lv_obj_set_style_border_color(card, lv_color_hex(ACCENT_COLOR_HI), LV_STATE_PRESSED);
+        lv_obj_set_style_transform_pivot_x(card, lv_pct(50), 0);
+        lv_obj_set_style_transform_pivot_y(card, lv_pct(50), 0);
+        lv_obj_set_style_transform_scale(card, 250, LV_STATE_PRESSED);
         /* 卡片点击 → 启动对应 APP（占位卡无操作） */
         lv_obj_set_user_data(card, (void *)(intptr_t)i);
         lv_obj_add_event_cb(card, on_card_event, LV_EVENT_CLICKED, NULL);
@@ -564,8 +572,7 @@ static void launcher_build_cards(void)
         lv_obj_add_flag(icon_lbl, LV_OBJ_FLAG_EVENT_BUBBLE);
         lv_obj_set_style_text_font(icon_lbl, &lv_font_launcher_icons, 0);
         lv_obj_set_style_text_color(icon_lbl, lv_color_hex(0xFFFFFF), 0);   /* 固定白色 */
-        lv_obj_set_style_bg_color(icon_lbl, lv_color_hex(THEME_DARK_CARD), 0);
-        lv_obj_set_style_bg_opa(icon_lbl, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_opa(icon_lbl, LV_OPA_TRANSP, 0);
         s_launcher.icon_labels[i] = icon_lbl;
 
         lv_obj_t *lbl = lv_label_create(card);
@@ -573,8 +580,7 @@ static void launcher_build_cards(void)
         lv_obj_add_flag(lbl, LV_OBJ_FLAG_EVENT_BUBBLE);
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_28, 0);
         lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_style_bg_color(lbl, lv_color_hex(THEME_DARK_CARD), 0);
-        lv_obj_set_style_bg_opa(lbl, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_opa(lbl, LV_OPA_TRANSP, 0);
         s_launcher.text_labels[i] = lbl;
     }
     launcher_apply_text_theme();

@@ -8,9 +8,9 @@
 static const char *TAG = "gesture";
 
 /* ── 左缘右滑返回手势参数 ── */
-#define SWIPE_EDGE_X      15     /* 起点距逻辑左边缘 ≤15px 才触发（严格贴边） */
+#define SWIPE_EDGE_X      25     /* 起点距逻辑左边缘 ≤25px 才触发（严格贴边） */
 #define SWIPE_MIN_DX      30     /* 累计水平右移 ≥30px 即触发返回（移动中触发，不等释放） */
-#define SWIPE_CANDIDATE_DX 25    /* 累计右移 >25px 即判定为返回手势候选 → 官方 wait_release 禁单击 */
+#define SWIPE_CANDIDATE_DX 10    /* 累计右移 >10px 即判定为返回手势候选 → 官方 wait_release 禁单击 */
 
 /* ── 状态（read_cb 同一线程访问，无需锁） ── */
 static int s_orientation_deg;                 /* 当前逻辑方向 0/90/180/270 */
