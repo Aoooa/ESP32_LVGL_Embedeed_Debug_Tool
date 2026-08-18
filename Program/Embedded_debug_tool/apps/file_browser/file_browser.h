@@ -36,4 +36,13 @@ void file_browser_refresh(lv_obj_t *obj);
 /* 屏幕旋转后重排（list 高度/按钮宽按新分辨率） */
 void file_browser_relayout(lv_obj_t *obj);
 
+/* 右滑返回手势（launcher 分发调用）：阅读器开→关阅读器回列表；
+ * 非根目录→返回上一级（返回 false，留在浏览器）；根目录→返回 true（回桌面）。
+ * 须在 LVGL 线程/持锁调用 */
+bool file_browser_swipe_back(lv_obj_t *obj);
+
+/* 调试事件（测试模块用）：evt 自定义事件码，内部打印状态供验证。
+ * 须在 LVGL 线程/持锁调用 */
+void file_browser_debug_event(lv_obj_t *obj, int evt);
+
 #endif /* FILE_BROWSER_H */

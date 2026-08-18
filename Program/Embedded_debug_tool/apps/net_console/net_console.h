@@ -22,4 +22,10 @@ net_console_t *net_console_create(lv_obj_t *parent, net_console_back_cb_t back_c
 /* 销毁网络信息 APP */
 void net_console_destroy(net_console_t *nc);
 
+/* 右滑返回（launcher 分发）：无内部分级，直接返回 true（请求关闭回桌面） */
+bool net_console_swipe_back(net_console_t *nc);
+
+/* 调试事件（测试模块用）：打印内部状态供验证 */
+void net_console_debug_event(net_console_t *nc, int evt);
+
 #endif /* NET_CONSOLE_H */

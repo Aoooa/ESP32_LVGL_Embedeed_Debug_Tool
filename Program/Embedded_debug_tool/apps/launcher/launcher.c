@@ -1,11 +1,16 @@
-#include "launcher.h"
+﻿#include "launcher.h"
 #include "file_browser.h"
-#include "bookshelf.h"
+#include "reader_app.h"
 #include "net_console.h"
-#include "app_display.h"
+#include "terminal.h"
+#include "gesture.h"
 #include <string.h>
 #include <math.h>
 #include <stdio.h>
+#include "esp_log.h"
+
+/* launcher 图标字体：只含 montserrat_28 缺失的 FontAwesome 字形，缺失字形回退 montserrat_28 */
+LV_FONT_DECLARE(lv_font_launcher_icons);
 
 /* ── App 卡片表（每卡最多 3 行，每行 ≤15 字符防折行） ── */
 #define APP_COUNT 6
@@ -13,12 +18,16 @@
 /* 卡片类型：可启动 app / 占位 */
 typedef enum { APP_TYPE_LAUNCH, APP_TYPE_PLACEHOLDER } app_type_t;
 
-/* APP 图标（LV_SYMBOL，montserrat_28 含 FontAwesome 字形） */
+/* 图标字体新增字形（FontAwesome，montserrat_28 缺失，由 lv_font_launcher_icons 提供） */
+#define LAUNCHER_ICON_BOOK     "\xEF\x80\xAD"   /* U+F02D fa-book（阅读器） */
+#define LAUNCHER_ICON_TERMINAL "\xEF\x84\xA0"   /* U+F120 fa-terminal（串口终端） */
+
+/* APP 图标（LV_SYMBOL / FontAwesome，lv_font_launcher_icons + fallback montserrat_28） */
 static const char *const s_app_icons[APP_COUNT] = {
     LV_SYMBOL_DIRECTORY,   /* Files */
-    LV_SYMBOL_FILE,        /* Reader（图书/文档） */
-    LV_SYMBOL_USB,         /* UART */
-    LV_SYMBOL_WIFI,        /* Net */
+    LAUNCHER_ICON_BOOK,    /* Reader（书本） */
+    LAUNCHER_ICON_TERMINAL, /* Terminal（串口终端） */
+    LV_SYMBOL_WIFI,        /* SerialIP（串口转 TCP/IP） */
     LV_SYMBOL_SETTINGS,    /* Slot 5 */
     LV_SYMBOL_POWER,       /* Slot 6 */
 };
@@ -28,12 +37,12 @@ static const struct {
     app_type_t type;        /* 占位或可启动 */
     launch_app_id_t id;     /* type=LAUNCH 时的 app id */
 } s_apps[APP_COUNT] = {
-    { "Files",  APP_TYPE_LAUNCH,     LAUNCH_APP_FILES },
-    { "Reader", APP_TYPE_LAUNCH,     LAUNCH_APP_READER },
-    { "UART",   APP_TYPE_LAUNCH,     LAUNCH_APP_UART },
-    { "Net",    APP_TYPE_LAUNCH,     LAUNCH_APP_NET },
-    { "Slot 5", APP_TYPE_PLACEHOLDER, 0 },
-    { "Slot 6", APP_TYPE_PLACEHOLDER, 0 },
+    { "Files",    APP_TYPE_LAUNCH,     LAUNCH_APP_FILES },
+    { "Reader",   APP_TYPE_LAUNCH,     LAUNCH_APP_READER },
+    { "Terminal", APP_TYPE_LAUNCH,     LAUNCH_APP_UART },
+    { "SerialIP", APP_TYPE_LAUNCH,     LAUNCH_APP_NET },
+    { "Slot 5",   APP_TYPE_PLACEHOLDER, 0 },
+    { "Slot 6",   APP_TYPE_PLACEHOLDER, 0 },
 };
 
 /* ── 主题色 ── */
@@ -355,79 +364,165 @@ static void launcher_build_wheel(void)
     lv_timer_pause(s_launcher.wheel_timer);
 }
 
-/* ── APP 管理：启动创建全屏界面（覆盖启动器），退出销毁回桌面 ── */
-static void *s_app_obj;                /* 当前 APP 实例（NULL=桌面） */
-static void (*s_app_destroy)(void *);  /* 销毁回调 */
-static launch_app_id_t s_app_id;       /* 当前 APP 类型（SD 通知转发用） */
+/* ── APP 管理：统一描述符表（app_manifest.h）+ 返回栈 + 事件路由 ── */
+#include "app_manifest.h"
 
-/* 销毁包装（统一 void* 签名） */
-static void app_destroy_files(void *p) { file_browser_destroy((lv_obj_t *)p); }
-static void app_destroy_bookshelf(void *p) { bookshelf_destroy((bookshelf_t *)p); }
-static void app_destroy_terminal(void *p) { app_display_terminal_destroy((lv_obj_t *)p); }
-static void app_destroy_net_console(void *p) { net_console_destroy((net_console_t *)p); }
+#define APP_STACK_MAX 4   /* 返回栈深度（来源 APP 保活，压栈切换） */
 
-void launcher_app_launch(launch_app_id_t id)
+typedef struct {
+    void *app;                    /* APP 实例（NULL=空槽） */
+    const app_manifest_t *m;      /* 描述符 */
+} app_slot_t;
+
+static app_slot_t s_stack[APP_STACK_MAX];
+static int s_depth;               /* 当前栈深度（0=桌面） */
+
+/* 全部 APP 描述符表（索引 = launch_app_id_t） */
+const app_manifest_t app_manifests[LAUNCH_APP_COUNT] = {
+    [LAUNCH_APP_FILES] = {
+        .id = LAUNCH_APP_FILES,
+        .name = "Files",
+        .launch = (void *(*)(lv_obj_t *, void (*)(void *), void *))file_browser_create,
+        .destroy = (void (*)(void *))file_browser_destroy,
+        .back = (bool (*)(void *))file_browser_swipe_back,
+        .rotate = NULL,
+        .refresh = (void (*)(void *))file_browser_refresh,
+        .debug_event = (void (*)(void *, int))file_browser_debug_event,
+    },
+    [LAUNCH_APP_READER] = {
+        .id = LAUNCH_APP_READER,
+        .name = "Reader",
+        .launch = (void *(*)(lv_obj_t *, void (*)(void *), void *))reader_app_create,
+        .destroy = (void (*)(void *))reader_app_destroy,
+        .back = (bool (*)(void *))reader_app_swipe_back,
+        .rotate = NULL,
+        .refresh = (void (*)(void *))reader_app_refresh,
+        .debug_event = (void (*)(void *, int))reader_app_debug_event,
+    },
+    [LAUNCH_APP_UART] = {
+        .id = LAUNCH_APP_UART,
+        .name = "Terminal",
+        .launch = (void *(*)(lv_obj_t *, void (*)(void *), void *))terminal_create,
+        .destroy = (void (*)(void *))terminal_destroy,
+        .back = (bool (*)(void *))terminal_swipe_back,
+        .rotate = NULL,
+        .refresh = NULL,
+        .debug_event = (void (*)(void *, int))terminal_debug_event,
+    },
+    [LAUNCH_APP_NET] = {
+        .id = LAUNCH_APP_NET,
+        .name = "SerialIP",
+        .launch = (void *(*)(lv_obj_t *, void (*)(void *), void *))net_console_create,
+        .destroy = (void (*)(void *))net_console_destroy,
+        .back = (bool (*)(void *))net_console_swipe_back,
+        .rotate = NULL,
+        .refresh = NULL,
+        .debug_event = (void (*)(void *, int))net_console_debug_event,
+    },
+};
+
+/* 当前栈顶 APP（无则 NULL） */
+static app_slot_t *stack_top(void)
 {
-    if (s_app_obj) return;   /* 已有 APP 在运行，忽略 */
-    lv_obj_t *scr = lv_screen_active();
-    switch (id) {
-    case LAUNCH_APP_FILES:
-        s_app_obj = file_browser_create(scr, launcher_app_close, NULL);
-        s_app_destroy = app_destroy_files;
-        break;
-    case LAUNCH_APP_READER:
-        s_app_obj = bookshelf_create(scr, launcher_app_close, NULL);
-        s_app_destroy = app_destroy_bookshelf;
-        break;
-    case LAUNCH_APP_UART:
-        /* 复用 app_display 原有终端界面（原样 + 左上角返回按钮） */
-        s_app_obj = app_display_terminal_create(scr, launcher_app_close, NULL);
-        s_app_destroy = app_destroy_terminal;
-        break;
-    case LAUNCH_APP_NET:
-        s_app_obj = net_console_create(scr, launcher_app_close, NULL);
-        s_app_destroy = app_destroy_net_console;
-        break;
-    default:
-        return;
-    }
-    s_app_id = id;
+    return s_depth > 0 ? &s_stack[s_depth - 1] : NULL;
 }
 
+/* 启动 APP：压栈（来源 APP 保活，arg 为带参启动参数，可 NULL，由 APP 查询） */
+static const char *s_launch_arg;   /* 最近一次 launch 的 arg（launch 内可查询） */
+
+const char *launcher_app_get_arg(void)
+{
+    return s_launch_arg;
+}
+
+void launcher_app_launch(launch_app_id_t id, const char *arg)
+{
+    if (id < 0 || id >= LAUNCH_APP_COUNT) return;
+    if (s_depth >= APP_STACK_MAX) {
+        ESP_LOGW("launcher", "app stack full (%d), launch %d ignored", APP_STACK_MAX, id);
+        return;
+    }
+    const app_manifest_t *m = &app_manifests[id];
+    if (!m->launch) return;
+    app_slot_t *slot = &s_stack[s_depth];
+    s_launch_arg = arg;   /* APP launch 内调用 launcher_app_get_arg() 获取 */
+    slot->app = m->launch(lv_screen_active(), launcher_app_close, NULL);
+    s_launch_arg = NULL;
+    slot->m = m;
+    s_depth++;
+    ESP_LOGI("launcher", "[APP] push %s (depth=%d%s)", m->name, s_depth,
+             arg ? ", arg=direct-open" : "");
+}
+
+/* 关闭栈顶 APP：弹栈回来源（来源对象树保活，状态天然保留） */
 void launcher_app_close(void *ctx)
 {
     (void)ctx;
-    if (s_app_obj && s_app_destroy) {
-        s_app_destroy(s_app_obj);
+    app_slot_t *top = stack_top();
+    if (!top) return;
+    if (top->app && top->m && top->m->destroy) {
+        top->m->destroy(top->app);
     }
-    s_app_obj = NULL;
-    s_app_destroy = NULL;
+    ESP_LOGI("launcher", "[APP] pop %s (depth=%d->%d)", top->m ? top->m->name : "?",
+             s_depth, s_depth - 1);
+    s_depth--;
 }
 
 bool launcher_app_running(void)
 {
-    return s_app_obj != NULL;
+    return s_depth > 0;
 }
 
-void launcher_notify_sd_ready(void)
+/* 返回事件（输入层右滑触发，ctx 未用）：
+ * 栈顶 back 回调——true=弹栈回来源；false=APP 内部已处理。LVGL 线程直调。 */
+void launcher_app_swipe_back(void *ctx)
 {
-    if (!s_app_obj) return;
-    if (s_app_id == LAUNCH_APP_FILES) {
-        file_browser_refresh(s_app_obj);
-    } else if (s_app_id == LAUNCH_APP_READER) {
-        bookshelf_refresh(s_app_obj);
+    (void)ctx;
+    app_slot_t *top = stack_top();
+    if (!top || !top->m || !top->m->back) return;
+    if (!top->m->back(top->app)) {
+        ESP_LOGI("launcher", "[EVT] back: %s handled internally", top->m->name);
+        return;
     }
+    ESP_LOGI("launcher", "[EVT] back: %s close -> pop", top->m->name);
+    launcher_app_close(NULL);
 }
 
-/* 全局手势：屏幕左边缘右滑 → 返回上一级（关闭当前 APP 回桌面）。
- * 手势由触摸 read_cb 检测（adapter：起点左 30px 内、水平右滑≥60px），
- * LVGL 分发 LV_EVENT_GESTURE 到 indev 回调，这里统一收口。 */
-static void on_indev_gesture(lv_event_t *e)
+/* 旋转事件（平台旋转完成）：栈顶 rotate 回调，NULL=弹栈关闭回桌面 */
+void launcher_event_rotate(int deg)
 {
-    (void)e;
-    if (launcher_app_running()) {
-        launcher_app_close(NULL);
+    app_slot_t *top = stack_top();
+    if (!top) {
+        launcher_relayout(s_launcher.root);
+        return;
     }
+    if (top->m && top->m->rotate) {
+        ESP_LOGI("launcher", "[EVT] rotate %d° -> %s", deg, top->m->name);
+        top->m->rotate(top->app, deg);
+        return;
+    }
+    ESP_LOGI("launcher", "[EVT] rotate %d° -> %s has no handler, close", deg,
+             top->m ? top->m->name : "?");
+    launcher_app_close(NULL);
+    launcher_relayout(s_launcher.root);
+}
+
+/* SD 就绪事件：栈顶 refresh 回调 */
+void launcher_event_sd_ready(void)
+{
+    app_slot_t *top = stack_top();
+    if (!top || !top->m || !top->m->refresh) return;
+    ESP_LOGI("launcher", "[EVT] sd_ready -> %s", top->m->name);
+    top->m->refresh(top->app);
+}
+
+/* 调试事件（测试模块调用）：栈顶 debug_event 回调 */
+void launcher_event_debug(int evt)
+{
+    app_slot_t *top = stack_top();
+    if (!top || !top->m || !top->m->debug_event) return;
+    ESP_LOGI("launcher", "[EVT] debug(%d) -> %s", evt, top->m->name);
+    top->m->debug_event(top->app, evt);
 }
 
 /* 卡片点击：可启动卡 → 启动 APP；占位卡无操作 */
@@ -437,7 +532,7 @@ static void on_card_event(lv_event_t *e)
     int i = (int)(intptr_t)lv_obj_get_user_data(card);
     if (i < 0 || i >= APP_COUNT) return;
     if (s_apps[i].type == APP_TYPE_LAUNCH) {
-        launcher_app_launch(s_apps[i].id);
+        launcher_app_launch(s_apps[i].id, NULL);
     }
 }
 
@@ -462,11 +557,12 @@ static void launcher_build_cards(void)
         lv_obj_add_event_cb(card, on_card_event, LV_EVENT_CLICKED, NULL);
         s_launcher.cards[i] = card;
 
-        /* 卡片内容：白色图标 + APP 名称（relayout 固定定位：图标左对齐竖线） */
+        /* 卡片内容：白色图标 + APP 名称（relayout 固定定位：图标左对齐竖线）。
+         * 图标字体：新增字形（书本/终端）+ fallback montserrat_28（其余图标） */
         lv_obj_t *icon_lbl = lv_label_create(card);
         lv_label_set_text(icon_lbl, s_app_icons[i]);
         lv_obj_add_flag(icon_lbl, LV_OBJ_FLAG_EVENT_BUBBLE);
-        lv_obj_set_style_text_font(icon_lbl, &lv_font_montserrat_28, 0);
+        lv_obj_set_style_text_font(icon_lbl, &lv_font_launcher_icons, 0);
         lv_obj_set_style_text_color(icon_lbl, lv_color_hex(0xFFFFFF), 0);   /* 固定白色 */
         lv_obj_set_style_bg_color(icon_lbl, lv_color_hex(THEME_DARK_CARD), 0);
         lv_obj_set_style_bg_opa(icon_lbl, LV_OPA_COVER, 0);
@@ -564,17 +660,8 @@ lv_obj_t *launcher_create(lv_obj_t *parent)
     launcher_build_wheel();
     launcher_relayout_core();
 
-    /* 注册手势返回（触摸 indev 的事件回调） */
-    {
-        lv_indev_t *indev = lv_indev_get_next(NULL);
-        for (; indev; indev = lv_indev_get_next(indev)) {
-            if (lv_indev_get_type(indev) == LV_INDEV_TYPE_POINTER) {
-                lv_indev_add_event_cb(indev, on_indev_gesture, LV_EVENT_GESTURE, NULL);
-                break;
-            }
-        }
-    }
-
+    /* 注册输入层返回事件（右滑手势触发 → 统一分发当前 APP） */
+    gesture_set_back_handler(launcher_app_swipe_back, NULL);
 
     return root;
 }

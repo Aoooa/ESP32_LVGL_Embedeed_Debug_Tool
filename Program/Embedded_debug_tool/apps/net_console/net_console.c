@@ -4,6 +4,7 @@
 #include "app_font.h"
 #include "app_web.h"
 #include "app_uart.h"
+#include "esp_log.h"
 #include <stdlib.h>
 
 /* 配色（深色，与书架一致） */
@@ -161,4 +162,18 @@ void net_console_destroy(net_console_t *nc)
         lv_obj_delete(nc->root);
     }
     free(nc);
+}
+
+/* 右滑返回（launcher 分发）：无内部分级，直接请求关闭回桌面 */
+bool net_console_swipe_back(net_console_t *nc)
+{
+    (void)nc;
+    return true;
+}
+
+/* 调试事件（测试模块用）：打印内部状态（Web 服务状态）供验证 */
+void net_console_debug_event(net_console_t *nc, int evt)
+{
+    if (!nc) return;
+    ESP_LOGI("net_console", "[DBG] evt=%d web=%s", evt, g_httpd ? "running" : "stopped");
 }

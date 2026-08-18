@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Embedded Debug Tool — 主入口
  */
 
@@ -58,6 +58,14 @@ void app_main(void)
     /* 先建 UI（文件浏览器显示"SD card not ready"），SD 挂载成功后通知刷新。
      * SD 与 LCD 共享 SPI2 总线：挂载/枚举期间持 LVGL 锁，独占总线防并发 */
     app_display_start();
+
+    /* APP 回调测试（默认关闭；启用：CMakeLists 取消 app_test.c 注释 + 此处改 #if 1）。
+     * 经 lv_timer 延迟到 LVGL 线程执行（launcher/APP 操作需 LVGL 上下文） */
+#if 0
+    #include "app_test.h"
+    lv_timer_t *t = lv_timer_create((lv_timer_cb_t)app_test_run, 2000, NULL);
+    lv_timer_set_repeat_count(t, 1);
+#endif
 
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
         if (drv_sdcard_init() == ESP_OK) {

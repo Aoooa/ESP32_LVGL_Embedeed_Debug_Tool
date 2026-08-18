@@ -1,4 +1,4 @@
-set(MODULE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/..)
+﻿set(MODULE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
 idf_component_register(
     SRCS
@@ -13,17 +13,21 @@ idf_component_register(
         "${MODULE_DIR}/web/app_web_broadcast.c"
         "${MODULE_DIR}/display/drv_display.c"
         "${MODULE_DIR}/display/app_display.c"
-        "${MODULE_DIR}/ui/flow_view/flow_model.c"
-        "${MODULE_DIR}/ui/flow_view/flow_view.c"
-        "${MODULE_DIR}/ui/file_browser/file_browser.c"
-        "${MODULE_DIR}/ui/launcher/launcher.c"
-        "${MODULE_DIR}/ui/font_manager/app_font.c"
-        "${MODULE_DIR}/ui/reader/reader_index.c"
-        "${MODULE_DIR}/ui/reader/reader.c"
-        "${MODULE_DIR}/ui/reader/reader_view.c"
-        "${MODULE_DIR}/ui/bookshelf/bookshelf.c"
-        "${MODULE_DIR}/ui/net_console/net_console.c"
+        "${MODULE_DIR}/platform/input/gesture.c"
+        "${MODULE_DIR}/platform/components/flow_view/flow_model.c"
+        "${MODULE_DIR}/platform/components/flow_view/flow_view.c"
+        "${MODULE_DIR}/apps/file_browser/file_browser.c"
+        "${MODULE_DIR}/apps/launcher/launcher.c"
+        "${MODULE_DIR}/platform/components/font_manager/app_font.c"
+        "${MODULE_DIR}/apps/reader/reader_index.c"
+        "${MODULE_DIR}/apps/reader/reader.c"
+        "${MODULE_DIR}/apps/reader/reader_view.c"
+        "${MODULE_DIR}/apps/reader/reader_app.c"
+        "${MODULE_DIR}/apps/terminal/terminal.c"
+        "${MODULE_DIR}/apps/net_console/net_console.c"
+        # "${MODULE_DIR}/apps/test/app_test.c"   # 测试模块（默认关闭；启用：取消注释 + main.c #if 1 + app_test_run()）
         "${MODULE_DIR}/fonts/han_sc_16.c"
+        "${MODULE_DIR}/fonts/lv_font_launcher_icons.c"
         "${MODULE_DIR}/sdcard/drv_sdcard.c"
         "${MODULE_DIR}/sdcard/app_sdcard.c"
 
@@ -34,13 +38,16 @@ idf_component_register(
         "${MODULE_DIR}/tcp"
         "${MODULE_DIR}/web"
         "${MODULE_DIR}/display"
-        "${MODULE_DIR}/ui/flow_view"
-        "${MODULE_DIR}/ui/file_browser"
-        "${MODULE_DIR}/ui/launcher"
-        "${MODULE_DIR}/ui/font_manager"
-        "${MODULE_DIR}/ui/reader"
-        "${MODULE_DIR}/ui/bookshelf"
-        "${MODULE_DIR}/ui/net_console"
+        "${MODULE_DIR}/platform/input"
+        "${MODULE_DIR}/apps"
+        "${MODULE_DIR}/apps/launcher"
+        "${MODULE_DIR}/apps/file_browser"
+        "${MODULE_DIR}/apps/net_console"
+        "${MODULE_DIR}/apps/reader"
+        "${MODULE_DIR}/apps/terminal"
+        "${MODULE_DIR}/apps/test"
+        "${MODULE_DIR}/platform/components/flow_view"
+        "${MODULE_DIR}/platform/components/font_manager"
         "${MODULE_DIR}/sdcard"
 
     PRIV_REQUIRES
