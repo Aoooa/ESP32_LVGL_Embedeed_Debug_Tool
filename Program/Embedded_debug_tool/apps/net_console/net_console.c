@@ -2,8 +2,7 @@
 
 #include "net_console.h"
 #include "app_font.h"
-#include "app_web.h"
-#include "app_uart.h"
+#include "app_wifi.h"
 #include "esp_log.h"
 #include <stdlib.h>
 
@@ -20,9 +19,9 @@ struct net_console {
     lv_obj_t *root;
     net_console_back_cb_t back_cb;
     void *back_ctx;
-    lv_obj_t *btn_toggle;      /* 服务开启/停止按钮 */
+    lv_obj_t *btn_toggle;      /* AP 开启/停止按钮 */
     lv_obj_t *lbl_toggle;
-    lv_obj_t *lbl_svc_state;   /* 服务状态显示 */
+    lv_obj_t *lbl_status_dot;  /* 状态指示灯：绿=AP 运行，红=AP 停止 */
 };
 
 static lv_font_t *nc_font(void)
@@ -31,29 +30,29 @@ static lv_font_t *nc_font(void)
     return f ? f : &lv_font_montserrat_14;
 }
 
-/* 服务开关：停止/启动 Web 服务（httpd） */
+/* AP 状态刷新：指示灯 + 按钮文字 */
 static void nc_update_service(net_console_t *nc)
 {
-    const char *state = g_httpd ? "运行中" : "已停止";
-    lv_label_set_text(nc->lbl_svc_state, state);
-    lv_label_set_text(nc->lbl_toggle, g_httpd ? "停止" : "开启");
+    bool up = app_wifi_is_up();
+    lv_obj_set_style_bg_color(nc->lbl_status_dot, up ? lv_color_hex(0x22C55E) : lv_color_hex(0xEF4444), 0);
+    lv_label_set_text(nc->lbl_toggle, up ? "停止" : "开启");
 }
 
 static void nc_btn_toggle_cb(lv_event_t *e)
 {
     net_console_t *nc = lv_event_get_user_data(e);
     if (!nc) return;
-    if (g_httpd) {
-        app_web_stop();
+    if (app_wifi_is_up()) {
+        app_wifi_stop();
     } else {
-        app_web_start();
+        app_wifi_start();
     }
     nc_update_service(nc);
 }
 
-/* 信息行：key 左、value 右（flex row，value 占满右对齐）。
+/* 信息行：两行显示——上行 key、下行 value（flex column）。
  * 行放入 flex column 容器后 flex_grow=1 均分高度，横竖屏均不溢出/重叠。
- * value 长文本自动换行（行高不足时换行显示，不裁剪） */
+ * value 长文本自动换行完整显示 */
 static void nc_row(lv_obj_t *parent, const char *key, const char *value)
 {
     lv_obj_t *row = lv_obj_create(parent);
@@ -64,10 +63,10 @@ static void nc_row(lv_obj_t *parent, const char *key, const char *value)
     lv_obj_set_style_radius(row, 6, 0);
     lv_obj_set_style_pad_hor(row, 12, 0);
     lv_obj_set_style_pad_ver(row, 6, 0);
+    lv_obj_set_style_pad_gap(row, 2, 0);
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_gap(row, 8, 0);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
     lv_obj_t *k = lv_label_create(row);
     lv_label_set_text(k, key);
@@ -77,8 +76,6 @@ static void nc_row(lv_obj_t *parent, const char *key, const char *value)
     lv_obj_t *v = lv_label_create(row);
     lv_label_set_text(v, value);
     lv_label_set_long_mode(v, LV_LABEL_LONG_WRAP);   /* 长文本换行完整显示 */
-    lv_obj_set_flex_grow(v, 1);
-    lv_obj_set_style_text_align(v, LV_TEXT_ALIGN_RIGHT, 0);
     lv_obj_set_style_text_color(v, NC_ACCENT, 0);
     lv_obj_set_style_text_font(v, nc_font(), 0);
 }
@@ -100,7 +97,7 @@ net_console_t *net_console_create(lv_obj_t *parent, net_console_back_cb_t back_c
     lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
     nc->root = root;
 
-    /* 顶部栏：← 返回 + 标题 */
+    /* 顶部栏：状态指示灯（左）+ 开启/停止按钮（右），无标题 */
     lv_obj_t *bar = lv_obj_create(root);
     lv_obj_set_size(bar, lv_pct(100), NC_BAR_H);
     lv_obj_set_style_bg_color(bar, NC_BG, 0);
@@ -109,27 +106,31 @@ net_console_t *net_console_create(lv_obj_t *parent, net_console_back_cb_t back_c
     lv_obj_set_style_border_side(bar, LV_BORDER_SIDE_BOTTOM, 0);
     lv_obj_set_style_border_color(bar, NC_BORDER, 0);
     lv_obj_set_style_radius(bar, 0, 0);
-    lv_obj_set_style_pad_all(bar, 0, 0);
+    lv_obj_set_style_pad_hor(bar, 12, 0);
+    lv_obj_set_style_pad_ver(bar, 0, 0);
     lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_gap(bar, 10, 0);
     lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *title = lv_label_create(bar);
-    lv_obj_set_flex_grow(title, 1);
-    lv_label_set_text(title, "网络服务");
-    lv_obj_set_style_text_color(title, NC_TEXT, 0);
-    lv_obj_set_style_text_font(title, nc_font(), 0);
-    lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
+    /* 状态指示灯：圆点，绿=AP 运行，红=AP 停止 */
+    nc->lbl_status_dot = lv_obj_create(bar);
+    lv_obj_set_size(nc->lbl_status_dot, 12, 12);
+    lv_obj_set_style_radius(nc->lbl_status_dot, 6, 0);
+    lv_obj_set_style_bg_color(nc->lbl_status_dot, lv_color_hex(0xEF4444), 0);
+    lv_obj_set_style_bg_opa(nc->lbl_status_dot, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(nc->lbl_status_dot, 0, 0);
 
-    /* 服务状态 + 开启/停止按钮 */
-    nc->lbl_svc_state = lv_label_create(root);
-    lv_obj_align(nc->lbl_svc_state, LV_ALIGN_TOP_LEFT, 16, NC_BAR_H + 10);
-    lv_obj_set_style_text_color(nc->lbl_svc_state, NC_TEXT, 0);
-    lv_obj_set_style_text_font(nc->lbl_svc_state, nc_font(), 0);
+    /* 占位撑开（按钮右对齐） */
+    lv_obj_t *spacer = lv_obj_create(bar);
+    lv_obj_set_size(spacer, 1, 1);
+    lv_obj_set_style_bg_opa(spacer, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(spacer, 0, 0);
+    lv_obj_set_flex_grow(spacer, 1);
 
-    nc->btn_toggle = lv_button_create(root);
-    lv_obj_set_size(nc->btn_toggle, 120, 36);
-    lv_obj_align(nc->btn_toggle, LV_ALIGN_TOP_RIGHT, -16, NC_BAR_H + 6);
+    /* AP 开启/停止按钮 */
+    nc->btn_toggle = lv_button_create(bar);
+    lv_obj_set_size(nc->btn_toggle, 80, 22);
     lv_obj_set_style_bg_color(nc->btn_toggle, NC_CARD, 0);
     lv_obj_set_style_bg_opa(nc->btn_toggle, LV_OPA_COVER, 0);
     lv_obj_set_style_border_color(nc->btn_toggle, NC_BORDER, 0);
@@ -141,32 +142,33 @@ net_console_t *net_console_create(lv_obj_t *parent, net_console_back_cb_t back_c
     nc->lbl_toggle = lv_label_create(nc->btn_toggle);
     lv_obj_center(nc->lbl_toggle);
 
+    /* 默认 AP 关闭（main 不启动），显示红点 + "开启" */
     nc_update_service(nc);
 
-    /* 信息区：flex column 容器占满剩余高度，5 行 flex_grow=1 均分（横竖屏均不溢出/重叠） */
+    /* 信息区：可滚动容器 + 行按内容高度自适应（value 完整显示不被裁剪）。
+     * 5 行两行显示（key 上/value 下），超屏可滚动 */
     int sh = lv_display_get_vertical_resolution(lv_display_get_default());
     lv_obj_t *info = lv_obj_create(root);
-    lv_obj_set_pos(info, 8, NC_BAR_H + 56);
-    lv_obj_set_size(info, lv_pct(100) - 16, sh - NC_BAR_H - 56 - 8);
+    lv_obj_set_pos(info, 8, NC_BAR_H + 10);
+    lv_obj_set_size(info, lv_pct(100) - 16, sh - NC_BAR_H - 10 - 8);
     lv_obj_set_style_bg_opa(info, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(info, 0, 0);
     lv_obj_set_style_radius(info, 0, 0);
     lv_obj_set_style_pad_all(info, 0, 0);
     lv_obj_set_style_pad_gap(info, 6, 0);
     lv_obj_set_flex_flow(info, LV_FLEX_FLOW_COLUMN);
-    lv_obj_clear_flag(info, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(info, LV_DIR_VER);   /* 内容超界可滚动 */
+    lv_obj_set_scrollbar_mode(info, LV_SCROLLBAR_MODE_OFF);
 
     static const char *rows[][2] = {
         { "WiFi AP",  "Embedded-debug-tool" },
         { "IP",       "192.168.4.1" },
         { "Web",      "http://192.168.4.1/" },
-        { "UART1 TCP", ":8080 (未启用)" },
-        { "UART2 TCP", ":8081 (未启用)" },
+        { "UART1 TCP", "8080" },
+        { "UART2 TCP", "8081" },
     };
     for (int i = 0; i < 5; i++) {
         nc_row(info, rows[i][0], rows[i][1]);
-        lv_obj_t *last = lv_obj_get_child(info, i);
-        lv_obj_set_flex_grow(last, 1);   /* 均分剩余高度 */
     }
 
     return nc;
@@ -191,9 +193,9 @@ bool net_console_swipe_back(net_console_t *nc)
     return true;
 }
 
-/* 调试事件（测试模块用）：打印内部状态（Web 服务状态）供验证 */
+/* 调试事件（测试模块用）：打印内部状态（AP 状态）供验证 */
 void net_console_debug_event(net_console_t *nc, int evt)
 {
     if (!nc) return;
-    ESP_LOGI("net_console", "[DBG] evt=%d web=%s", evt, g_httpd ? "running" : "stopped");
+    ESP_LOGI("net_console", "[DBG] evt=%d ap=%s", evt, app_wifi_is_up() ? "up" : "down");
 }

@@ -96,7 +96,7 @@ static void build_ui(void)
 {
     lv_obj_t *scr = lv_screen_active();
     /* 桌面启动器（默认界面）：黑夜主题起步，全屏背景由 launcher root 承担 */
-    lv_obj_set_style_bg_color(scr, lv_color_hex(0x0D0D0D), 0);
+    lv_obj_set_style_bg_color(scr, lv_color_hex(0x080A0C), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     s_launcher = launcher_create(scr);
 }

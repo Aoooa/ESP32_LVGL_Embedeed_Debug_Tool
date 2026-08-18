@@ -6,6 +6,8 @@
 #include "esp_mac.h"
 #include "esp_log.h"
 
+static bool s_ap_up;   /* SoftAP 运行标志（net_console 状态灯） */
+
 static void wifi_event_handler(void *arg, esp_event_base_t base,
                                int32_t id, void *data)
 {
@@ -36,5 +38,21 @@ void drv_wifi_init_softap(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wc));
     ESP_ERROR_CHECK(esp_wifi_start());
+    s_ap_up = true;
     ESP_LOGI("drv_wifi", "AP: %s ch%d", DRV_WIFI_SSID, DRV_WIFI_CHANNEL);
+}
+
+void drv_wifi_stop_softap(void)
+{
+    if (esp_wifi_stop() != ESP_OK) {
+        ESP_LOGW("drv_wifi", "esp_wifi_stop failed");
+        return;
+    }
+    s_ap_up = false;
+    ESP_LOGI("drv_wifi", "AP stopped");
+}
+
+bool drv_wifi_ap_is_up(void)
+{
+    return s_ap_up;
 }

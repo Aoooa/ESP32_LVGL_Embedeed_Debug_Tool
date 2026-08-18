@@ -12,7 +12,7 @@
 
 /* TCP/WebSocket 串口数据转发总开关：0=禁用（省 RAM），1=启用。
  * 禁用时相关队列/任务/推送全部跳过，代码保留 */
-#define APP_NET_UART_FWD_ENABLED 0
+#define APP_NET_UART_FWD_ENABLED 1
 
 typedef struct {
     uart_port_t port;

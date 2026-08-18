@@ -48,7 +48,8 @@ static const struct {
 /* ── 主题色 ── */
 #define ACCENT_COLOR     0x39C5BB   /* 初音绿：卡片边框固定色 */
 #define ACCENT_COLOR_HI  0x6FE3D8   /* 初音绿加亮（按下边框/内光晕） */
-#define THEME_DARK_BG    0x0D0D0D
+#define WHEEL_COLOR      0xFF3E9E   /* 霓虹粉：调速拨轮（轨道/填充/圆钮） */
+#define THEME_DARK_BG    0x080A0C
 #define THEME_DARK_CARD  0x161616   /* 卡片底色（不透明） */
 #define THEME_DARK_TEXT  0xFFFFFF
 #define THEME_LIGHT_BG   0xF5F5F5
@@ -68,13 +69,11 @@ static const struct {
 /* ── 调速拨轮参数（屏幕右侧垂直正中） ── */
 #define WHEEL_W          14    /* 拨轮视觉总宽 */
 #define WHEEL_RIGHT_GAP  8     /* 拨轮右缘距屏幕右缘 */
-#define WHEEL_TRACK_W    4     /* 轨道宽 */
-#define WHEEL_TRACK_OPA  LV_OPA_40   /* 轨道半透明（40%） */
 #define WHEEL_KNOB_D     12    /* 基准直径 */
-#define WHEEL_KNOB_W     14    /* 矩形钮宽 = 直径×1.2 */
-#define WHEEL_KNOB_H     18    /* 矩形钮长 = 直径×1.5 */
-#define WHEEL_KNOB_RAD   4     /* 矩形钮四角圆倒角 */
-#define WHEEL_KNOB_GAP   3     /* 钮与轨道间隙（悬浮感） */
+#define WHEEL_KNOB_W     14    /* 滑块直径 = 直径×1.2 */
+#define WHEEL_KNOB_GAP   3     /* 滑块与行程端点间隙（悬浮感） */
+#define WHEEL_SHELL_W    18    /* 胶囊外框宽（= 滑块宽 + 两侧边框余量） */
+#define WHEEL_SHELL_BORDER 2   /* 胶囊外框边框厚度 */
 #define WHEEL_TOUCH_PAD  8     /* 触摸热区外扩 */
 #define WHEEL_MAX_SPEED  380.0f    /* 圆钮推满时的滚筒速度 px/s */
 #define WHEEL_DEAD_ZONE  0.1f  /* 中心死区（防误触） */
@@ -91,11 +90,8 @@ typedef struct {
 
     /* 调速拨轮 */
     lv_obj_t *wheel;             /* 触摸热区容器（覆盖整个拨轮区域） */
-    lv_obj_t *track_up;          /* 上轨道（半透明） */
-    lv_obj_t *track_dn;          /* 下轨道（半透明） */
-    lv_obj_t *fill_up;           /* 上轨道填充（水银柱，从下往上） */
-    lv_obj_t *fill_dn;           /* 下轨道填充（水银柱，从上往下） */
-    lv_obj_t *knob;              /* 圆钮（不透明，纯视觉） */
+    lv_obj_t *knob_shell;        /* 胶囊外框（粉色边框，内部透明） */
+    lv_obj_t *knob;              /* 滑块（胶囊形：矩形 + 上下半圆） */
     lv_timer_t *wheel_timer;     /* 按住期间驱动滚筒速度（空闲暂停） */
     bool wheel_pressed;
     uint32_t wheel_last_tick;
@@ -150,15 +146,15 @@ static void launcher_compute_geom(void)
     if (s_launcher.gap < 2) s_launcher.gap = 2;
     s_launcher.unit = s_launcher.card_h + s_launcher.gap;
 
-    /* 拨轮几何：右缘垂直正中，高 = 屏高 1/3 */
+    /* 拨轮几何：右下角（右缘贴右，底部留 8px） */
     int wheel_h = sh / 3;
     s_launcher.wheel_cx = lv_display_get_horizontal_resolution(disp) - WHEEL_RIGHT_GAP - WHEEL_W / 2;
-    s_launcher.wheel_cy = sh / 2;
-    s_launcher.wheel_travel = wheel_h / 2 - WHEEL_KNOB_H / 2 - WHEEL_KNOB_GAP;
+    s_launcher.wheel_cy = sh - wheel_h / 2 - 8;
+    s_launcher.wheel_travel = wheel_h / 2 - WHEEL_KNOB_W / 2 - WHEEL_KNOB_GAP;
     if (s_launcher.wheel_travel < 20) s_launcher.wheel_travel = 20;
     s_launcher.wheel_w = WHEEL_W + 2 * WHEEL_TOUCH_PAD;
     s_launcher.wheel_h = 2 * (WHEEL_TOUCH_PAD + s_launcher.wheel_travel + WHEEL_KNOB_GAP
-                              + WHEEL_KNOB_H / 2);
+                              + WHEEL_KNOB_W / 2);
 }
 
 /* ── 调速拨轮 ──
@@ -171,14 +167,6 @@ static void launcher_wheel_apply(void)
     int knob_y = WHEEL_TOUCH_PAD + s_launcher.wheel_travel + WHEEL_KNOB_GAP
                  + (int)(pos * s_launcher.wheel_travel);
     lv_obj_set_y(s_launcher.knob, knob_y);
-
-    /* 往上推(pos<0) → 上轨道从下往上填；往下拉(pos>0) → 下轨道从上往下填 */
-    int fu = (int)(s_launcher.wheel_travel * (pos < 0 ? -pos : 0));
-    lv_obj_set_size(s_launcher.fill_up, WHEEL_TRACK_W, fu);
-    lv_obj_set_y(s_launcher.fill_up, s_launcher.wheel_travel - fu);
-    int fd = (int)(s_launcher.wheel_travel * (pos > 0 ? pos : 0));
-    lv_obj_set_size(s_launcher.fill_dn, WHEEL_TRACK_W, fd);
-    lv_obj_set_y(s_launcher.fill_dn, 0);
 }
 
 static void launcher_knob_anim_exec(void *var, int32_t v)
@@ -300,8 +288,8 @@ static void launcher_build_wheel(void)
     lv_obj_t *root = s_launcher.root;
 
     /* 触摸热区容器：覆盖整个拨轮区域（含余量），透明可点击。
-     * 轨道/圆钮只是视觉子对象，事件全部绑定在容器上，
-     * 避免 12px 小圆钮难以命中。 */
+     * 滑块只是视觉子对象，事件全部绑定在容器上，
+     * 避免小滑块难以命中。 */
     lv_obj_t *wheel = lv_obj_create(root);
     lv_obj_remove_flag(wheel, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC
                        | LV_OBJ_FLAG_SCROLL_MOMENTUM);
@@ -315,48 +303,27 @@ static void launcher_build_wheel(void)
     lv_obj_add_event_cb(wheel, on_wheel_event, LV_EVENT_INDEV_RESET, NULL);
     s_launcher.wheel = wheel;
 
-    /* 上轨道（半透明绿，半圆收口） */
-    lv_obj_t *up = lv_obj_create(wheel);
-    lv_obj_remove_flag(up, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_bg_color(up, lv_color_hex(ACCENT_COLOR), 0);
-    lv_obj_set_style_bg_opa(up, WHEEL_TRACK_OPA, 0);
-    lv_obj_set_style_border_width(up, 0, 0);
-    lv_obj_set_style_radius(up, LV_RADIUS_CIRCLE, 0);
-    s_launcher.track_up = up;
-    /* 上轨道填充（水银柱：实心绿，从下往上） */
-    lv_obj_t *upf = lv_obj_create(up);
-    lv_obj_remove_flag(upf, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_bg_color(upf, lv_color_hex(ACCENT_COLOR), 0);
-    lv_obj_set_style_bg_opa(upf, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(upf, 0, 0);
-    lv_obj_set_style_radius(upf, LV_RADIUS_CIRCLE, 0);
-    s_launcher.fill_up = upf;
+    /* 胶囊外框：矩形 + 上下半圆，粉色边框，内部透明（滑槽轮廓）。
+     * 高度 = 滑块 + 上下行程，在 relayout 中定位。纯视觉不接收事件 */
+    lv_obj_t *shell = lv_obj_create(wheel);
+    lv_obj_remove_flag(shell, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC
+                       | LV_OBJ_FLAG_SCROLL_MOMENTUM | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_bg_opa(shell, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_color(shell, lv_color_hex(WHEEL_COLOR), 0);
+    lv_obj_set_style_border_width(shell, WHEEL_SHELL_BORDER, 0);
+    lv_obj_set_style_radius(shell, WHEEL_SHELL_W / 2, 0);   /* 上下半圆 */
+    lv_obj_set_size(shell, WHEEL_SHELL_W, WHEEL_KNOB_W);
+    s_launcher.knob_shell = shell;
 
-    /* 下轨道（对称） */
-    lv_obj_t *dn = lv_obj_create(wheel);
-    lv_obj_remove_flag(dn, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_bg_color(dn, lv_color_hex(ACCENT_COLOR), 0);
-    lv_obj_set_style_bg_opa(dn, WHEEL_TRACK_OPA, 0);
-    lv_obj_set_style_border_width(dn, 0, 0);
-    lv_obj_set_style_radius(dn, LV_RADIUS_CIRCLE, 0);
-    s_launcher.track_dn = dn;
-    lv_obj_t *dnf = lv_obj_create(dn);
-    lv_obj_remove_flag(dnf, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_bg_color(dnf, lv_color_hex(ACCENT_COLOR), 0);
-    lv_obj_set_style_bg_opa(dnf, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(dnf, 0, 0);
-    lv_obj_set_style_radius(dnf, LV_RADIUS_CIRCLE, 0);
-    s_launcher.fill_dn = dnf;
-
-    /* 矩形钮（不透明，纯视觉，不接收事件） */
+    /* 滑块：圆形（直径 = WHEEL_KNOB_W，圆角 = 半径），霓虹粉，纯视觉不接收事件 */
     lv_obj_t *knob = lv_obj_create(wheel);
     lv_obj_remove_flag(knob, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC
                        | LV_OBJ_FLAG_SCROLL_MOMENTUM | LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_bg_color(knob, lv_color_hex(ACCENT_COLOR), 0);
+    lv_obj_set_style_bg_color(knob, lv_color_hex(WHEEL_COLOR), 0);
     lv_obj_set_style_bg_opa(knob, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(knob, 0, 0);
-    lv_obj_set_style_radius(knob, WHEEL_KNOB_RAD, 0);
-    lv_obj_set_size(knob, WHEEL_KNOB_W, WHEEL_KNOB_H);
+    lv_obj_set_style_radius(knob, WHEEL_KNOB_W / 2, 0);   /* 圆形 */
+    lv_obj_set_size(knob, WHEEL_KNOB_W, WHEEL_KNOB_W);
     s_launcher.knob = knob;
 
     /* 速度定时器：按住期间驱动滚筒（20ms/50Hz），空闲暂停省资源 */
@@ -572,6 +539,7 @@ static void launcher_build_cards(void)
         lv_obj_add_flag(icon_lbl, LV_OBJ_FLAG_EVENT_BUBBLE);
         lv_obj_set_style_text_font(icon_lbl, &lv_font_launcher_icons, 0);
         lv_obj_set_style_text_color(icon_lbl, lv_color_hex(0xFFFFFF), 0);   /* 固定白色 */
+        lv_obj_set_style_text_color(icon_lbl, lv_color_hex(ACCENT_COLOR_HI), LV_STATE_PRESSED);
         lv_obj_set_style_bg_opa(icon_lbl, LV_OPA_TRANSP, 0);
         s_launcher.icon_labels[i] = icon_lbl;
 
@@ -581,6 +549,7 @@ static void launcher_build_cards(void)
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_28, 0);
         lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_bg_opa(lbl, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_text_color(lbl, lv_color_hex(ACCENT_COLOR_HI), LV_STATE_PRESSED);
         s_launcher.text_labels[i] = lbl;
     }
     launcher_apply_text_theme();
@@ -611,8 +580,8 @@ static void launcher_relayout_core(void)
     for (int i = 0; i < APP_COUNT; i++) {
         lv_obj_set_size(s_launcher.cards[i], s_launcher.card_w, s_launcher.card_h);
         lv_obj_set_pos(s_launcher.cards[i], 0, i * s_launcher.unit);
-        lv_obj_align(s_launcher.icon_labels[i], LV_ALIGN_LEFT_MID, 16, 0);
-        lv_obj_align(s_launcher.text_labels[i], LV_ALIGN_LEFT_MID, 54, 0);
+        lv_obj_align(s_launcher.icon_labels[i], LV_ALIGN_LEFT_MID, 10, 0);
+        lv_obj_align(s_launcher.text_labels[i], LV_ALIGN_LEFT_MID, 58, 0);
     }
 
     /* 保持当前滚动位置（clamp 到新滚动域） */
@@ -624,12 +593,12 @@ static void launcher_relayout_core(void)
     int wy = s_launcher.wheel_cy - s_launcher.wheel_h / 2;
     lv_obj_set_pos(s_launcher.wheel, wx, wy);
     lv_obj_set_size(s_launcher.wheel, s_launcher.wheel_w, s_launcher.wheel_h);
-    int track_x = (s_launcher.wheel_w - WHEEL_TRACK_W) / 2;
-    lv_obj_set_pos(s_launcher.track_up, track_x, WHEEL_TOUCH_PAD);
-    lv_obj_set_size(s_launcher.track_up, WHEEL_TRACK_W, s_launcher.wheel_travel);
-    lv_obj_set_pos(s_launcher.track_dn, track_x,
-                   WHEEL_TOUCH_PAD + s_launcher.wheel_travel + WHEEL_KNOB_H + 2 * WHEEL_KNOB_GAP);
-    lv_obj_set_size(s_launcher.track_dn, WHEEL_TRACK_W, s_launcher.wheel_travel);
+    /* 胶囊外框：居中，高度覆盖滑块上下行程（上下端贴合半圆） */
+    lv_obj_set_pos(s_launcher.knob_shell,
+                   (s_launcher.wheel_w - WHEEL_SHELL_W) / 2,
+                   WHEEL_TOUCH_PAD + WHEEL_KNOB_GAP);
+    lv_obj_set_size(s_launcher.knob_shell, WHEEL_SHELL_W,
+                    WHEEL_KNOB_W + 2 * s_launcher.wheel_travel);
     lv_obj_set_pos(s_launcher.knob, (s_launcher.wheel_w - WHEEL_KNOB_W) / 2, 0);
     launcher_wheel_apply();
 }
