@@ -51,30 +51,34 @@ static void nc_btn_toggle_cb(lv_event_t *e)
     nc_update_service(nc);
 }
 
-/* 信息行：key 上行，value 换行完整显示；行高按屏幕高度动态（横/竖屏通用） */
-static void nc_row(lv_obj_t *parent, const char *key, const char *value, int idx, int row_h)
+/* 信息行：key 左、value 右（flex row，value 占满右对齐）。
+ * 行放入 flex column 容器后 flex_grow=1 均分高度，横竖屏均不溢出/重叠。
+ * value 长文本自动换行（行高不足时换行显示，不裁剪） */
+static void nc_row(lv_obj_t *parent, const char *key, const char *value)
 {
     lv_obj_t *row = lv_obj_create(parent);
-    lv_obj_set_size(row, lv_pct(100), row_h);
-    lv_obj_align(row, LV_ALIGN_TOP_LEFT, 0, NC_BAR_H + 60 + idx * (row_h + 6));
+    lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_style_bg_color(row, NC_CARD, 0);
     lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(row, 0, 0);
     lv_obj_set_style_radius(row, 6, 0);
     lv_obj_set_style_pad_hor(row, 12, 0);
+    lv_obj_set_style_pad_ver(row, 6, 0);
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_gap(row, 8, 0);
 
     lv_obj_t *k = lv_label_create(row);
-    lv_obj_align(k, LV_ALIGN_TOP_LEFT, 12, 4);
     lv_label_set_text(k, key);
     lv_obj_set_style_text_color(k, NC_DIM, 0);
     lv_obj_set_style_text_font(k, nc_font(), 0);
 
     lv_obj_t *v = lv_label_create(row);
     lv_label_set_text(v, value);
-    lv_label_set_long_mode(v, LV_LABEL_LONG_WRAP);   /* 长文本自动换行完整显示 */
-    lv_obj_set_width(v, lv_pct(100) - 24);
-    lv_obj_align(v, LV_ALIGN_BOTTOM_LEFT, 12, -4);
+    lv_label_set_long_mode(v, LV_LABEL_LONG_WRAP);   /* 长文本换行完整显示 */
+    lv_obj_set_flex_grow(v, 1);
+    lv_obj_set_style_text_align(v, LV_TEXT_ALIGN_RIGHT, 0);
     lv_obj_set_style_text_color(v, NC_ACCENT, 0);
     lv_obj_set_style_text_font(v, nc_font(), 0);
 }
@@ -139,15 +143,31 @@ net_console_t *net_console_create(lv_obj_t *parent, net_console_back_cb_t back_c
 
     nc_update_service(nc);
 
-    /* 信息行：行高按屏高均分，横竖屏均不溢出 */
+    /* 信息区：flex column 容器占满剩余高度，5 行 flex_grow=1 均分（横竖屏均不溢出/重叠） */
     int sh = lv_display_get_vertical_resolution(lv_display_get_default());
-    int row_h = (sh - NC_BAR_H - 60 - 12) / 5;
-    if (row_h < 32) row_h = 32;
-    nc_row(root, "WiFi AP", "Embedded-debug-tool", 0, row_h);
-    nc_row(root, "IP", "192.168.4.1", 1, row_h);
-    nc_row(root, "Web", "http://192.168.4.1/", 2, row_h);
-    nc_row(root, "UART1 TCP", ":8080 (未启用)", 3, row_h);
-    nc_row(root, "UART2 TCP", ":8081 (未启用)", 4, row_h);
+    lv_obj_t *info = lv_obj_create(root);
+    lv_obj_set_pos(info, 8, NC_BAR_H + 56);
+    lv_obj_set_size(info, lv_pct(100) - 16, sh - NC_BAR_H - 56 - 8);
+    lv_obj_set_style_bg_opa(info, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(info, 0, 0);
+    lv_obj_set_style_radius(info, 0, 0);
+    lv_obj_set_style_pad_all(info, 0, 0);
+    lv_obj_set_style_pad_gap(info, 6, 0);
+    lv_obj_set_flex_flow(info, LV_FLEX_FLOW_COLUMN);
+    lv_obj_clear_flag(info, LV_OBJ_FLAG_SCROLLABLE);
+
+    static const char *rows[][2] = {
+        { "WiFi AP",  "Embedded-debug-tool" },
+        { "IP",       "192.168.4.1" },
+        { "Web",      "http://192.168.4.1/" },
+        { "UART1 TCP", ":8080 (未启用)" },
+        { "UART2 TCP", ":8081 (未启用)" },
+    };
+    for (int i = 0; i < 5; i++) {
+        nc_row(info, rows[i][0], rows[i][1]);
+        lv_obj_t *last = lv_obj_get_child(info, i);
+        lv_obj_set_flex_grow(last, 1);   /* 均分剩余高度 */
+    }
 
     return nc;
 }
