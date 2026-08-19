@@ -30,4 +30,10 @@ void app_display_hw_scroll_enable(bool en);
 /* SD 挂载完成后通知（平台加载字体 + 路由到当前 APP refresh） */
 void app_display_notify_sd_ready(void);
 
+/* 高 RAM 消耗功能（如 WiFi 静态缓冲，须内部 DMA RAM）临时缩小显示缓冲，
+ * 释放内部 RAM 后需调用方先释放其缓冲再 app_display_restore_buffers()。
+ * 须在 LVGL 线程/持锁上下文调用；幂等。 */
+esp_err_t app_display_shrink_buffers(void);
+esp_err_t app_display_restore_buffers(void);
+
 #endif

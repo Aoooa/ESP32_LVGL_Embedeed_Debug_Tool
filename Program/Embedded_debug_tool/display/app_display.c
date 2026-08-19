@@ -8,6 +8,7 @@
 #include "terminal.h"
 #include "app_font.h"
 #include "lvgl.h"
+#include "src/display/lv_display_private.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
@@ -32,6 +33,61 @@ static void fv_acquire(void)
 /* ── State ── */
 static int s_orientation_deg;   /* 当前逻辑方向 0/90/180/270（0=竖屏 240x320） */
 static lv_obj_t *s_launcher;    /* 桌面启动器 root */
+
+/* ── 动态显示缓冲（WiFi 等需内部 RAM 时临时双→单） ── */
+static lv_display_t *s_disp;
+static size_t s_big_buf_bytes;   /* 启动时实际分配的单缓冲字节数（24 行双缓冲或回退） */
+static bool s_buf_shrunk;        /* 当前处于缩小态（单缓冲） */
+
+static void *app_display_buf_alloc(size_t bytes)
+{
+    /* LCD SPI DMA 要求内部内存；16 对齐满足 DMA alignment */
+    return heap_caps_aligned_alloc(16, bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+
+esp_err_t app_display_shrink_buffers(void)
+{
+    if (!s_disp) return ESP_ERR_INVALID_STATE;
+    if (s_buf_shrunk) return ESP_OK;
+    if (!s_disp->buf_2 || !s_disp->buf_2->data) return ESP_OK;   /* 已是单缓冲 */
+
+    /* 双→单：仅释放第二缓冲（腾一块内部 RAM 给 WiFi），主缓冲保持引用。
+     * 恢复时只需重新分配一个缓冲，不受堆碎片化影响 */
+    void *old2 = s_disp->buf_2->data;
+
+    lv_display_set_buffers(s_disp, s_disp->buf_1->data, NULL,
+                           (uint32_t)s_big_buf_bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
+    lv_refr_now(NULL);   /* 等 flush 完成后再释放 */
+
+    free(old2);
+    s_buf_shrunk = true;
+    ESP_LOGI(TAG, "display buffer -> single (%u bytes)", (unsigned)s_big_buf_bytes);
+    return ESP_OK;
+}
+
+esp_err_t app_display_restore_buffers(void)
+{
+    if (!s_disp) return ESP_ERR_INVALID_STATE;
+    if (!s_buf_shrunk) return ESP_OK;
+
+    /* 恢复双缓冲。优先启动尺寸；wifi 退出后堆碎片化时逐级回退（双缓冲即流畅关键，
+     * 行数其次）。LVGL 按 buf_size 使用 buf_1 前部，buf_1 实际更大不会越界 */
+    size_t line_bytes = 640;   /* 320px × RGB565 */
+    size_t sizes[] = { s_big_buf_bytes, 16 * line_bytes, 12 * line_bytes };
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+        size_t sz = sizes[i];
+        void *new2 = app_display_buf_alloc(sz);
+        if (!new2) continue;
+        lv_display_set_buffers(s_disp, s_disp->buf_1->data, new2,
+                               (uint32_t)sz, LV_DISPLAY_RENDER_MODE_PARTIAL);
+        lv_refr_now(NULL);
+        s_buf_shrunk = false;
+        ESP_LOGI(TAG, "display buffer -> double restored (%u bytes x2)", (unsigned)sz);
+        return ESP_OK;
+    }
+    ESP_LOGE(TAG, "restore: no buffer size fits, keep single-buffered");
+    return ESP_ERR_NO_MEM;
+}
 
 
 /* ── 硬件滚动接口（保留：驱动�?0x33/0x37 命令；完整滚动（flush 映射）留待未来优化） ──
@@ -112,31 +168,33 @@ void app_display_start(void)
     drv_display_init(&disp);
 
     esp_lv_adapter_config_t adapter_cfg = ESP_LV_ADAPTER_DEFAULT_CONFIG();
+    adapter_cfg.stack_in_psram = true;   /* LVGL 任务栈 8KB 移 PSRAM，省内部 RAM */
     ESP_ERROR_CHECK(esp_lv_adapter_init(&adapter_cfg));
 
     esp_lv_adapter_display_config_t disp_cfg =
         ESP_LV_ADAPTER_DISPLAY_CONFIG(
             disp.panel, disp.io,
-            /* 固定注册 320x240（宽=320）：draw buffer 320x40 双缓冲，
-             * partial tile �?area 宽动�?reshape，横竖方向均不越界�?
-             * 内部 RAM = 320x40x2x2 = 51.2KB（组�?B 横屏已实测可运行�?*/
+            /* 显示缓冲必须用内部 RAM（esp_lcd_panel_io_spi 不设 SPI_TRANS_DMA_USE_PSRAM，
+             * PSRAM 缓冲每次 flush 要在内部 DMA 分配 bounce buffer，实测失败→显示中断）。
+             * 平时 24 行双缓冲保证刷新流畅；WiFi 开启时经 app_display_shrink_buffers
+             * 临时缩到 16 行单缓冲腾内部 RAM，关闭后 app_display_restore_buffers 恢复 */
             ESP_LV_ADAPTER_DISPLAY_PROFILE_SPI_WITHOUT_PSRAM_DEFAULT_CONFIG(
                 DRV_LCD_V_RES, DRV_LCD_H_RES,
                 ESP_LV_ADAPTER_ROTATE_0),
             ESP_LV_ADAPTER_TEAR_AVOID_MODE_NONE,
             ESP_LV_ADAPTER_TE_SYNC_DISABLED());
-    /* PSRAM 缓冲会让 spi_master �?ISR 中分配内�?DMA priv buffer（每�?flush），
-     * 实测分配失败（ESP_ERR_NO_MEM）→ 显示中断。改用内�?RAM 双缓冲�?
-     * WIFI/LWIP 缓冲已放 PSRAM（CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP），
-     * 40 行双缓冲 = 320×40×2×2 = 51.2KB 内部 RAM */
-    disp_cfg.profile.buffer_height = 40;
+    disp_cfg.profile.buffer_height = 24;
     disp_cfg.profile.require_double_buffer = true;
     lv_display_t *lv_disp = esp_lv_adapter_register_display(&disp_cfg);
-    if (lv_disp == NULL) {   /* 内存不足时回退�?24 �?*/
-        disp_cfg.profile.buffer_height = 24;
+    if (lv_disp == NULL) {   /* 内存不足时回退到 12 行 */
+        disp_cfg.profile.buffer_height = 12;
         lv_disp = esp_lv_adapter_register_display(&disp_cfg);
     }
     assert(lv_disp != NULL);
+    s_disp = lv_disp;
+    if (s_disp->buf_1) {
+        s_big_buf_bytes = s_disp->buf_1->data_size;   /* 记录实际大缓冲单缓冲字节数 */
+    }
 
     /* 初始方向：竖屏（逻辑 240x320 + 硬件 MADCTL 0°，与注册�?320x240 交换�?*/
     lv_display_set_resolution(lv_disp, DRV_LCD_H_RES, DRV_LCD_V_RES);

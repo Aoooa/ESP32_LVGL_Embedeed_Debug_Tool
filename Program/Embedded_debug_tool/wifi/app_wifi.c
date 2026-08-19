@@ -1,14 +1,30 @@
 #include "app_wifi.h"
 #include "drv_wifi.h"
+#include "esp_log.h"
 
-void app_wifi_start(void)
+static const char *TAG = "app_wifi";
+
+esp_err_t app_wifi_start(void)
 {
-    drv_wifi_init_softap();
+    esp_err_t ret = drv_wifi_init_softap();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "start failed: %s", esp_err_to_name(ret));
+    }
+    return ret;
 }
 
-void app_wifi_stop(void)
+esp_err_t app_wifi_stop(void)
 {
-    drv_wifi_stop_softap();
+    return drv_wifi_stop_softap();
+}
+
+esp_err_t app_wifi_deinit(void)
+{
+    esp_err_t ret = drv_wifi_deinit();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "deinit failed: %s", esp_err_to_name(ret));
+    }
+    return ret;
 }
 
 bool app_wifi_is_up(void)

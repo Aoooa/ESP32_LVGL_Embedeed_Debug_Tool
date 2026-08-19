@@ -3,6 +3,7 @@
 #include "net_console.h"
 #include "app_font.h"
 #include "app_wifi.h"
+#include "app_display.h"
 #include "esp_log.h"
 #include <stdlib.h>
 
@@ -42,10 +43,23 @@ static void nc_btn_toggle_cb(lv_event_t *e)
 {
     net_console_t *nc = lv_event_get_user_data(e);
     if (!nc) return;
+    esp_err_t ret;
     if (app_wifi_is_up()) {
-        app_wifi_stop();
+        ret = app_wifi_stop();
     } else {
-        app_wifi_start();
+        /* WiFi 静态缓冲需内部 RAM：先临时缩小显示缓冲腾空间 */
+        if (app_display_shrink_buffers() != ESP_OK) {
+            ESP_LOGE("net_console", "shrink display buffers failed, wifi aborted");
+            nc_update_service(nc);
+            return;
+        }
+        ret = app_wifi_start();
+        if (ret != ESP_OK) {
+            app_display_restore_buffers();   /* 启动失败回滚显示缓冲 */
+        }
+    }
+    if (ret != ESP_OK) {
+        ESP_LOGE("net_console", "wifi toggle failed: %s", esp_err_to_name(ret));
     }
     nc_update_service(nc);
 }
@@ -177,6 +191,9 @@ net_console_t *net_console_create(lv_obj_t *parent, net_console_back_cb_t back_c
 void net_console_destroy(net_console_t *nc)
 {
     if (!nc) return;
+    /* 退出 SerialIP：释放 WiFi（归还内部 RAM）并恢复大显示缓冲，保证其他页面流畅 */
+    app_wifi_deinit();
+    app_display_restore_buffers();
     if (nc->root) {
         /* 闪屏修复：先隐藏 + 立即刷新一帧（露出桌面），再删除全屏对象 */
         lv_obj_add_flag(nc->root, LV_OBJ_FLAG_HIDDEN);
