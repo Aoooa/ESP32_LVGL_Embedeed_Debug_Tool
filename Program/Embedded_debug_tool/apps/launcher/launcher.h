@@ -26,6 +26,7 @@ typedef enum {
     LAUNCH_APP_UART,        /* 串口数据显示终端 */
     LAUNCH_APP_NET,         /* 网络服务信息 */
     LAUNCH_APP_CARDREADER,  /* USB 读卡器（SD 卡 MSC） */
+    LAUNCH_APP_DAPLINK,     /* DAP Link（CMSIS-DAP 烧录器/调试器） */
     LAUNCH_APP_COUNT,
 } launch_app_id_t;
 

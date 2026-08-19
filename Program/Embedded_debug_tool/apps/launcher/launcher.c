@@ -4,6 +4,7 @@
 #include "net_console.h"
 #include "terminal.h"
 #include "card_reader.h"
+#include "dap_link.h"
 #include "gesture.h"
 #include "esp_heap_caps.h"
 #include <string.h>
@@ -12,7 +13,7 @@
 #include "esp_log.h"
 
 /* ── App 卡片表（每卡最多 3 行，每行 ≤15 字符防折行） ── */
-#define APP_COUNT 6
+#define APP_COUNT 7
 
 /* 卡片类型：可启动 app / 占位 */
 typedef enum { APP_TYPE_LAUNCH, APP_TYPE_PLACEHOLDER } app_type_t;
@@ -23,7 +24,7 @@ extern const lv_image_dsc_t launcher_icon_reader;
 extern const lv_image_dsc_t launcher_icon_terminal;
 extern const lv_image_dsc_t launcher_icon_serialip;
 extern const lv_image_dsc_t launcher_icon_cardr;
-extern const lv_image_dsc_t launcher_icon_slot6;
+extern const lv_image_dsc_t launcher_icon_dap;
 
 static const lv_image_dsc_t *const s_app_icons[APP_COUNT] = {
     &launcher_icon_files,      /* Files */
@@ -31,7 +32,7 @@ static const lv_image_dsc_t *const s_app_icons[APP_COUNT] = {
     &launcher_icon_terminal,   /* Terminal */
     &launcher_icon_serialip,   /* SerialIP */
     &launcher_icon_cardr,      /* CardR */
-    &launcher_icon_slot6,      /* Slot 6 */
+    &launcher_icon_dap,        /* DAPLink */
 };
 
 static const struct {
@@ -44,7 +45,7 @@ static const struct {
     { "Terminal", APP_TYPE_LAUNCH,     LAUNCH_APP_UART },
     { "SerialIP", APP_TYPE_LAUNCH,     LAUNCH_APP_NET },
     { "CardR",    APP_TYPE_LAUNCH,     LAUNCH_APP_CARDREADER },
-    { "Slot 6",   APP_TYPE_PLACEHOLDER, 0 },
+    { "DAPLink",  APP_TYPE_LAUNCH,     LAUNCH_APP_DAPLINK },
 };
 
 /* ── 主题色 ── */
@@ -472,6 +473,16 @@ const app_manifest_t app_manifests[LAUNCH_APP_COUNT] = {
         .rotate = NULL,
         .refresh = (void (*)(void *))card_reader_refresh,
         .debug_event = (void (*)(void *, int))card_reader_debug_event,
+    },
+    [LAUNCH_APP_DAPLINK] = {
+        .id = LAUNCH_APP_DAPLINK,
+        .name = "DAPLink",
+        .launch = (void *(*)(lv_obj_t *, void (*)(void *), void *))dap_link_create,
+        .destroy = (void (*)(void *))dap_link_destroy,
+        .back = (bool (*)(void *))dap_link_swipe_back,
+        .rotate = NULL,
+        .refresh = NULL,
+        .debug_event = NULL,
     },
 };
 

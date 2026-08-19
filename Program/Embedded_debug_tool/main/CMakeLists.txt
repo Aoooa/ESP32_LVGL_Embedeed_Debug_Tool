@@ -32,6 +32,12 @@ idf_component_register(
         "${MODULE_DIR}/sdcard/app_sdcard.c"
         "${MODULE_DIR}/sdcard/app_cardreader.c"
         "${MODULE_DIR}/apps/card_reader/card_reader.c"
+        "${MODULE_DIR}/dap/arm/DAP.c"
+        "${MODULE_DIR}/dap/arm/SW_DP.c"
+        "${MODULE_DIR}/dap/arm/DAP_vendor.c"
+        "${MODULE_DIR}/dap/drv_dap.c"
+        "${MODULE_DIR}/dap/app_dap.c"
+        "${MODULE_DIR}/apps/dap_link/dap_link.c"
 
     INCLUDE_DIRS
         "."
@@ -48,10 +54,13 @@ idf_component_register(
         "${MODULE_DIR}/apps/reader"
         "${MODULE_DIR}/apps/terminal"
         "${MODULE_DIR}/apps/card_reader"
+        "${MODULE_DIR}/apps/dap_link"
         "${MODULE_DIR}/apps/test"
         "${MODULE_DIR}/platform/components/flow_view"
         "${MODULE_DIR}/platform/components/font_manager"
         "${MODULE_DIR}/sdcard"
+        "${MODULE_DIR}/dap"
+        "${MODULE_DIR}/dap/arm"
 
     PRIV_REQUIRES
         spi_flash nvs_flash esp_netif esp_event
