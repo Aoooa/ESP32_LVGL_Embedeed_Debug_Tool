@@ -48,6 +48,30 @@ typedef struct {
 
 static cardreader_t s_cr;
 
+/* ── SD 与 LCD 共享 SPI2 总线：并发互斥 ──
+ * 官方 esp_lcd_panel_io_spi（异步队列）+ sdspi（acquire+轮询）并发会触发
+ * spi_hal_setup_trans 断言崩溃。因此包装 card->host.do_transaction，使 MSC 的
+ * 每个 SD 事务（tusb 任务）都持 esp_lv_adapter_lock，与 LVGL 渲染（持锁渲染）
+ * 互斥——与本项目"SD 操作须与渲染互斥"的既有约定一致。 */
+static esp_err_t (*s_orig_do_transaction)(int, sdmmc_command_t *);
+
+static esp_err_t cardreader_do_transaction_locked(int slot, sdmmc_command_t *cmdinfo)
+{
+    esp_err_t ret = ESP_ERR_INVALID_STATE;
+    if (esp_lv_adapter_lock(-1) == ESP_OK) {
+        ret = s_orig_do_transaction(slot, cmdinfo);
+        esp_lv_adapter_unlock();
+    }
+    return ret;
+}
+
+static void cardreader_arm_sd_lock(sdmmc_card_t *card)
+{
+    if (!card || !card->host.do_transaction) return;
+    s_orig_do_transaction = card->host.do_transaction;
+    card->host.do_transaction = cardreader_do_transaction_locked;
+}
+
 /* 状态为 32 位对齐枚举，单字读写原子，无需加锁 */
 static void cardreader_set_state(cardreader_state_t st)
 {
@@ -194,6 +218,7 @@ esp_err_t app_cardreader_enable(void)
         return ret;
     }
     esp_lv_adapter_unlock();
+    cardreader_arm_sd_lock(s_cr.card);   /* MSC 的 SD 事务持渲染锁，防 SPI2 并发 */
 
     /* 3. 创建 MSC 存储：MOUNT_USB 直接暴露原始扇区，不挂 FatFs、不格式化 */
     tinyusb_msc_storage_config_t cfg = {
