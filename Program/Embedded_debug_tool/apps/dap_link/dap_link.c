@@ -95,7 +95,6 @@ static void dl_timer_cb(lv_timer_t *t)
         if (c != dl->pc_attached || m != dl->pc_mounted) {
             dl->pc_attached = c;
             dl->pc_mounted = m;
-            ESP_LOGI("dap_link", "USB status: connected=%d mounted=%d", c, m);
         }
     } else {
         dl->pc_attached = false;
