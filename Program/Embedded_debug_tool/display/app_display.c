@@ -148,6 +148,44 @@ void app_display_set_rotation(int deg)
 
 /* ── UI Construction ── */
 
+#if CONFIG_ESP_LVGL_ADAPTER_ENABLE_FPS_STATS
+/* FPS 调试悬浮标签（顶层系统层，常驻） */
+static lv_obj_t *s_fps_label;
+static lv_timer_t *s_fps_timer;
+
+static void fps_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    uint32_t fps = 0;
+    if (esp_lv_adapter_get_fps(NULL, &fps) == ESP_OK) {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "FPS %u", (unsigned)fps);
+        lv_label_set_text(s_fps_label, buf);
+    }
+}
+
+static void build_ui(void)
+{
+    lv_obj_t *scr = lv_screen_active();
+    /* 桌面启动器（默认界面）：黑夜主题起步，全屏背景由 launcher root 承担 */
+    lv_obj_set_style_bg_color(scr, lv_color_hex(0x080A0C), 0);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+    s_launcher = launcher_create(scr);
+
+    /* FPS 调试显示：挂顶层系统层，滚动/动画期间观察实时刷新率 */
+    s_fps_label = lv_label_create(lv_layer_top());
+    lv_obj_set_style_text_color(s_fps_label, lv_color_hex(0x00FF00), 0);
+    lv_obj_set_style_text_font(s_fps_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_bg_color(s_fps_label, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(s_fps_label, LV_OPA_60, 0);
+    lv_obj_set_style_pad_all(s_fps_label, 2, 0);
+    lv_obj_set_style_radius(s_fps_label, 3, 0);
+    lv_obj_align(s_fps_label, LV_ALIGN_TOP_RIGHT, 4, 4);
+    lv_label_set_text(s_fps_label, "FPS --");
+    esp_lv_adapter_fps_stats_enable(NULL, true);
+    s_fps_timer = lv_timer_create(fps_timer_cb, 1000, NULL);
+}
+#else
 static void build_ui(void)
 {
     lv_obj_t *scr = lv_screen_active();
@@ -156,6 +194,7 @@ static void build_ui(void)
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     s_launcher = launcher_create(scr);
 }
+#endif
 
 
 

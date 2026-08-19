@@ -5,6 +5,7 @@
 #include "terminal.h"
 #include "card_reader.h"
 #include "gesture.h"
+#include "esp_heap_caps.h"
 #include <string.h>
 #include <math.h>
 #include <stdio.h>
@@ -57,6 +58,12 @@ static const struct {
 #define THEME_LIGHT_CARD 0xFFFFFF
 #define THEME_LIGHT_TEXT 0x374151
 
+/* ── 卡片渲染模式开关 ──
+ * 1 = 整卡预烘焙位图（圆角+边框+图标+文字一次性画进 PSRAM，滚动帧零矢量渲染）
+ * 0 = 实时渲染（圆角/边框/图标/文字每帧重画；动态内容更灵活）
+ * 出问题翻转此宏即回到实时渲染，无需改其他代码 */
+#define LAUNCHER_CARDS_BAKED 1
+
 /* ── 布局参数 ── */
 #define CARD_LEFT_GAP    8    /* 滚筒左侧距屏幕左边框 */
 #define CARD_MAX_LINES   3    /* 每卡最多行数（卡片高度按此计算） */
@@ -85,9 +92,12 @@ static const struct {
 typedef struct {
     lv_obj_t *root;
     lv_obj_t *drum;
-    lv_obj_t *cards[APP_COUNT];
-    lv_obj_t *icon_imgs[APP_COUNT];   /* 静态霓虹图标位图 */
-    lv_obj_t *text_labels[APP_COUNT];
+    lv_obj_t *cards[APP_COUNT];   /* 预烘焙模式：透明容器；实时模式：圆角容器 */
+#if LAUNCHER_CARDS_BAKED
+    lv_obj_t *card_bgs[APP_COUNT];   /* 共享背景位图（烘焙后 set_src 刷新） */
+#endif
+    lv_obj_t *icon_imgs[APP_COUNT];   /* 静态霓虹图标位图（两种模式都在用） */
+    lv_obj_t *text_labels[APP_COUNT]; /* APP 名称标签（两种模式都在用） */
 
     /* 调速拨轮 */
     lv_obj_t *wheel;             /* 触摸热区容器（覆盖整个拨轮区域） */
@@ -241,6 +251,65 @@ static void on_wheel_event(lv_event_t *e)
     }
 }
 
+#if LAUNCHER_CARDS_BAKED
+/* ── 卡片背景预烘焙 ──
+ * 圆角+边框+底色一次性画进 PSRAM 位图（RGB565 不透明），6 张卡共享同一张，
+ * 滚动帧只贴这一张背景图 + 实时画图标/文字（小面积）——省掉每帧重绘 6 个
+ * 圆角矩形的成本，又比整卡烘焙省内存（1 张 vs 6 张）且文字/图标仍可动态改。
+ * 尺寸或主题变化时重新烘焙（旋转/切主题低频）。 */
+static lv_image_dsc_t s_card_bg_dsc;
+static void *s_card_bg_buf;
+static int s_bg_w, s_bg_h;
+static bool s_bg_dark;
+
+static void launcher_bake_card_bg(void)
+{
+    int w = s_launcher.card_w, h = s_launcher.card_h;
+    bool dark = s_launcher.dark;
+    if (w <= 0 || h <= 0) return;
+    if (s_card_bg_buf && s_bg_w == w && s_bg_h == h && s_bg_dark == dark) return;
+
+    size_t bytes = (size_t)w * h * 2;
+    void *buf = heap_caps_aligned_alloc(64, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) {
+        ESP_LOGE("launcher", "card bg alloc %dx%d failed", w, h);
+        return;
+    }
+
+    lv_obj_t *cv = lv_canvas_create(lv_layer_sys());
+    lv_canvas_set_buffer(cv, buf, w, h, LV_COLOR_FORMAT_RGB565);
+    lv_canvas_fill_bg(cv, dark ? lv_color_hex(THEME_DARK_CARD) : lv_color_hex(THEME_LIGHT_CARD),
+                      LV_OPA_COVER);
+
+    lv_layer_t layer;
+    lv_canvas_init_layer(cv, &layer);
+    lv_draw_rect_dsc_t dsc;
+    lv_draw_rect_dsc_init(&dsc);
+    dsc.radius = CARD_RADIUS;
+    dsc.border_width = CARD_BORDER;
+    dsc.border_color = lv_color_hex(ACCENT_COLOR);
+    dsc.bg_opa = LV_OPA_TRANSP;
+    lv_area_t a = { 0, 0, w - 1, h - 1 };
+    lv_draw_rect(&layer, &dsc, &a);
+    lv_canvas_finish_layer(cv, &layer);
+    lv_obj_delete(cv);
+
+    if (s_card_bg_buf) heap_caps_free(s_card_bg_buf);
+    s_card_bg_buf = buf;
+    s_bg_w = w;
+    s_bg_h = h;
+    s_bg_dark = dark;
+    memset(&s_card_bg_dsc, 0, sizeof(s_card_bg_dsc));
+    s_card_bg_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+    s_card_bg_dsc.header.cf = LV_COLOR_FORMAT_RGB565;
+    s_card_bg_dsc.header.w = w;
+    s_card_bg_dsc.header.h = h;
+    s_card_bg_dsc.header.stride = w * 2;
+    s_card_bg_dsc.data_size = bytes;
+    s_card_bg_dsc.data = buf;
+}
+#endif /* LAUNCHER_CARDS_BAKED */
+
 /* ── 主题 ── */
 
 static void launcher_theme_exec(void *var, int32_t v)
@@ -256,10 +325,14 @@ static void launcher_theme_exec(void *var, int32_t v)
 static void launcher_apply_text_theme(void)
 {
     lv_color_t c = s_launcher.dark ? lv_color_hex(THEME_DARK_TEXT) : lv_color_hex(THEME_LIGHT_TEXT);
+#if !LAUNCHER_CARDS_BAKED
     lv_color_t bc = s_launcher.dark ? lv_color_hex(THEME_DARK_CARD) : lv_color_hex(THEME_LIGHT_CARD);
+#endif
     for (int i = 0; i < APP_COUNT; i++) {
         lv_obj_set_style_text_color(s_launcher.text_labels[i], c, 0);
+#if !LAUNCHER_CARDS_BAKED
         lv_obj_set_style_bg_color(s_launcher.cards[i], bc, 0);
+#endif
     }
 }
 
@@ -279,6 +352,9 @@ void launcher_set_theme(lv_obj_t *obj, bool dark)
     lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
     lv_anim_start(&a);
 
+#if LAUNCHER_CARDS_BAKED
+    launcher_bake_card_bg();   /* 卡片底色换主题 → 重新烘焙背景位图 */
+#endif
     launcher_apply_text_theme();
 }
 
@@ -517,24 +593,34 @@ static void on_card_event(lv_event_t *e)
 static void launcher_build_cards(void)
 {
     for (int i = 0; i < APP_COUNT; i++) {
+#if LAUNCHER_CARDS_BAKED
+        /* 卡片 = 透明容器 + 共享背景位图（圆角+边框，见 launcher_bake_card_bg）
+         * + 实时图标/文字。滚动帧只贴 1 张 RGB565 背景图（快速拷贝），
+         * 图标/文字小面积实时画 */
         lv_obj_t *card = lv_obj_create(s_launcher.drum);
         lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC
                            | LV_OBJ_FLAG_SCROLL_MOMENTUM);
-        /* 事件冒泡：按压卡片/文字时 PRESSED/RELEASED 必须传到 drum（吸附用）；
-         * 保留 SCROLL_CHAIN：按住卡片拖动时滚动传递给滚筒 */
         lv_obj_add_flag(card, LV_OBJ_FLAG_EVENT_BUBBLE);
-        /* 卡片底色不透明（主题色）+ 圆角倒角（圆弧形）+ 初音绿边框 */
+        lv_obj_set_style_bg_opa(card, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(card, 0, 0);
+        lv_obj_set_style_radius(card, 0, 0);
+        lv_obj_set_style_pad_all(card, 0, 0);
+#else
+        /* 实时渲染模式（LAUNCHER_CARDS_BAKED=0）：圆角容器 + 图标 + 文字每帧重画 */
+        lv_obj_t *card = lv_obj_create(s_launcher.drum);
+        lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC
+                           | LV_OBJ_FLAG_SCROLL_MOMENTUM);
+        lv_obj_add_flag(card, LV_OBJ_FLAG_EVENT_BUBBLE);
         lv_obj_set_style_bg_color(card, lv_color_hex(THEME_DARK_CARD), 0);
         lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
         lv_obj_set_style_border_color(card, lv_color_hex(ACCENT_COLOR), 0);
         lv_obj_set_style_border_width(card, CARD_BORDER, 0);
         lv_obj_set_style_radius(card, CARD_RADIUS, 0);
         lv_obj_set_style_pad_all(card, 0, 0);
-        /* 按下效果：边框绿色加亮 + 整体轻微缩小（含图标/文字）。
-         * 用 transform_scale（256=100%，250≈97.7%，长宽各缩约 3px）——
-         * 父对象 transform 会作用于子对象绘制，图标/文字同步缩放；
-         * 注意勿用 transform_width/height（只改绘制边界，不缩内容） */
         lv_obj_set_style_border_color(card, lv_color_hex(ACCENT_COLOR_HI), LV_STATE_PRESSED);
+#endif
+        /* 按下效果：整体轻微缩小（约 97.7%，长宽各缩约 3px）。transform_scale
+         * 256=100%；勿用 transform_width/height（只改绘制边界，不缩内容） */
         lv_obj_set_style_transform_pivot_x(card, lv_pct(50), 0);
         lv_obj_set_style_transform_pivot_y(card, lv_pct(50), 0);
         lv_obj_set_style_transform_scale(card, 250, LV_STATE_PRESSED);
@@ -542,6 +628,14 @@ static void launcher_build_cards(void)
         lv_obj_set_user_data(card, (void *)(intptr_t)i);
         lv_obj_add_event_cb(card, on_card_event, LV_EVENT_CLICKED, NULL);
         s_launcher.cards[i] = card;
+
+#if LAUNCHER_CARDS_BAKED
+        /* 共享背景位图（首个子对象，位于图标/文字之下） */
+        lv_obj_t *bg = lv_image_create(card);
+        lv_obj_add_flag(bg, LV_OBJ_FLAG_EVENT_BUBBLE);
+        lv_obj_set_pos(bg, 0, 0);
+        s_launcher.card_bgs[i] = bg;
+#endif
 
         /* 卡片内容：静态霓虹图标位图 + APP 名称（relayout 固定定位：图标左对齐竖线） */
         lv_obj_t *icon = lv_image_create(card);
@@ -583,9 +677,15 @@ static void launcher_relayout_core(void)
 
     /* 卡片布局：y_i = i × unit，首卡顶 = 内容顶（pad_top 之下），左缘对齐。
      * 内容：霓虹图标贴左（x=8，所有卡片同一竖线），名称挨着图标右侧 */
+#if LAUNCHER_CARDS_BAKED
+    launcher_bake_card_bg();   /* 尺寸/主题变化时重烘焙共享背景位图 */
+#endif
     for (int i = 0; i < APP_COUNT; i++) {
         lv_obj_set_size(s_launcher.cards[i], s_launcher.card_w, s_launcher.card_h);
         lv_obj_set_pos(s_launcher.cards[i], 0, i * s_launcher.unit);
+#if LAUNCHER_CARDS_BAKED
+        lv_image_set_src(s_launcher.card_bgs[i], &s_card_bg_dsc);   /* 烘焙后刷新引用 */
+#endif
         lv_obj_align(s_launcher.icon_imgs[i], LV_ALIGN_LEFT_MID, 8, 0);
         lv_obj_align(s_launcher.text_labels[i], LV_ALIGN_LEFT_MID, 58, 0);
     }
