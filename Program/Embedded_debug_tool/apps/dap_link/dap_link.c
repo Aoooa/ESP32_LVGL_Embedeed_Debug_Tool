@@ -19,6 +19,7 @@ typedef void (*dap_link_back_cb_t)(void *ctx);
 struct dap_link {
     lv_obj_t *root;
     lv_obj_t *val_if;
+    lv_obj_t *val_map;
     lv_obj_t *val_status;
     lv_obj_t *val_hint;
     lv_obj_t *btn_toggle;
@@ -57,17 +58,17 @@ static void dl_update(struct dap_link *dl)
     switch (st) {
     case DAP_STATE_READY:
         hint = dl->pc_mounted
-               ? "电脑已识别 CMSIS-DAP。\n请连接目标板 SWD 三线后用\npyOCD/OpenOCD/Keil 烧录调试。"
+               ? "电脑已识别 2 个 CMSIS-DAP。\nKeil/pyOCD 可选择任一 SWD 口\n分别烧录；两板可依次烧录。"
                : dl->pc_attached
                  ? "USB 已连接，等待电脑枚举……"
-                 : "正在等待电脑识别……\nUSB 连接电脑后应显示\nCMSIS-DAP 设备。";
+                 : "正在等待电脑识别……\nUSB 连接电脑后应显示\n2 个 CMSIS-DAP 设备。";
         break;
     case DAP_STATE_ERROR:
         hint = "启动失败，请查看日志。\n若读卡器正在使用 USB，\n请先关闭读卡器。";
         break;
     case DAP_STATE_OFF:
     default:
-        hint = "开启后电脑将显示 CMSIS-DAP\n调试器。SWD 三线接目标板：\nSWCLK(12) SWDIO(11) GND(13 复位)。";
+        hint = "开启后电脑将显示 2 个 CMSIS-DAP\n调试器（SWD1/SWD2），可分别选择\n烧录不同目标板。";
         break;
     }
     lv_label_set_text(dl->val_hint, hint);
@@ -182,8 +183,14 @@ dap_link_t *dap_link_create(lv_obj_t *parent, dap_link_back_cb_t back_cb, void *
     lv_obj_set_scrollbar_mode(info, LV_SCROLLBAR_MODE_OFF);
 
     dl_row(info, "SWD 接口（接目标板）", &dl->val_if);
-    lv_label_set_text(dl->val_if, "SWCLK = GPIO12\nSWDIO = GPIO11\nnRESET = GPIO13\nGND = 共地");
+    lv_label_set_text(dl->val_if,
+                      "SWD1: GPIO11(SWDIO) 12(SWCLK) 13(RST)\n"
+                      "SWD2: GPIO14(SWDIO) 15(SWCLK) 18(RST)\n"
+                      "GND = 共地（每个目标各一组）");
 
+    dl_row(info, "Keil 设备对应", &dl->val_map);
+    lv_label_set_text(dl->val_map,
+                      "列表第 1 个 = SWD1\n列表第 2 个 = SWD2\n设备管理器 MI_00/MI_01 同序");
     dl_row(info, "设备状态", &dl->val_status);
     dl_row(info, "提示", &dl->val_hint);
 

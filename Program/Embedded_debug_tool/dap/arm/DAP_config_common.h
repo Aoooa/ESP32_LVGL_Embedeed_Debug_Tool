@@ -1,18 +1,18 @@
 /*
- * DAP_config.h - 平台适配：ESP32-S3 GPIO 位敲 SWD 调试口
+ * DAP_config_common.h - DAP 平台适配公共部分（所有 SWD 端口共享）
  *
  * DAP 内核（DAP.c/SW_DP.c）为 ARM DAPLink（Apache-2.0）原样移植；
  * 本文件提供平台 IO/延时/信息实现，参考 windowsair/wireless-esp8266-dap
  * （MIT）的 ESP32-S3 引脚方案改写为纯 GPIO 位敲（不占用 SPI 外设，
  * 与本项目 LCD/SD 共享的 SPI2 总线无冲突）。
  *
- * 引脚（避开板子已占用：LCD SPI2、触摸 I2C、SD CS、UART0、USB、PSRAM）：
- *   SWCLK  = GPIO12    SWDIO = GPIO11    nRESET = GPIO13（可配置）
- * 对外接线：SWCLK/SWDIO/GND（可选 nRESET），接目标板 SWD 口。
+ * 引脚定义在各端口组件的 DAP_config.h（本文件不涉及具体引脚）：
+ *   每个端口组件 = DAP_config.h（引脚宏）+ #include 本文件。
+ * 新增端口 = 复制组件目录改引脚宏即可（见 components/dap_port0/CMakeLists.txt）。
  */
 
-#ifndef __DAP_CONFIG_H__
-#define __DAP_CONFIG_H__
+#ifndef __DAP_CONFIG_COMMON_H__
+#define __DAP_CONFIG_COMMON_H__
 
 #include <stdint.h>
 #include <string.h>
@@ -48,13 +48,6 @@
 #define DAP_UART_USB_COM_PORT   0U
 #define TARGET_FIXED            0U
 
-/* ── 引脚定义（可改） ── */
-#define PIN_SWDIO_MOSI  11      /* SWDIO 数据线 */
-#define PIN_SWCLK       12      /* SWCLK 时钟线 */
-#define PIN_TDO         9
-#define PIN_TDI         10
-#define PIN_nTRST       14
-#define PIN_nRESET      13      /* 目标复位线 */
 
 /* nRESET 使能：0 = 未接复位线（PIN_nRESET_OUT 空转） */
 #ifndef DAP_NRESET_ENABLE
@@ -74,9 +67,11 @@
 
 __STATIC_INLINE void dap_pins_init(void)
 {
+#if DAP_JTAG != 0
     GPIO_FUNCTION_SET(PIN_TDO);
     GPIO_FUNCTION_SET(PIN_TDI);
     GPIO_FUNCTION_SET(PIN_nTRST);
+#endif
     GPIO_FUNCTION_SET(PIN_nRESET);
 
     /* SWDIO/SWCLK：推挽输出 */
@@ -86,6 +81,7 @@ __STATIC_INLINE void dap_pins_init(void)
     gpio_ll_od_disable(&GPIO, PIN_SWCLK);
     GPIO_SET_LEVEL_HIGH(PIN_SWCLK);
 
+#if DAP_JTAG != 0
     /* TDO：输入 */
     gpio_ll_output_disable(&GPIO, PIN_TDO);
     gpio_ll_input_enable(&GPIO, PIN_TDO);
@@ -99,6 +95,7 @@ __STATIC_INLINE void dap_pins_init(void)
     gpio_ll_od_enable(&GPIO, PIN_nTRST);
     gpio_ll_pulldown_dis(&GPIO, PIN_nTRST);
     gpio_ll_pullup_en(&GPIO, PIN_nTRST);
+#endif
 
 #if DAP_NRESET_ENABLE
     /* nRESET：开漏 + 上拉（高=释放复位） */
@@ -241,4 +238,5 @@ __STATIC_INLINE uint8_t DAP_GetProductFirmwareVersionString(char *str)
     return 0U;
 }
 
-#endif /* __DAP_CONFIG_H__ */
+
+#endif /* __DAP_CONFIG_COMMON_H__ */
