@@ -1,0 +1,4 @@
+## IDF Component Manager Manifest File (main 组件)
+dependencies:
+  espressif/esp_tinyusb:
+    version: "^2.0.0"

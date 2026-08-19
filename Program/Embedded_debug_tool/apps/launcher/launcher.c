@@ -3,6 +3,7 @@
 #include "reader_app.h"
 #include "net_console.h"
 #include "terminal.h"
+#include "card_reader.h"
 #include "gesture.h"
 #include <string.h>
 #include <math.h>
@@ -21,6 +22,7 @@ typedef enum { APP_TYPE_LAUNCH, APP_TYPE_PLACEHOLDER } app_type_t;
 /* 图标字体新增字形（FontAwesome，montserrat_28 缺失，由 lv_font_launcher_icons 提供） */
 #define LAUNCHER_ICON_BOOK     "\xEF\x80\xAD"   /* U+F02D fa-book（阅读器） */
 #define LAUNCHER_ICON_TERMINAL "\xEF\x84\xA0"   /* U+F120 fa-terminal（串口终端） */
+#define LAUNCHER_ICON_SDCARD   "\xEF\x9F\x82"   /* U+F7C2 fa-sd-card（USB 读卡器） */
 
 /* APP 图标（LV_SYMBOL / FontAwesome，lv_font_launcher_icons + fallback montserrat_28） */
 static const char *const s_app_icons[APP_COUNT] = {
@@ -28,7 +30,7 @@ static const char *const s_app_icons[APP_COUNT] = {
     LAUNCHER_ICON_BOOK,    /* Reader（书本） */
     LAUNCHER_ICON_TERMINAL, /* Terminal（串口终端） */
     LV_SYMBOL_WIFI,        /* SerialIP（串口转 TCP/IP） */
-    LV_SYMBOL_SETTINGS,    /* Slot 5 */
+    LAUNCHER_ICON_SDCARD,  /* SD 读卡器 */
     LV_SYMBOL_POWER,       /* Slot 6 */
 };
 
@@ -41,7 +43,7 @@ static const struct {
     { "Reader",   APP_TYPE_LAUNCH,     LAUNCH_APP_READER },
     { "Terminal", APP_TYPE_LAUNCH,     LAUNCH_APP_UART },
     { "SerialIP", APP_TYPE_LAUNCH,     LAUNCH_APP_NET },
-    { "Slot 5",   APP_TYPE_PLACEHOLDER, 0 },
+    { "CardR",    APP_TYPE_LAUNCH,     LAUNCH_APP_CARDREADER },
     { "Slot 6",   APP_TYPE_PLACEHOLDER, 0 },
 };
 
@@ -385,6 +387,16 @@ const app_manifest_t app_manifests[LAUNCH_APP_COUNT] = {
         .rotate = NULL,
         .refresh = NULL,
         .debug_event = (void (*)(void *, int))net_console_debug_event,
+    },
+    [LAUNCH_APP_CARDREADER] = {
+        .id = LAUNCH_APP_CARDREADER,
+        .name = "CardR",
+        .launch = (void *(*)(lv_obj_t *, void (*)(void *), void *))card_reader_create,
+        .destroy = (void (*)(void *))card_reader_destroy,
+        .back = (bool (*)(void *))card_reader_swipe_back,
+        .rotate = NULL,
+        .refresh = (void (*)(void *))card_reader_refresh,
+        .debug_event = (void (*)(void *, int))card_reader_debug_event,
     },
 };
 

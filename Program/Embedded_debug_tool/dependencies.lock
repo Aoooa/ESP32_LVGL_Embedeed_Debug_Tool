@@ -1,4 +1,10 @@
 dependencies:
+  esp_lcd_touch:
+    dependencies: []
+    source:
+      path: D:\Task\embedded_debugger_tool\Program\Embedded_debug_tool\components\esp_lcd_touch
+      type: local
+    version: 1.2.1
   espressif/button:
     component_hash: ad64de1d1b8aa139564810a8519b2f1ac275a560a512479ee94c1b6983469d4b
     dependencies:
@@ -23,16 +29,6 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 0.5.3
-  espressif/esp_lcd_touch:
-    component_hash: 3f85a7d95af876f1a6ecca8eb90a81614890d0f03a038390804e5a77e2caf862
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=4.4.2'
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    version: 1.2.1
   espressif/esp_lv_decoder:
     component_hash: 331d23c304cea5d1aed0ad3cea7774874dbaeebb2217e8db6bf3cc8485ac9f9f
     dependencies:
@@ -122,6 +118,26 @@ dependencies:
     - esp32c61
     - esp32h4
     version: 1.0.2
+  espressif/esp_tinyusb:
+    component_hash: 9a73a76a6bc17907f6e523342ff6b1e440023e8aac2c11f4691212106ec24e66
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    - name: espressif/tinyusb
+      registry_url: https://components.espressif.com
+      require: public
+      version: '>=0.17.0~2'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    targets:
+    - esp32s2
+    - esp32s3
+    - esp32p4
+    - esp32h4
+    - esp32s31
+    version: 2.2.1
   espressif/freetype:
     component_hash: a4169cdd22b3572342b2d640d7082405b8895e3214539283601c03412589b65d
     dependencies:
@@ -160,6 +176,22 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 1.6.58
+  espressif/tinyusb:
+    component_hash: a72b7d67472914ab76309340fd50d578b31e310963d45ad0f81144bde3314752
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    targets:
+    - esp32s2
+    - esp32s3
+    - esp32p4
+    - esp32h4
+    - esp32s31
+    version: 0.21.0~1
   espressif/zlib:
     component_hash: 64ea2fd6754c5a05951f1ddb312ac835cd782e68cb5bd9dfcd1c3a107c8fbfbc
     dependencies:
@@ -186,10 +218,11 @@ direct_dependencies:
 - espressif/esp_lcd_touch
 - espressif/esp_lv_decoder
 - espressif/esp_lv_fs
+- espressif/esp_tinyusb
 - espressif/freetype
 - espressif/knob
 - idf
 - lvgl/lvgl
-manifest_hash: e5f2b0e1618907ba5ee956119989549ae6945b9021a954a645116e6aed65d84b
+manifest_hash: cf9ef6bded5ab26ea57802f10e78bd92fd1fa14a845c269b2236b5188f1bdb28
 target: esp32s3
 version: 2.0.0

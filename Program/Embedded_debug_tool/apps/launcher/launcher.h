@@ -25,6 +25,7 @@ typedef enum {
     LAUNCH_APP_READER,      /* TXT 书架/阅读器 */
     LAUNCH_APP_UART,        /* 串口数据显示终端 */
     LAUNCH_APP_NET,         /* 网络服务信息 */
+    LAUNCH_APP_CARDREADER,  /* USB 读卡器（SD 卡 MSC） */
     LAUNCH_APP_COUNT,
 } launch_app_id_t;
 

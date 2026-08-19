@@ -30,6 +30,8 @@ idf_component_register(
         "${MODULE_DIR}/fonts/lv_font_launcher_icons.c"
         "${MODULE_DIR}/sdcard/drv_sdcard.c"
         "${MODULE_DIR}/sdcard/app_sdcard.c"
+        "${MODULE_DIR}/sdcard/app_cardreader.c"
+        "${MODULE_DIR}/apps/card_reader/card_reader.c"
 
     INCLUDE_DIRS
         "."
@@ -45,6 +47,7 @@ idf_component_register(
         "${MODULE_DIR}/apps/net_console"
         "${MODULE_DIR}/apps/reader"
         "${MODULE_DIR}/apps/terminal"
+        "${MODULE_DIR}/apps/card_reader"
         "${MODULE_DIR}/apps/test"
         "${MODULE_DIR}/platform/components/flow_view"
         "${MODULE_DIR}/platform/components/font_manager"
@@ -55,4 +58,5 @@ idf_component_register(
         driver esp_wifi esp_http_server lwip freertos
         esp_lcd esp_lcd_touch esp_lcd_touch_cst816s esp_lvgl_adapter lvgl
         sdmmc fatfs heap
+        esp_tinyusb usb esp_driver_sdspi hal soc
 )
