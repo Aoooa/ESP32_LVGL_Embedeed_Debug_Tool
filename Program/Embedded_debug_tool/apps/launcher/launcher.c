@@ -10,28 +10,27 @@
 #include <stdio.h>
 #include "esp_log.h"
 
-/* launcher 图标字体：只含 montserrat_28 缺失的 FontAwesome 字形，缺失字形回退 montserrat_28 */
-LV_FONT_DECLARE(lv_font_launcher_icons);
-
 /* ── App 卡片表（每卡最多 3 行，每行 ≤15 字符防折行） ── */
 #define APP_COUNT 6
 
 /* 卡片类型：可启动 app / 占位 */
 typedef enum { APP_TYPE_LAUNCH, APP_TYPE_PLACEHOLDER } app_type_t;
 
-/* 图标字体新增字形（FontAwesome，montserrat_28 缺失，由 lv_font_launcher_icons 提供） */
-#define LAUNCHER_ICON_BOOK     "\xEF\x80\xAD"   /* U+F02D fa-book（阅读器） */
-#define LAUNCHER_ICON_TERMINAL "\xEF\x84\xA0"   /* U+F120 fa-terminal（串口终端） */
-#define LAUNCHER_ICON_SDCARD   "\xEF\x9F\x82"   /* U+F7C2 fa-sd-card（USB 读卡器） */
+/* launcher 图标：静态位图（光晕已烘入，非实时渲染），见 launcher_icons.c */
+extern const lv_image_dsc_t launcher_icon_files;
+extern const lv_image_dsc_t launcher_icon_reader;
+extern const lv_image_dsc_t launcher_icon_terminal;
+extern const lv_image_dsc_t launcher_icon_serialip;
+extern const lv_image_dsc_t launcher_icon_cardr;
+extern const lv_image_dsc_t launcher_icon_slot6;
 
-/* APP 图标（LV_SYMBOL / FontAwesome，lv_font_launcher_icons + fallback montserrat_28） */
-static const char *const s_app_icons[APP_COUNT] = {
-    LV_SYMBOL_DIRECTORY,   /* Files */
-    LAUNCHER_ICON_BOOK,    /* Reader（书本） */
-    LAUNCHER_ICON_TERMINAL, /* Terminal（串口终端） */
-    LV_SYMBOL_WIFI,        /* SerialIP（串口转 TCP/IP） */
-    LAUNCHER_ICON_SDCARD,  /* SD 读卡器 */
-    LV_SYMBOL_POWER,       /* Slot 6 */
+static const lv_image_dsc_t *const s_app_icons[APP_COUNT] = {
+    &launcher_icon_files,      /* Files */
+    &launcher_icon_reader,     /* Reader */
+    &launcher_icon_terminal,   /* Terminal */
+    &launcher_icon_serialip,   /* SerialIP */
+    &launcher_icon_cardr,      /* CardR */
+    &launcher_icon_slot6,      /* Slot 6 */
 };
 
 static const struct {
@@ -87,7 +86,7 @@ typedef struct {
     lv_obj_t *root;
     lv_obj_t *drum;
     lv_obj_t *cards[APP_COUNT];
-    lv_obj_t *icon_labels[APP_COUNT];   /* 白色图标（LV_SYMBOL，固定白色） */
+    lv_obj_t *icon_imgs[APP_COUNT];   /* 静态霓虹图标位图 */
     lv_obj_t *text_labels[APP_COUNT];
 
     /* 调速拨轮 */
@@ -544,16 +543,11 @@ static void launcher_build_cards(void)
         lv_obj_add_event_cb(card, on_card_event, LV_EVENT_CLICKED, NULL);
         s_launcher.cards[i] = card;
 
-        /* 卡片内容：白色图标 + APP 名称（relayout 固定定位：图标左对齐竖线）。
-         * 图标字体：新增字形（书本/终端）+ fallback montserrat_28（其余图标） */
-        lv_obj_t *icon_lbl = lv_label_create(card);
-        lv_label_set_text(icon_lbl, s_app_icons[i]);
-        lv_obj_add_flag(icon_lbl, LV_OBJ_FLAG_EVENT_BUBBLE);
-        lv_obj_set_style_text_font(icon_lbl, &lv_font_launcher_icons, 0);
-        lv_obj_set_style_text_color(icon_lbl, lv_color_hex(0xFFFFFF), 0);   /* 固定白色 */
-        lv_obj_set_style_text_color(icon_lbl, lv_color_hex(ACCENT_COLOR_HI), LV_STATE_PRESSED);
-        lv_obj_set_style_bg_opa(icon_lbl, LV_OPA_TRANSP, 0);
-        s_launcher.icon_labels[i] = icon_lbl;
+        /* 卡片内容：静态霓虹图标位图 + APP 名称（relayout 固定定位：图标左对齐竖线） */
+        lv_obj_t *icon = lv_image_create(card);
+        lv_image_set_src(icon, s_app_icons[i]);
+        lv_obj_add_flag(icon, LV_OBJ_FLAG_EVENT_BUBBLE);
+        s_launcher.icon_imgs[i] = icon;
 
         lv_obj_t *lbl = lv_label_create(card);
         lv_label_set_text(lbl, s_apps[i].name);
@@ -588,11 +582,11 @@ static void launcher_relayout_core(void)
     lv_obj_set_style_pad_bottom(s_launcher.drum, s_launcher.gap, 0);
 
     /* 卡片布局：y_i = i × unit，首卡顶 = 内容顶（pad_top 之下），左缘对齐。
-     * 内容：白色图标贴左（x=16，所有卡片同一竖线），名称挨着图标右侧 */
+     * 内容：霓虹图标贴左（x=8，所有卡片同一竖线），名称挨着图标右侧 */
     for (int i = 0; i < APP_COUNT; i++) {
         lv_obj_set_size(s_launcher.cards[i], s_launcher.card_w, s_launcher.card_h);
         lv_obj_set_pos(s_launcher.cards[i], 0, i * s_launcher.unit);
-        lv_obj_align(s_launcher.icon_labels[i], LV_ALIGN_LEFT_MID, 10, 0);
+        lv_obj_align(s_launcher.icon_imgs[i], LV_ALIGN_LEFT_MID, 8, 0);
         lv_obj_align(s_launcher.text_labels[i], LV_ALIGN_LEFT_MID, 58, 0);
     }
 

@@ -18,6 +18,7 @@ idf_component_register(
         "${MODULE_DIR}/platform/components/flow_view/flow_view.c"
         "${MODULE_DIR}/apps/file_browser/file_browser.c"
         "${MODULE_DIR}/apps/launcher/launcher.c"
+        "${MODULE_DIR}/apps/launcher/launcher_icons.c"
         "${MODULE_DIR}/platform/components/font_manager/app_font.c"
         "${MODULE_DIR}/apps/reader/reader_index.c"
         "${MODULE_DIR}/apps/reader/reader.c"
@@ -27,7 +28,6 @@ idf_component_register(
         "${MODULE_DIR}/apps/net_console/net_console.c"
         # "${MODULE_DIR}/apps/test/app_test.c"   # 测试模块（默认关闭；启用：取消注释 + main.c #if 1 + app_test_run()）
         "${MODULE_DIR}/fonts/han_sc_16.c"
-        "${MODULE_DIR}/fonts/lv_font_launcher_icons.c"
         "${MODULE_DIR}/sdcard/drv_sdcard.c"
         "${MODULE_DIR}/sdcard/app_sdcard.c"
         "${MODULE_DIR}/sdcard/app_cardreader.c"
