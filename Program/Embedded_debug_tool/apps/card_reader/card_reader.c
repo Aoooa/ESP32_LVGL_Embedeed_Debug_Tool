@@ -79,6 +79,9 @@ static void cr_update(card_reader_t *cr)
     }
 }
 
+/* 读卡器保持官方稳定配置（MSC_BUFSIZE=2048），不随读卡器缩小显示缓冲。
+ * （曾尝试缩小显示缓冲加大 MSC 缓冲提速，但官方组件多扇区写路径不稳定会导致
+ *   FAT 损坏/Windows 修复提示，已撤回） */
 static void cr_timer_cb(lv_timer_t *t)
 {
     cr_update(lv_timer_get_user_data(t));
@@ -89,7 +92,8 @@ static void cr_btn_cb(lv_event_t *e)
     card_reader_t *cr = lv_event_get_user_data(e);
     if (!cr) return;
 
-    if (app_cardreader_get_state() == CARDREADER_EXPOSED) {
+    cardreader_state_t st = app_cardreader_get_state();
+    if (st == CARDREADER_EXPOSED || st == CARDREADER_APP_OWNED) {
         app_cardreader_disable();
     } else {
         app_cardreader_enable();
