@@ -40,12 +40,12 @@ static const struct {
     app_type_t type;        /* 占位或可启动 */
     launch_app_id_t id;     /* type=LAUNCH 时的 app id */
 } s_apps[APP_COUNT] = {
-    { "Files",    APP_TYPE_LAUNCH,     LAUNCH_APP_FILES },
-    { "Reader",   APP_TYPE_LAUNCH,     LAUNCH_APP_READER },
+    { "SD",    APP_TYPE_LAUNCH,     LAUNCH_APP_FILES },
+    { "Book",   APP_TYPE_LAUNCH,     LAUNCH_APP_READER },
     { "Terminal", APP_TYPE_LAUNCH,     LAUNCH_APP_UART },
-    { "SerialIP", APP_TYPE_LAUNCH,     LAUNCH_APP_NET },
-    { "CardR",    APP_TYPE_LAUNCH,     LAUNCH_APP_CARDREADER },
-    { "DAPLink",  APP_TYPE_LAUNCH,     LAUNCH_APP_DAPLINK },
+    { "Uart2IP", APP_TYPE_LAUNCH,     LAUNCH_APP_NET },
+    { "MSD",    APP_TYPE_LAUNCH,     LAUNCH_APP_CARDREADER },
+    { "SWD",  APP_TYPE_LAUNCH,     LAUNCH_APP_DAPLINK },
 };
 
 /* ── 主题色 ── */
