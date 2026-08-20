@@ -1,21 +1,41 @@
 #include "app_dap.h"
 #include "drv_dap.h"
 #include "app_cardreader.h"
+#include "app_wifi.h"
+#include "usbip_server.h"
 #include "tinyusb.h"
 #include "tinyusb_default_config.h"
 #include "class/hid/hid_device.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_heap_caps.h"
 #include "soc/soc_caps.h"
 #include "hal/usb_serial_jtag_ll.h"
 #include <string.h>
 
 static const char *TAG = "app_dap";
 
+
+
 /* ── 状态 ── */
 static dap_state_t s_state = DAP_STATE_OFF;
+static dap_wifi_state_t s_wifi_state = DAP_WIFI_OFF;
 
-/* 每端口 DAP 命令/响应缓冲（CMSIS-DAP v1 包 = 64B） */
+/* 每端口 DAP 内核互斥锁：USB 通道（TinyUSB 任务）与无线通道（usbip_server
+ * 任务）共用同一组 dap_ports[]，执行必须串行。
+ * 懒创建 + 永久保留：无线模式不经过 app_dap_enable，锁必须始终可用 */
+SemaphoreHandle_t dap_port_locks[DAP_PORT_COUNT];
+
+SemaphoreHandle_t dap_port_lock_get(int port)
+{
+    if (!dap_port_locks[port]) {
+        dap_port_locks[port] = xSemaphoreCreateMutex();
+    }
+    return dap_port_locks[port];
+}
+
+/* 每端口 DAP 命令/响应缓冲（CMSIS-DAP v1 包 = 64B；USB 通道专用，
+ * 无线通道用 usbip_server 自己的缓冲，锁内执行即可） */
 static uint8_t s_cmd[DAP_PORT_COUNT][64];
 static uint8_t s_rsp[DAP_PORT_COUNT][64];
 
@@ -38,17 +58,15 @@ static const uint8_t s_hid_report_desc[] = {
     0xC0,               /* End Collection */
 };
 
-/* 配置描述符：1 个配置 + N 个 HID 接口（每 SWD 口一个，EP IN 0x81 起，64B 1ms） */
-#define DAP_USB_DESC_TOTAL_LEN (TUD_CONFIG_DESC_LEN + DAP_PORT_COUNT * TUD_HID_DESC_LEN)
+/* USB 模式配置描述符：单 HID 接口（SWD1）。
+ * 注：Keil 对多接口 HID 设备支持不稳定（偶发烧录失败），USB 直连只暴露
+ * 一个 DAP（SWD1）；SWD2 在无线（USBIP）模式下可用（双接口描述符见
+ * usbip_server.c）。 */
+#define DAP_USB_DESC_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_HID_DESC_LEN)
 static const uint8_t s_config_desc[] = {
-    TUD_CONFIG_DESCRIPTOR(1, DAP_PORT_COUNT, 0, DAP_USB_DESC_TOTAL_LEN,
+    TUD_CONFIG_DESCRIPTOR(1, 1, 0, DAP_USB_DESC_TOTAL_LEN,
                           0x80 | TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
-#if DAP_PORT_COUNT >= 1
     TUD_HID_DESCRIPTOR(0, 4, false, sizeof(s_hid_report_desc), 0x81, 64, 1),
-#endif
-#if DAP_PORT_COUNT >= 2
-    TUD_HID_DESCRIPTOR(1, 5, false, sizeof(s_hid_report_desc), 0x82, 64, 1),
-#endif
 };
 
 /* 序列号：芯片 MAC（设备级唯一；同一设备的两个 HID 接口共享，接口靠
@@ -82,6 +100,37 @@ static const tusb_desc_device_t s_device_desc = {
     .bNumConfigurations = 1,
 };
 
+/* ── 描述符访问函数（USBIP 无线通道共用） ── */
+
+const void *dap_usb_device_desc(void)
+{
+    return &s_device_desc;
+}
+
+int dap_usb_config_desc(uint8_t *buf, int maxlen)
+{
+    int len = DAP_USB_DESC_TOTAL_LEN;
+    if (len > maxlen) len = maxlen;
+    memcpy(buf, s_config_desc, len);
+    return len;
+}
+
+int dap_usb_hid_report_desc(uint8_t *buf, int maxlen)
+{
+    int len = (int)sizeof(s_hid_report_desc);
+    if (len > maxlen) len = maxlen;
+    memcpy(buf, s_hid_report_desc, len);
+    return len;
+}
+
+const char *dap_usb_string(int idx)
+{
+    if (idx < 0 || idx >= (int)(sizeof(s_string_desc) / sizeof(s_string_desc[0]))) {
+        return NULL;
+    }
+    return s_string_desc[idx];
+}
+
 /* ── TinyUSB HID 回调（CMSIS-DAP 协议：一问一答） ── */
 
 uint8_t const *tud_hid_descriptor_report_cb(uint8_t instance)
@@ -114,8 +163,11 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
     }
     memcpy(s_cmd[instance], buffer, bufsize);
 
-    /* 同步执行（几 ms）。返回 num：低 16 位=响应长度，高 16 位=请求长度 */
+    /* 同步执行（几 ms），持端口锁与无线通道串行。返回 num：低 16 位=响应
+     * 长度，高 16 位=请求长度 */
+    xSemaphoreTake(dap_port_lock_get(instance), portMAX_DELAY);
     uint32_t num = dap_ports[instance]->execute(s_cmd[instance], s_rsp[instance]);
+    xSemaphoreGive(dap_port_lock_get(instance));
     uint16_t rsp_len = (uint16_t)(num & 0xFFFFU);
     if (rsp_len > 0) {
         /* 响应填充到整包 64B：DWC2 DMA 模式要求传输长度 4 字节对齐
@@ -168,6 +220,12 @@ esp_err_t app_dap_enable(void)
         ESP_LOGE(TAG, "card reader is using USB (%s), disable it first",
                  app_cardreader_state_str(app_cardreader_get_state()));
         return ESP_ERR_INVALID_STATE;
+    }
+
+    /* 与无线通道互斥（USB/无线切换开启，同一时间只允许一个） */
+    if (s_wifi_state == DAP_WIFI_ON) {
+        ESP_LOGI(TAG, "wireless active, switching to USB mode");
+        app_dap_wifi_disable();
     }
 
     esp_err_t ret = ESP_OK;
@@ -226,6 +284,73 @@ esp_err_t app_dap_disable(void)
     set_state(DAP_STATE_OFF);
     ESP_LOGI(TAG, "DAP disabled, USJ console restored");
     return ret;
+}
+
+/* ── 无线 DAP（USBIP） ── */
+
+static void set_wifi_state(dap_wifi_state_t st)
+{
+    s_wifi_state = st;
+    ESP_LOGI(TAG, "wifi state -> %s", app_dap_wifi_state_str(st));
+}
+
+esp_err_t app_dap_wifi_enable(void)
+{
+    if (s_wifi_state == DAP_WIFI_ON) return ESP_OK;
+
+    /* 与 USB 通道互斥（USB/无线切换开启，同一时间只允许一个） */
+    if (s_state == DAP_STATE_READY) {
+        ESP_LOGI(TAG, "USB DAP active, switching to wireless mode");
+        app_dap_disable();
+    }
+
+    /* 1. 启动 WiFi SoftAP（复用 net_console 的 AP 模式） */
+    esp_err_t ret = app_wifi_start();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "wifi start failed: %s", esp_err_to_name(ret));
+        set_wifi_state(DAP_WIFI_ERROR);
+        return ret;
+    }
+
+    /* 2. 启动 USBIP server（TCP 872） */
+    ret = usbip_server_start();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "usbip server start failed: %s", esp_err_to_name(ret));
+        app_wifi_stop();
+        set_wifi_state(DAP_WIFI_ERROR);
+        return ret;
+    }
+
+    set_wifi_state(DAP_WIFI_ON);
+    ESP_LOGI(TAG, "wireless DAP enabled: usbip attach_ude -r 192.168.4.1 -b 1-1");
+    return ESP_OK;
+}
+
+esp_err_t app_dap_wifi_disable(void)
+{
+    if (s_wifi_state == DAP_WIFI_OFF) return ESP_OK;
+
+    usbip_server_stop();
+    app_wifi_stop();
+
+    set_wifi_state(DAP_WIFI_OFF);
+    ESP_LOGI(TAG, "wireless DAP disabled");
+    return ESP_OK;
+}
+
+dap_wifi_state_t app_dap_wifi_get_state(void)
+{
+    return s_wifi_state;
+}
+
+const char *app_dap_wifi_state_str(dap_wifi_state_t state)
+{
+    switch (state) {
+    case DAP_WIFI_OFF:    return "OFF";
+    case DAP_WIFI_ON:     return "ON";
+    case DAP_WIFI_ERROR:  return "ERROR";
+    default:              return "?";
+    }
 }
 
 const char *app_dap_state_str(dap_state_t state)

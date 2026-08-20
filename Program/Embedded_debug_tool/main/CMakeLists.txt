@@ -34,6 +34,7 @@ idf_component_register(
         "${MODULE_DIR}/apps/card_reader/card_reader.c"
         "${MODULE_DIR}/dap/drv_dap.c"
         "${MODULE_DIR}/dap/app_dap.c"
+        "${MODULE_DIR}/dap/usbip_server.c"
         "${MODULE_DIR}/apps/dap_link/dap_link.c"
 
     INCLUDE_DIRS
