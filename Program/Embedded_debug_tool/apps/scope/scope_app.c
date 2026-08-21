@@ -42,6 +42,9 @@
 static const char *const s_hzoom_strs[] = { "x1", "x2", "x4", "x8" };
 #define SC_HZOOM_N  (sizeof(s_hzoom_strs) / sizeof(s_hzoom_strs[0]))
 
+/* 前向声明（scope_apply_cfg 在定义前调用） */
+static void scope_refresh_off_btns(void);
+
 /* ── 通道输入 GPIO（ADC1 空闲脚；IO5 板面未引出，改用 9/10） ── */
 #define SC_IO_CH1   9
 #define SC_IO_CH2   10
@@ -93,6 +96,7 @@ typedef struct {
     int hz_idx;                      /* 水平缩放索引（0=×1 全窗口） */
     int ch_off[SCOPE_CH_MAX];        /* 每通道垂直偏移（像素，0 点移动） */
     lv_obj_t *off_btn[2][2];         /* 垂直偏移按钮 [通道][0=上移 1=下移] */
+    int hz_pan;                      /* 水平平移（采样点，H 缩放后拖动查看） */
     scope_cfg_t cfg;
     bool running;
     uint32_t last_frameno;
@@ -160,7 +164,7 @@ static void scope_draw(const scope_frame_t *f)
     if (f && f->frameno && f->points > 0) {
         int npts = f->points >> s->hz_idx;
         if (npts < 1) npts = 1;
-        int wstart = (f->points / 4) - npts / 2;   /* 触发点(25%)为中心 */
+        int wstart = (f->points / 4) - npts / 2 + s->hz_pan;   /* 触发点为中心 + 平移 */
         if (wstart < 0) wstart = 0;
         if (wstart + npts > f->points) wstart = f->points - npts;
         int wend = wstart + npts;
@@ -299,6 +303,7 @@ static void on_hz_btn(lv_event_t *e)
     if (!s) return;
     ESP_LOGI(S_TAG, "btn: H-zoom cycle");
     s->hz_idx = (s->hz_idx + 1) % SC_HZOOM_N;
+    s->hz_pan = 0;                  /* 换档重新居中（触发点为中心） */
     scope_apply_cfg();
 }
 
@@ -318,6 +323,32 @@ static void on_off_btn(lv_event_t *e)
     if (s->ch_off[ch] < -lim) s->ch_off[ch] = -lim;
     s->last_frameno = 0xFFFFFFFF;          /* 强制重绘（STOP 冻结时也生效） */
     ESP_LOGI(S_TAG, "btn: CH%d offset %+d", ch + 1, s->ch_off[ch]);
+}
+
+/* canvas 左右拖动 = H 缩放后平移查看（×1 时无意义，不响应） */
+static int s_canvas_drag_x;
+
+static void on_canvas_press(lv_event_t *e)
+{
+    scope_t *s = s_scope;
+    if (!s || s->hz_idx == 0) return;      /* 仅 H 放大后可平移 */
+    lv_indev_t *indev = lv_indev_active();
+    lv_point_t p;
+    lv_indev_get_point(indev, &p);
+    if (lv_event_get_code(e) == LV_EVENT_PRESSED) {
+        s_canvas_drag_x = p.x;
+    } else if (lv_event_get_code(e) == LV_EVENT_PRESSING && p.x != s_canvas_drag_x) {
+        int npts = (s->frame && s->frame->points) ? (s->frame->points >> s->hz_idx) : 0;
+        if (npts < 1 || s->canvas_w <= 0) return;
+        int per_px = (npts + s->canvas_w - 1) / s->canvas_w;   /* 像素 → 采样点 */
+        s->hz_pan += (p.x - s_canvas_drag_x) * per_px;
+        s_canvas_drag_x = p.x;
+        int base = s->frame->points / 4;
+        int max = s->frame->points - npts;
+        if (s->hz_pan < -base) s->hz_pan = -base;
+        if (s->hz_pan > max - base) s->hz_pan = max - base;
+        s->last_frameno = 0xFFFFFFFF;      /* 强制重绘 */
+    }
 }
 
 /* 偏移按钮可见性跟随通道模式（单通道只显示对应侧） */
@@ -486,13 +517,13 @@ static void scope_relayout(void)
     lv_obj_align(s->state_lbl, LV_ALIGN_TOP_RIGHT, -8, 7);
 
     /* 垂直偏移按钮（canvas 左右边缘；单通道只显示对应侧） */
-    int bw = 24, bh = 15;
+    int obw = 24, obh = 15;
     for (int ch = 0; ch < 2; ch++) {
-        int x = (ch == 0) ? 2 : s->canvas_w - bw - 2;
+        int x = (ch == 0) ? 2 : s->canvas_w - obw - 2;
         for (int d = 0; d < 2; d++) {
-            int y = SC_TOP_H + (d ? bh + 2 : 2);
+            int y = SC_TOP_H + (d ? obh + 2 : 2);
             lv_obj_set_pos(s->off_btn[ch][d], x, y);
-            lv_obj_set_size(s->off_btn[ch][d], bw, bh);
+            lv_obj_set_size(s->off_btn[ch][d], obw, obh);
         }
     }
 
@@ -607,6 +638,9 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
     s->canvas = cv;
     s->canvas_w = s->canvas_h = 0;
     lv_obj_set_pos(cv, 0, SC_TOP_H);
+    /* canvas 左右拖动 = H 缩放平移（PRESSED/PRESSING 逐个注册） */
+    lv_obj_add_event_cb(cv, on_canvas_press, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(cv, on_canvas_press, LV_EVENT_PRESSING, NULL);
 
     /* 0V 基准标注（独立 label 盖在 canvas 左下角，canvas 重绘不影响） */
     lv_obj_t *z0 = lv_label_create(root);
