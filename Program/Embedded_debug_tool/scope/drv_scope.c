@@ -225,16 +225,21 @@ esp_err_t drv_scope_init(void)
                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_parse_buf) goto err;
 
-    /* adc_continuous 句柄。内部 RAM 需求刻意压到最小：
-     *   max_store_buf_size 4KB（ringbuf）+ conv_frame 1KB×2 + 描述符 ≈ 7KB。
-     *   官方 new_handle 全部走 MALLOC_CAP_INTERNAL，分配过大（默认 16KB 池）
-     *   在显示缓冲占用后易失败；且 new_handle 失败路径本身会在未 claim 时
-     *   调 adc_apb_periph_free()（cnt 0→-1）直接 abort（v5.5.3 缺陷，已在本
-     *   地 esp_adc 组件修复为返回错误码）。4KB ringbuf 仍容纳 2 批 512 样本。 */
+    /* adc_continuous 句柄。内部 RAM 需求压到极限（实测本机启动后：
+     *   internal free~15KB / max_block~6.5KB；DMA free~8KB / max_block~4KB。
+     *   rx_dma_buf = INTERNAL_BUF_NUM(5) × conv_frame_size，必须 < 4KB：
+     *   conv_frame_size 512 → rx_dma_buf 2.5KB（conv 512 字节 = 128 样本/帧，
+     *   DMA 中断 80k/128≈625Hz，可接受）；ringbuf 4KB < 6.5KB 上限。 */
     adc_continuous_handle_cfg_t hdl = {
         .max_store_buf_size = 4 * 1024,
-        .conv_frame_size = 1024,
+        .conv_frame_size = 512,
     };
+    ESP_LOGI(S_TAG, "init: heap before new_handle: internal free=%u max_block=%u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    ESP_LOGI(S_TAG, "init: dma-capable free=%u max_block=%u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
     esp_err_t ret = adc_continuous_new_handle(&hdl, &s_handle);
     if (ret != ESP_OK) {
         ESP_LOGE(S_TAG, "init: adc_continuous_new_handle FAILED: %s (internal RAM?)",
