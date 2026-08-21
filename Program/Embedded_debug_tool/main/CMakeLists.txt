@@ -39,6 +39,8 @@ idf_component_register(
         "${MODULE_DIR}/apps/dap_link/dap_link.c"
         "${MODULE_DIR}/wave/drv_wave.c"
         "${MODULE_DIR}/apps/wave_gen/wave_gen.c"
+        "${MODULE_DIR}/scope/drv_scope.c"
+        "${MODULE_DIR}/apps/scope/scope_app.c"
 
     INCLUDE_DIRS
         "."
@@ -64,6 +66,8 @@ idf_component_register(
         "${MODULE_DIR}/sdcard"
         "${MODULE_DIR}/dap"
         "${MODULE_DIR}/wave"
+        "${MODULE_DIR}/scope"
+        "${MODULE_DIR}/apps/scope"
 
     PRIV_REQUIRES
         spi_flash nvs_flash esp_netif esp_event
@@ -72,5 +76,6 @@ idf_component_register(
         sdmmc fatfs heap
         esp_tinyusb usb esp_driver_sdspi hal soc
         esp_timer
+        esp_adc
         dap_port0 dap_port1
 )

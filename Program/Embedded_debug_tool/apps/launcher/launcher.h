@@ -28,6 +28,7 @@ typedef enum {
     LAUNCH_APP_CARDREADER,  /* USB 读卡器（SD 卡 MSC） */
     LAUNCH_APP_DAPLINK,     /* DAP Link（CMSIS-DAP 烧录器/调试器） */
     LAUNCH_APP_WAVEGEN,     /* 波形输出（PWM/正弦/脉冲） */
+    LAUNCH_APP_SCOPE,       /* 示波器（ADC 采样显示） */
     LAUNCH_APP_COUNT,
 } launch_app_id_t;
 

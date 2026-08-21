@@ -14,6 +14,7 @@
 #include "app_display.h"
 #include "drv_sdcard.h"
 #include "drv_wave.h"
+#include "drv_scope.h"
 #include "esp_lv_adapter.h"
 
 static uart_bridge_t s_bridge1 = {
@@ -54,6 +55,9 @@ void app_main(void)
 
     /* 波形输出服务（幂等，启动期一次） */
     drv_wave_init();
+
+    /* 示波器采集服务（幂等，启动期一次；ADC1 + esp_adc_cal 校准） */
+    drv_scope_init();
 
 #if APP_NET_UART_FWD_ENABLED
     app_tcp_start();
