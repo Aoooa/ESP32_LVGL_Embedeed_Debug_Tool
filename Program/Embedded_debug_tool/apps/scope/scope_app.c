@@ -201,18 +201,21 @@ static void scope_draw(const scope_frame_t *f)
             }
         }
 
-        /* 右下角时间轴定位条：横线=缩放前全窗口(2048 点)，滑块=当前缩放窗口，
+        /* 右下角时间轴定位条（仅 H 放大后显示，x1 无平移意义时隐藏）：
+         * 横线=缩放前全窗口(2048 点)，滑块=当前缩放窗口，
          * 宽度 ∝ 显示点数/全窗口，位置 ∝ 切片起点/全窗口（拖动时实时移动） */
-        int tb_y = chh - 3;
-        int tb_w = cw * 45 / 100;
-        int tb_x = cw - tb_w - 4;
-        for (int x = tb_x; x < tb_x + tb_w; x++) buf[tb_y * cw + x] = c_bar;
-        int sw = tb_w * npts / f->points;
-        if (sw < 2) sw = 2;
-        int sx = tb_x + tb_w * wstart / f->points;
-        if (sx + sw > tb_x + tb_w) sx = tb_x + tb_w - sw;
-        for (int y = tb_y - 2; y <= tb_y; y++) {
-            for (int x = sx; x < sx + sw; x++) buf[y * cw + x] = c_sel;
+        if (s->hz_idx > 0) {
+            int tb_y = chh - 3;
+            int tb_w = cw * 45 / 100;
+            int tb_x = cw - tb_w - 4;
+            for (int x = tb_x; x < tb_x + tb_w; x++) buf[tb_y * cw + x] = c_bar;
+            int sw = tb_w * npts / f->points;
+            if (sw < 2) sw = 2;
+            int sx = tb_x + tb_w * wstart / f->points;
+            if (sx + sw > tb_x + tb_w) sx = tb_x + tb_w - sw;
+            for (int y = tb_y - 2; y <= tb_y; y++) {
+                for (int x = sx; x < sx + sw; x++) buf[y * cw + x] = c_sel;
+            }
         }
     }
 
