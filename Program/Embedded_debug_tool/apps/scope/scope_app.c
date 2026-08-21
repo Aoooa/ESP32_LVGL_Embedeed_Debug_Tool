@@ -39,6 +39,25 @@ static const int s_rates[] = { 80000, 40000, 20000, 10000, 5000, 2000, 1000 };
 #define SC_IO_CH1   5
 #define SC_IO_CH2   6
 
+/* 通道模式（顶栏循环键） */
+typedef enum {
+    SC_CH_MODE_CH1 = 0,
+    SC_CH_MODE_CH2,
+    SC_CH_MODE_DUAL,
+} scope_ch_mode_t;
+
+static const char *const s_ch_mode_strs[] = { "CH1", "CH2", "Dual" };
+#define SC_CH_MODE_N  (sizeof(s_ch_mode_strs) / sizeof(s_ch_mode_strs[0]))
+
+/* 采样率(hz) → 档位索引（未命中回 0） */
+static int sc_rate_index(int hz)
+{
+    for (size_t i = 0; i < SC_RATE_N; i++) {
+        if (s_rates[i] == hz) return (int)i;
+    }
+    return 0;
+}
+
 typedef struct {
     lv_obj_t *root;
     lv_obj_t *ch_btn, *ch_lbl;
@@ -49,7 +68,7 @@ typedef struct {
     lv_obj_t *m_lbl1, *m_lbl2;
     lv_obj_t *btn[4];
     lv_obj_t *lbl[4];
-    int ch_mode;
+    scope_ch_mode_t ch_mode;
     scope_cfg_t cfg;
     bool running;
     uint32_t last_frameno;
@@ -174,15 +193,11 @@ static void scope_refresh_status(void)
     if (!s) return;
     lv_obj_set_style_bg_color(s->state_dot, lv_color_hex(s->running ? SC_RUN : SC_STOP), 0);
     lv_label_set_text(s->state_lbl, s->running ? "RUN" : "STOP");
-    lv_label_set_text(s->ch_lbl, s->ch_mode == 0 ? "CH1" : (s->ch_mode == 1 ? "CH2" : "Dual"));
+    lv_label_set_text(s->ch_lbl, s_ch_mode_strs[s->ch_mode]);
 
-    int rate_idx = 0;
-    for (size_t i = 0; i < SC_RATE_N; i++) {
-        if (s_rates[i] == s->cfg.sample_rate_hz) { rate_idx = (int)i; break; }
-    }
     lv_label_set_text(s->lbl[1], s->cfg.trig_mode == SCOPE_TRIG_AUTO ? "AUTO"
                                      : (s->cfg.trig_mode == SCOPE_TRIG_NORM ? "NORM" : "SINGLE"));
-    lv_label_set_text(s->lbl[2], s_rate_strs[rate_idx]);
+    lv_label_set_text(s->lbl[2], s_rate_strs[sc_rate_index(s->cfg.sample_rate_hz)]);
 }
 
 /* ── 重启采集（配置变化后，停旧启新） ── */
@@ -198,17 +213,18 @@ static void scope_apply_cfg(void)
 
 /* ── 事件 ── */
 
+/* 通道键：CH1 → CH2 → Dual 循环 */
 static void on_ch_btn(lv_event_t *e)
 {
     (void)e;
     scope_t *s = s_scope;
     if (!s) return;
-    s->ch_mode = (s->ch_mode + 1) % 3;
-    if (s->ch_mode == 2) {
+    s->ch_mode = (scope_ch_mode_t)((s->ch_mode + 1) % SC_CH_MODE_N);
+    if (s->ch_mode == SC_CH_MODE_DUAL) {
         s->cfg.io[0] = SC_IO_CH1;
         s->cfg.io[1] = SC_IO_CH2;
     } else {
-        s->cfg.io[0] = (s->ch_mode == 0) ? SC_IO_CH1 : SC_IO_CH2;
+        s->cfg.io[0] = (s->ch_mode == SC_CH_MODE_CH1) ? SC_IO_CH1 : SC_IO_CH2;
         s->cfg.io[1] = -1;
     }
     scope_apply_cfg();
@@ -242,16 +258,13 @@ static void on_trig_btn(lv_event_t *e)
     scope_apply_cfg();
 }
 
-static void on_base_btn(lv_event_t *e)
+/* BASE 键：采样率档位循环 */
+static void on_rate_btn(lv_event_t *e)
 {
     (void)e;
     scope_t *s = s_scope;
     if (!s) return;
-    int idx = 0;
-    for (size_t i = 0; i < SC_RATE_N; i++) {
-        if (s_rates[i] == s->cfg.sample_rate_hz) { idx = (int)i; break; }
-    }
-    idx = (idx + 1) % SC_RATE_N;
+    int idx = (sc_rate_index(s->cfg.sample_rate_hz) + 1) % SC_RATE_N;
     s->cfg.sample_rate_hz = s_rates[idx];
     scope_apply_cfg();
 }
@@ -373,7 +386,7 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
     memset(s->frame, 0, sizeof(scope_frame_t));
     s->back_cb = back_cb;
     s->back_ctx = ctx;
-    s->ch_mode = 0;
+    s->ch_mode = SC_CH_MODE_CH1;
     s->cfg.sample_rate_hz = 40000;
     s->cfg.io[0] = SC_IO_CH1;
     s->cfg.io[1] = -1;
@@ -428,7 +441,7 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
     s->m_lbl2 = ml2;
 
     const char *btns[] = { "RUN", "AUTO", "40k", "V" };
-    lv_event_cb_t cbs[] = { on_run_btn, on_trig_btn, on_base_btn, on_v_btn };
+    lv_event_cb_t cbs[] = { on_run_btn, on_trig_btn, on_rate_btn, on_v_btn };
     for (int i = 0; i < 4; i++) {
         lv_obj_t *b = sc_make_btn(root, btns[i]);
         lv_obj_add_event_cb(b, cbs[i], LV_EVENT_CLICKED, NULL);

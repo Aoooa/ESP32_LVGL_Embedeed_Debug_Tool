@@ -55,9 +55,6 @@ void app_main(void)
     /* 波形输出服务（幂等，启动期一次） */
     drv_wave_init();
 
-    /* 示波器采集服务：惰性初始化（首次进 Scope APP 时 init，避免启动期
-     * 抢占内部 RAM 导致显示缓冲分配失败；退出 Scope 时 deinit 释放） */
-
 #if APP_NET_UART_FWD_ENABLED
     app_tcp_start();
 #endif

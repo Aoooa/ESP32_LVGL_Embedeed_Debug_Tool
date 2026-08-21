@@ -62,12 +62,13 @@ static void scope_measure(const uint16_t *w, int n, scope_frame_t *f)
     f->vpp = f->vmax - f->vmin;
 
     uint32_t mid = (vmax + vmin) / 2;
-    /* 过零法频率：上升沿过中线计数（每周期 1 次）→ f = cross × rate / n */
+    /* 过零法频率：上升沿过中线计数（每周期 1 次）→ f = cross × rate / n
+     * rate 用 f->sample_rate_hz（Dual 下已减半，见帧更新） */
     uint32_t cross = 0;
     for (i = 1; i < (uint32_t)n; i++) {
         if (w[i - 1] < mid && w[i] >= mid) cross++;
     }
-    f->freq_hz = (float)cross * s_cfg.sample_rate_hz / (float)n;
+    f->freq_hz = (float)cross * f->sample_rate_hz / (float)n;
 
     /* 占空比 + 脉宽（中线以上） */
     uint32_t hi = 0, runs = 0, cur = 0;
@@ -77,7 +78,7 @@ static void scope_measure(const uint16_t *w, int n, scope_frame_t *f)
     }
     if (cur) runs++;
     f->duty_pct = 100.0f * hi / n;
-    f->pw_ms = runs ? (float)hi / runs * 1000.0f / s_cfg.sample_rate_hz : 0.0f;
+    f->pw_ms = runs ? (float)hi / runs * 1000.0f / f->sample_rate_hz : 0.0f;
 }
 
 /* ── 采集任务：拉帧 → 环形缓冲 → 触发 → 窗口快照 ── */
@@ -112,23 +113,29 @@ static void scope_task(void *arg)
             s_written++;
         }
 
-        /* 帧更新：触发窗口（优先）或 AUTO 滚动窗口 */
+        /* 帧更新：挂起触发等补满（预触发 25%），无触发 AUTO 滚动。
+         * 注意：触发命中后不立即消费——每批 read_parse ≤512 点 < POST_TRIG，
+         * 必须跨批等待触发后 1536 点采满才出触发窗口（否则预触发失效） */
         int start = -1;
+        bool trig_frame = false;
         if (s_trig_wr >= 0) {
-            /* 触发点后的已采点数（当前写指针之前） */
             uint32_t after = (s_wr - 1 - (uint32_t)s_trig_wr + SCOPE_RING_N) % SCOPE_RING_N;
             if (after >= SCOPE_POST_TRIG) {
                 start = (s_trig_wr - SCOPE_PRE_TRIG + SCOPE_RING_N) % SCOPE_RING_N;
+                trig_frame = true;
+            } else {
+                continue;   /* 触发后未补满：等下一批（AUTO 也等，触发优先于滚动） */
             }
-        }
-        if (start < 0) {
-            /* NORM 无触发不更新；AUTO 滚动最新窗口；环未填满 2048 不出帧 */
-            if (s_cfg.trig_mode == SCOPE_TRIG_NORM || s_written < SCOPE_FRAME_POINTS) continue;
+        } else if (s_cfg.trig_mode == SCOPE_TRIG_AUTO) {
+            if (s_written < SCOPE_FRAME_POINTS) continue;
             start = (int)((s_wr - SCOPE_FRAME_POINTS + SCOPE_RING_N) % SCOPE_RING_N);
+        } else {
+            continue;   /* NORM 无触发不更新 */
         }
 
-        /* 快照窗口 + 测量（写 s_frame，get_frame 锁内 memcpy） */
+        /* 快照窗口 + 测量（写 s_frame 全程持锁，与 get_frame 锁内 memcpy 同步） */
         int nch = (s_cfg.io[1] >= 0) ? 2 : 1;
+        xSemaphoreTake(s_lock, portMAX_DELAY);
         for (int c = 0; c < nch; c++) {
             for (int k = 0; k < SCOPE_FRAME_POINTS; k++) {
                 s_frame->ch[c][k] = s_ring[c][(start + k) % SCOPE_RING_N];
@@ -136,19 +143,22 @@ static void scope_task(void *arg)
         }
         s_frame->points = SCOPE_FRAME_POINTS;
         s_frame->channels = nch;
-        s_frame->sample_rate_hz = s_cfg.sample_rate_hz;
+        /* 每通道采样率：Dual 下 MUX 分时减半（测量换算依据，否则偏大 2 倍） */
+        s_frame->sample_rate_hz = s_cfg.sample_rate_hz / nch;
         s_frame->running = s_run;
         scope_measure(s_frame->ch[0], SCOPE_FRAME_POINTS, s_frame);
         s_frame->frameno++;
+        xSemaphoreGive(s_lock);
 
         /* 触发窗口已消费 */
-        bool was_trig = (s_trig_wr >= 0);
         s_trig_wr = -1;
 
         /* SINGLE：触发一次后停止采集（任务自删，UI 显示冻结） */
-        if (was_trig && s_cfg.trig_mode == SCOPE_TRIG_SINGLE) {
+        if (trig_frame && s_cfg.trig_mode == SCOPE_TRIG_SINGLE) {
+            xSemaphoreTake(s_lock, portMAX_DELAY);
             s_run = false;
             s_frame->running = false;   /* 冻结帧标记停止 */
+            xSemaphoreGive(s_lock);
         }
     }
 
@@ -192,16 +202,16 @@ esp_err_t drv_scope_init(void)
     /* 环形缓冲 + 帧快照（PSRAM） */
     for (int c = 0; c < SCOPE_CH_MAX; c++) {
         s_ring[c] = heap_caps_malloc(SCOPE_RING_N * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!s_ring[c]) return ESP_ERR_NO_MEM;
+        if (!s_ring[c]) goto err;
     }
     s_frame = heap_caps_malloc(sizeof(scope_frame_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!s_frame) return ESP_ERR_NO_MEM;
+    if (!s_frame) goto err;
     memset(s_frame, 0, sizeof(scope_frame_t));
 
     /* 拉帧解析缓冲（PSRAM；~8KB 不进任务栈） */
     s_parse_buf = heap_caps_malloc(SCOPE_FRAME_BYTES * sizeof(adc_continuous_data_t),
                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!s_parse_buf) return ESP_ERR_NO_MEM;
+    if (!s_parse_buf) goto err;
 
     /* adc_continuous 句柄（驱动池+DMA 缓冲官方内部 RAM 分配） */
     adc_continuous_handle_cfg_t hdl = {
@@ -211,7 +221,7 @@ esp_err_t drv_scope_init(void)
     esp_err_t ret = adc_continuous_new_handle(&hdl, &s_handle);
     if (ret != ESP_OK) {
         ESP_LOGE(S_TAG, "new_handle failed: %s", esp_err_to_name(ret));
-        return ret;
+        goto err;
     }
 
     /* 电压校准（S3：curve fitting；v5.5.3 API = create_scheme + check_scheme） */
@@ -230,11 +240,24 @@ esp_err_t drv_scope_init(void)
         }
     } else {
         ESP_LOGW(S_TAG, "cali scheme failed: %s, fallback raw*3100/4095", esp_err_to_name(ret));
-        s_cali = NULL;
+        s_cali = NULL;   /* 校准失败可继续（近似换算） */
     }
 
     ESP_LOGI(S_TAG, "init ok (ring %d pts, frame %d pts)", SCOPE_RING_N, SCOPE_FRAME_POINTS);
     return ESP_OK;
+
+err:
+    /* 部分分配失败：释放已分配资源 + 删锁，保证 s_lock=NULL 可重试 */
+    for (int c = 0; c < SCOPE_CH_MAX; c++) {
+        if (s_ring[c]) { heap_caps_free(s_ring[c]); s_ring[c] = NULL; }
+    }
+    if (s_parse_buf) { heap_caps_free(s_parse_buf); s_parse_buf = NULL; }
+    if (s_frame) { heap_caps_free(s_frame); s_frame = NULL; }
+    if (s_handle) { adc_continuous_deinit(s_handle); s_handle = NULL; }
+    vSemaphoreDelete(s_lock);
+    s_lock = NULL;
+    ESP_LOGE(S_TAG, "init failed: no memory");
+    return ESP_ERR_NO_MEM;
 }
 
 esp_err_t drv_scope_start(const scope_cfg_t *cfg)
