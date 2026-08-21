@@ -335,11 +335,11 @@ static void on_ch_btn(lv_event_t *e)
         s->cfg.io[1] = -1;
         s->ch_off[0] = s->ch_off[1] = 0;   /* 单通道复位自动偏移 */
     }
-    s->last_frameno = 0xFFFFFFFF;   /* 强制重绘 */
+    s->last_frameno = 0;   /* 等新帧 */
+    scope_draw(NULL);      /* 立即清空 canvas（空白网格），避免旧通道波形残留 */
     scope_refresh_off_btns();
     if (drv_scope_start(&s->cfg) == ESP_OK) {   /* 无条件重启 */
         s->running = true;
-        s->last_frameno = 0;
         s->last_meas_tick = 0;
     }
     scope_refresh_status();
@@ -573,6 +573,7 @@ static void scope_relayout(void)
     scope_t *s = s_scope;
     if (!s) return;
     int sw = sc_screen_w(), sh = sc_screen_h();
+    int cw = sw, chh = sh - SC_TOP_H - SC_MEAS_H - SC_BAR_H;
 
     lv_obj_set_size(s->root, sw, sh);
 
@@ -588,17 +589,18 @@ static void scope_relayout(void)
     /* 垂直偏移按钮（左右边缘，关于中心横轴上下对称：+ 上 / - 下；
      * 单通道只显示对应侧；右侧避开右上角 V 指示器） */
     int obw = 26, obh = 18, ogap = 6;
-    int mid_y = SC_TOP_H + s->canvas_h / 2;   /* 中心横轴绝对坐标 */
+    int mid_y = SC_TOP_H + chh / 2;   /* 中心横轴绝对坐标（用局部 chh） */
     for (int ch = 0; ch < 2; ch++) {
-        int x = (ch == 0) ? 2 : s->canvas_w - obw - 2;
+        int x = (ch == 0) ? 2 : cw - obw - 2;
         for (int d = 0; d < 2; d++) {
             int y = (d == 0) ? (mid_y - obh - ogap / 2) : (mid_y + ogap / 2);
             lv_obj_set_pos(s->off_btn[ch][d], x, y);
             lv_obj_set_size(s->off_btn[ch][d], obw, obh);
         }
     }
+    ESP_LOGI(S_TAG, "relayout: canvas %dx%d, off-btn mid_y=%d (+y=%d -y=%d)", cw, chh,
+             mid_y, mid_y - obh - ogap / 2, mid_y + ogap / 2);
 
-    int cw = sw, chh = sh - SC_TOP_H - SC_MEAS_H - SC_BAR_H;
     if (cw != s->canvas_w || chh != s->canvas_h) {
         if (s->canvas_buf) heap_caps_free(s->canvas_buf);
         s->canvas_buf = heap_caps_aligned_alloc(128, (size_t)cw * chh * 2,
