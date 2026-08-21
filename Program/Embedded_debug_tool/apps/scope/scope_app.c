@@ -233,17 +233,21 @@ static void scope_draw(const scope_frame_t *f)
     if (ty >= chh) ty = chh - 1;
     for (int x = 0; x < 14 && x < cw; x++) buf[ty * cw + x] = c_trig;
 
-    /* 右上角 V 轴指示器（非默认档显示）：琥珀竖线 = 未缩放全范围(0..4095)，
-     * 琥珀滑块 = 当前显示电压段 [v_lo, v_hi]（由主通道偏移换算，随按钮移动） */
-    if (s->vr_idx != 0) {
+    /* 右上角 V 轴指示器（仅放大档 vfull<4095 显示；3.1V 默认与缩小档隐藏）：
+     * 琥珀竖线 = 未缩放全范围(0..4095) 的 60% 高（垂直居中，小巧），
+     * 琥珀滑块 = 当前显示电压段 [v_lo, v_hi]（随偏移按钮移动） */
+    if (vfull < 4095) {
         int vx = cw - 5;                       /* 竖线 x */
-        int v_top = margin, v_bot = chh - margin - 1;
+        int v_h = (chh - 2 * margin) * 60 / 100;   /* 竖线高 60%，居中 */
+        if (v_h < 8) v_h = 8;
+        int v_top = margin + (chh - 2 * margin - v_h) / 2;
+        int v_bot = v_top + v_h - 1;
         for (int y = v_top; y <= v_bot; y++) buf[y * cw + vx] = c_bar;
         /* ch_off[0] 像素 → 显示段起点电压 v_lo（raw） */
         int v_lo = -(s->ch_off[0] * vfull / usable);
         int v_hi = v_lo + vfull;
-        int y_hi_v = v_bot - v_hi * (v_bot - v_top) / 4095;   /* 高电压 → 小 y */
-        int y_lo_v = v_bot - v_lo * (v_bot - v_top) / 4095;
+        int y_hi_v = v_bot - v_hi * v_h / 4095;   /* 高电压 → 小 y */
+        int y_lo_v = v_bot - v_lo * v_h / 4095;
         if (y_hi_v < v_top) y_hi_v = v_top;
         if (y_lo_v > v_bot) y_lo_v = v_bot;
         if (y_lo_v < y_hi_v) y_lo_v = y_hi_v;
