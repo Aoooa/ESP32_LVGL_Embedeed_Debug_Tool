@@ -4,6 +4,8 @@
 #include "app_manifest.h"
 #include "launcher.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #define T_TAG "app_test"
 
@@ -35,16 +37,22 @@ static void test_launch_back_chain(void)
     }
 }
 
-/* 旋转事件路由：launch → rotate（APP 无 rotate 回调 → 弹栈关闭） */
+/* 旋转事件路由：遍历全部 APP——launch → rotate（无 rotate 回调 → 弹栈关闭） */
 static void test_rotate_event(void)
 {
-    const app_manifest_t *m = &app_manifests[LAUNCH_APP_FILES];
-    ESP_LOGI(T_TAG, "=== %s: rotate event ===", m->name);
-    launcher_app_launch(LAUNCH_APP_FILES, NULL);
-    if (launcher_app_running()) {
-        launcher_event_rotate(90);   /* 无 rotate 回调 → 弹栈关闭回桌面 */
+    for (int i = 0; i < LAUNCH_APP_COUNT; i++) {
+        const app_manifest_t *m = &app_manifests[i];
+        if (!m->launch) continue;
+        ESP_LOGI(T_TAG, "=== %s: rotate event ===", m->name);
+        launcher_app_launch(i, NULL);
+        if (!launcher_app_running()) continue;
+        launcher_event_rotate(90);
         if (launcher_app_running()) {
-            ESP_LOGW(T_TAG, "[%s] rotate did NOT close app", m->name);
+            if (m->rotate) {
+                ESP_LOGI(T_TAG, "[%s] rotate handled (app kept alive) -> OK", m->name);
+            } else {
+                ESP_LOGW(T_TAG, "[%s] rotate did NOT close app", m->name);
+            }
             launcher_app_close(NULL);
         } else {
             ESP_LOGI(T_TAG, "[%s] rotate -> closed -> OK", m->name);

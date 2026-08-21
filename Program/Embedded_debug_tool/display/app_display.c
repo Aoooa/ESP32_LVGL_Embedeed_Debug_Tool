@@ -1,4 +1,4 @@
-﻿#include "app_display.h"
+#include "app_display.h"
 #include "drv_display.h"
 #include "app_uart.h"
 #include "esp_lv_adapter.h"

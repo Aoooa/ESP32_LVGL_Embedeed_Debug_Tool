@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Embedded Debug Tool — 主入口
  */
 
@@ -13,6 +13,7 @@
 #include "app_web.h"
 #include "app_display.h"
 #include "drv_sdcard.h"
+#include "drv_wave.h"
 #include "esp_lv_adapter.h"
 
 static uart_bridge_t s_bridge1 = {
@@ -51,6 +52,9 @@ void app_main(void)
     app_uart_init(&s_bridge1);
     app_uart_init(&s_bridge2);
 
+    /* 波形输出服务（幂等，启动期一次） */
+    drv_wave_init();
+
 #if APP_NET_UART_FWD_ENABLED
     app_tcp_start();
 #endif
@@ -60,8 +64,7 @@ void app_main(void)
      * SD 与 LCD 共享 SPI2 总线：挂载/枚举期间持 LVGL 锁，独占总线防并发 */
     app_display_start();
 
-    /* APP 回调测试（默认关闭；启用：CMakeLists 取消 app_test.c 注释 + 此处改 #if 1）。
-     * 经 lv_timer 延迟到 LVGL 线程执行（launcher/APP 操作需 LVGL 上下文） */
+    /* APP 回调测试（交付默认关闭；启用：CMakeLists 取消 app_test.c 注释 + 此处改 #if 1） */
 #if 0
     #include "app_test.h"
     lv_timer_t *t = lv_timer_create((lv_timer_cb_t)app_test_run, 2000, NULL);

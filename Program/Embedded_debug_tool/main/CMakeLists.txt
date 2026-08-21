@@ -1,4 +1,4 @@
-﻿set(MODULE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/..)
+set(MODULE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
 idf_component_register(
     SRCS
@@ -16,6 +16,7 @@ idf_component_register(
         "${MODULE_DIR}/platform/input/gesture.c"
         "${MODULE_DIR}/platform/components/flow_view/flow_model.c"
         "${MODULE_DIR}/platform/components/flow_view/flow_view.c"
+        "${MODULE_DIR}/platform/components/num_input/num_input.c"
         "${MODULE_DIR}/apps/file_browser/file_browser.c"
         "${MODULE_DIR}/apps/launcher/launcher.c"
         "${MODULE_DIR}/apps/launcher/launcher_icons.c"
@@ -26,7 +27,7 @@ idf_component_register(
         "${MODULE_DIR}/apps/reader/reader_app.c"
         "${MODULE_DIR}/apps/terminal/terminal.c"
         "${MODULE_DIR}/apps/net_console/net_console.c"
-        # "${MODULE_DIR}/apps/test/app_test.c"   # 测试模块（默认关闭；启用：取消注释 + main.c #if 1 + app_test_run()）
+        # "${MODULE_DIR}/apps/test/app_test.c"   # 测试模块（交付关闭；启用：取消注释 + main.c #if 1）
         "${MODULE_DIR}/fonts/han_sc_16.c"
         "${MODULE_DIR}/sdcard/drv_sdcard.c"
         "${MODULE_DIR}/sdcard/app_sdcard.c"
@@ -36,6 +37,8 @@ idf_component_register(
         "${MODULE_DIR}/dap/app_dap.c"
         "${MODULE_DIR}/dap/usbip_server.c"
         "${MODULE_DIR}/apps/dap_link/dap_link.c"
+        "${MODULE_DIR}/wave/drv_wave.c"
+        "${MODULE_DIR}/apps/wave_gen/wave_gen.c"
 
     INCLUDE_DIRS
         "."
@@ -53,11 +56,14 @@ idf_component_register(
         "${MODULE_DIR}/apps/terminal"
         "${MODULE_DIR}/apps/card_reader"
         "${MODULE_DIR}/apps/dap_link"
+        "${MODULE_DIR}/apps/wave_gen"
         "${MODULE_DIR}/apps/test"
         "${MODULE_DIR}/platform/components/flow_view"
         "${MODULE_DIR}/platform/components/font_manager"
+        "${MODULE_DIR}/platform/components/num_input"
         "${MODULE_DIR}/sdcard"
         "${MODULE_DIR}/dap"
+        "${MODULE_DIR}/wave"
 
     PRIV_REQUIRES
         spi_flash nvs_flash esp_netif esp_event
@@ -65,5 +71,6 @@ idf_component_register(
         esp_lcd esp_lcd_touch esp_lcd_touch_cst816s esp_lvgl_adapter lvgl
         sdmmc fatfs heap
         esp_tinyusb usb esp_driver_sdspi hal soc
+        esp_timer
         dap_port0 dap_port1
 )
