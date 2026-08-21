@@ -192,18 +192,30 @@ static void scope_teardown_locked(void)
 
 esp_err_t drv_scope_init(void)
 {
-    if (s_lock) return ESP_OK;   /* 幂等 */
+    if (s_lock) {
+        ESP_LOGI(S_TAG, "init: already initialized (idempotent)");
+        return ESP_OK;
+    }
 
     s_lock = xSemaphoreCreateMutex();
-    if (!s_lock) return ESP_ERR_NO_MEM;
+    if (!s_lock) {
+        ESP_LOGE(S_TAG, "init: mutex create failed");
+        return ESP_ERR_NO_MEM;
+    }
+    ESP_LOGI(S_TAG, "init: mutex created");
 
     for (int i = 0; i < 10; i++) s_ch_map[i] = -1;
 
     /* 环形缓冲 + 帧快照（PSRAM） */
     for (int c = 0; c < SCOPE_CH_MAX; c++) {
         s_ring[c] = heap_caps_malloc(SCOPE_RING_N * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!s_ring[c]) goto err;
+        if (!s_ring[c]) {
+            ESP_LOGE(S_TAG, "init: ring[%d] alloc failed (%dKB PSRAM)", c,
+                     (int)(SCOPE_RING_N * sizeof(uint16_t) / 1024));
+            goto err;
+        }
     }
+    ESP_LOGI(S_TAG, "init: ring buffers ok (2 x %dKB PSRAM)", (int)(SCOPE_RING_N * sizeof(uint16_t) / 1024));
     s_frame = heap_caps_malloc(sizeof(scope_frame_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_frame) goto err;
     memset(s_frame, 0, sizeof(scope_frame_t));
@@ -217,17 +229,19 @@ esp_err_t drv_scope_init(void)
      *   max_store_buf_size 4KB（ringbuf）+ conv_frame 1KB×2 + 描述符 ≈ 7KB。
      *   官方 new_handle 全部走 MALLOC_CAP_INTERNAL，分配过大（默认 16KB 池）
      *   在显示缓冲占用后易失败；且 new_handle 失败路径本身会在未 claim 时
-     *   调 adc_apb_periph_free()（cnt 0→-1）直接 abort（v5.5.3 缺陷），
-     *   只能通过提高分配成功率规避。4KB ringbuf 仍容纳 2 批 512 样本。 */
+     *   调 adc_apb_periph_free()（cnt 0→-1）直接 abort（v5.5.3 缺陷，已在本
+     *   地 esp_adc 组件修复为返回错误码）。4KB ringbuf 仍容纳 2 批 512 样本。 */
     adc_continuous_handle_cfg_t hdl = {
         .max_store_buf_size = 4 * 1024,
         .conv_frame_size = 1024,
     };
     esp_err_t ret = adc_continuous_new_handle(&hdl, &s_handle);
     if (ret != ESP_OK) {
-        ESP_LOGE(S_TAG, "new_handle failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(S_TAG, "init: adc_continuous_new_handle FAILED: %s (internal RAM?)",
+                 esp_err_to_name(ret));
         goto err;
     }
+    ESP_LOGI(S_TAG, "init: adc_continuous handle ok (ringbuf 4KB + dma 1KB)");
 
     /* 电压校准（S3：curve fitting；v5.5.3 API = create_scheme + check_scheme） */
     adc_cali_curve_fitting_config_t cali = {
@@ -241,10 +255,11 @@ esp_err_t drv_scope_init(void)
         adc_cali_scheme_ver_t mask = 0;
         ret = adc_cali_check_scheme(&mask);
         if (ret != ESP_OK) {
-            ESP_LOGW(S_TAG, "cali check failed: %s", esp_err_to_name(ret));
+            ESP_LOGW(S_TAG, "init: cali check failed: %s", esp_err_to_name(ret));
         }
+        ESP_LOGI(S_TAG, "init: calibration ok (curve fitting)");
     } else {
-        ESP_LOGW(S_TAG, "cali scheme failed: %s, fallback raw*3100/4095", esp_err_to_name(ret));
+        ESP_LOGW(S_TAG, "init: cali scheme failed: %s, fallback raw*3100/4095", esp_err_to_name(ret));
         s_cali = NULL;   /* 校准失败可继续（近似换算） */
     }
 
@@ -261,7 +276,7 @@ err:
     if (s_handle) { adc_continuous_deinit(s_handle); s_handle = NULL; }
     vSemaphoreDelete(s_lock);
     s_lock = NULL;
-    ESP_LOGE(S_TAG, "init failed: no memory");
+    ESP_LOGE(S_TAG, "init FAILED (resources released, retryable)");
     return ESP_ERR_NO_MEM;
 }
 
@@ -269,8 +284,12 @@ esp_err_t drv_scope_start(const scope_cfg_t *cfg)
 {
     /* 惰性初始化：启动期不占内部 RAM，首次进 Scope 才 init */
     if (!s_lock) {
+        ESP_LOGI(S_TAG, "start: lazy init (first use)");
         esp_err_t ir = drv_scope_init();
-        if (ir != ESP_OK) return ir;
+        if (ir != ESP_OK) {
+            ESP_LOGE(S_TAG, "start: lazy init failed: %s", esp_err_to_name(ir));
+            return ir;
+        }
     }
     if (!s_handle) return ESP_ERR_INVALID_STATE;
     xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -290,7 +309,7 @@ esp_err_t drv_scope_start(const scope_cfg_t *cfg)
         esp_err_t ret = adc_continuous_io_to_channel(cfg->io[i], &unit, &chan);
         if (ret != ESP_OK || unit != ADC_UNIT_1) {
             xSemaphoreGive(s_lock);
-            ESP_LOGE(S_TAG, "io %d not ADC1: %s", cfg->io[i], esp_err_to_name(ret));
+            ESP_LOGE(S_TAG, "start: io %d not ADC1: %s", cfg->io[i], esp_err_to_name(ret));
             return ESP_ERR_INVALID_ARG;
         }
         s_ch_map[chan] = i;
@@ -312,14 +331,15 @@ esp_err_t drv_scope_start(const scope_cfg_t *cfg)
     esp_err_t ret = adc_continuous_config(s_handle, &cont);
     if (ret != ESP_OK) {
         xSemaphoreGive(s_lock);
-        ESP_LOGE(S_TAG, "config failed (%d Hz x%d ch): %s", cfg->sample_rate_hz, nch,
+        ESP_LOGE(S_TAG, "start: config FAILED (%d Hz x%d ch): %s", cfg->sample_rate_hz, nch,
                  esp_err_to_name(ret));
         return ret;
     }
+    ESP_LOGI(S_TAG, "start: config ok (%d Hz x%d ch)", cfg->sample_rate_hz, nch);
     ret = adc_continuous_start(s_handle);
     if (ret != ESP_OK) {
         xSemaphoreGive(s_lock);
-        ESP_LOGE(S_TAG, "start failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(S_TAG, "start: adc_continuous_start FAILED: %s", esp_err_to_name(ret));
         return ret;
     }
 
@@ -330,10 +350,16 @@ esp_err_t drv_scope_start(const scope_cfg_t *cfg)
     s_frame->running = true;
     s_run = true;
 
-    xTaskCreateWithCaps(scope_task, "scope", 4096, NULL, 6, &s_task, MALLOC_CAP_SPIRAM);
-    ESP_LOGI(S_TAG, "start: %d Hz, %d ch (%s), trig=%s/%d mode=%d", cfg->sample_rate_hz,
-             nch, cfg->io[1] >= 0 ? "dual" : "single",
-             cfg->edge == SCOPE_EDGE_RISING ? "rise" : "fall",
+    ret = xTaskCreateWithCaps(scope_task, "scope", 4096, NULL, 6, &s_task, MALLOC_CAP_SPIRAM);
+    if (ret != pdPASS) {
+        s_run = false;
+        adc_continuous_stop(s_handle);
+        xSemaphoreGive(s_lock);
+        ESP_LOGE(S_TAG, "start: task create FAILED (err %d)", (int)ret);
+        return ESP_ERR_NO_MEM;
+    }
+    ESP_LOGI(S_TAG, "start: running (%d Hz, %d ch, trig=%s/%d mode=%d, task ok)",
+             cfg->sample_rate_hz, nch, cfg->edge == SCOPE_EDGE_RISING ? "rise" : "fall",
              cfg->trigger_level, cfg->trig_mode);
     xSemaphoreGive(s_lock);
     return ESP_OK;

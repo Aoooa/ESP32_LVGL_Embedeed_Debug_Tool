@@ -295,10 +295,18 @@ static void scope_tick(lv_timer_t *t)
     if (!s) return;
     if (num_input_is_active()) return;
 
-    if (drv_scope_get_frame(s->frame) != ESP_OK) return;
+    if (drv_scope_get_frame(s->frame) != ESP_OK) {
+        ESP_LOGW(S_TAG, "tick: get_frame failed");
+        return;
+    }
     const scope_frame_t *f = s->frame;
 
     if (f->frameno != s->last_frameno) {
+        /* 首帧/帧号恢复时打印一次（采集链路是否出数） */
+        if (s->last_frameno == 0) {
+            ESP_LOGI(S_TAG, "tick: first frame #%u (%d pts, %d ch)", f->frameno,
+                     f->points, f->channels);
+        }
         s->last_frameno = f->frameno;
         if (f->running != s->running) {
             s->running = f->running;
@@ -450,11 +458,20 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
     }
 
     scope_relayout();
+    ESP_LOGI(S_TAG, "create: UI built (%dx%d, canvas %dx%d, %dKB PSRAM)", sc_screen_w(),
+             sc_screen_h(), s->canvas_w, s->canvas_h,
+             (int)(s->canvas_w * s->canvas_h * 2 / 1024));
 
     s->tick = lv_timer_create(scope_tick, 100, NULL);
 
-    if (drv_scope_start(&s->cfg) == ESP_OK) {
+    /* 采集启动（默认 AUTO 40k CH1）——失败不崩，UI 显示 STOP 可重试 */
+    esp_err_t sr = drv_scope_start(&s->cfg);
+    if (sr == ESP_OK) {
         s->running = true;
+        ESP_LOGI(S_TAG, "create: acquisition started");
+    } else {
+        ESP_LOGE(S_TAG, "create: drv_scope_start FAILED: %s (UI stays, STOP state)",
+                 esp_err_to_name(sr));
     }
     scope_refresh_status();
 
