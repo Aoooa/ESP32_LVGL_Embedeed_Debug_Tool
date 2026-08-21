@@ -8,22 +8,28 @@
 
 static const char *TAG = "gesture";
 
-/* ── 左缘右滑返回手势参数 ── */
-#define SWIPE_EDGE_X      25     /* 起点距逻辑左边缘 ≤25px 才触发（严格贴边） */
-#define SWIPE_MIN_DX      30     /* 累计水平右移 ≥30px 即触发返回（移动中触发，不等释放） */
-#define SWIPE_CANDIDATE_DX 10    /* 累计右移 >10px 即判定为返回手势候选 → 官方 wait_release 禁单击 */
+/* ── 手势参数 ── */
+#define SWIPE_EDGE_X      40     /* 起点距逻辑左边缘 ≤40px → 贴边右滑（返回） */
+#define SWIPE_MIN_DX      20     /* 贴边右滑：累计右移 ≥20px 即触发返回（移动中触发，不等释放） */
+#define SWIPE_CANDIDATE_DX 10    /* 贴边候选：右移 >10px 即判定候选 → 官方 wait_release 禁单击 */
+#define SWIPE_GLOBAL_DX   50     /* 全局手势（任意起点，仅识别不触发功能）：|dx| ≥50
+                                  *   右滑 → right 事件，左滑 → left 事件（接口预留，UI 后续接） */
 
 /* ── 触摸防抖（时间戳锁存） ──
  * 物理层按下/松开各需持续 TOUCH_DEBOUNCE_MS 才确认上报给 LVGL：
- *   · 按下 <35ms 即消失 → 抖动，直接丢弃（不上报按下）
- *   · 松开 <35ms 又按下 → 保持按下（平滑接触不良的"松开→按下"波动）
+ *   · 按下 <50ms 即消失 → 抖动，直接丢弃（不上报按下）
+ *   · 松开 <50ms 又按下 → 保持按下（平滑接触不良的"松开→按下"波动）
  * 时间戳方案不依赖 LVGL 轮询频率，精确可控；对 LVGL 完全透明。 */
-#define TOUCH_DEBOUNCE_MS  35    /* 30-50ms 区间取 35 */
+#define TOUCH_DEBOUNCE_MS  50    /* 30-60ms 区间取 50 */
 
 /* ── 状态（read_cb 同一线程访问，无需锁） ── */
 static int s_orientation_deg;                 /* 当前逻辑方向 0/90/180/270 */
 static gesture_back_cb_t s_back_cb;           /* 返回事件回调（launcher 注册） */
 static void *s_back_ctx;
+static gesture_right_cb_t s_right_cb;         /* 全局右滑事件回调（接口预留，未注册） */
+static void *s_right_ctx;
+static gesture_left_cb_t s_left_cb;           /* 全局左滑事件回调（接口预留，未注册） */
+static void *s_left_ctx;
 static bool s_swipe_tracking;                 /* 本次是否处于按下 */
 static lv_coord_t s_swipe_start_x, s_swipe_start_y;
 static lv_coord_t s_swipe_last_x, s_swipe_last_y;
@@ -47,6 +53,30 @@ static void fire_back_event(void)
         s_back_cb(s_back_ctx);
     } else {
         ESP_LOGW(TAG, "[EVT] swipe-back fired but no handler registered");
+    }
+}
+
+/* 全局右滑事件（仅识别不触发功能；read_cb 上下文直调，LVGL 线程） */
+static void fire_right_event(void)
+{
+    if (s_right_cb) {
+        ESP_LOGI(TAG, "[EVT] swipe-right fired (start=%d,%d last=%d,%d)",
+                 s_swipe_start_x, s_swipe_start_y, s_swipe_last_x, s_swipe_last_y);
+        s_right_cb(s_right_ctx);
+    } else {
+        ESP_LOGW(TAG, "[EVT] swipe-right fired but no handler registered");
+    }
+}
+
+/* 全局左滑事件（仅识别不触发功能；read_cb 上下文直调，LVGL 线程） */
+static void fire_left_event(void)
+{
+    if (s_left_cb) {
+        ESP_LOGI(TAG, "[EVT] swipe-left fired (start=%d,%d last=%d,%d)",
+                 s_swipe_start_x, s_swipe_start_y, s_swipe_last_x, s_swipe_last_y);
+        s_left_cb(s_left_ctx);
+    } else {
+        ESP_LOGW(TAG, "[EVT] swipe-left fired but no handler registered");
     }
 }
 
@@ -144,7 +174,8 @@ esp_err_t gesture_read_cb(esp_lcd_touch_handle_t tp,
         *count = 0;
     }
 
-    /* 左缘右滑返回手势：移动中累计判定（不等释放），识别候选后抑制单击。
+    /* 手势检测：贴边右滑返回 + 全局右滑/左滑事件（仅识别不触发功能）。
+     * 移动中累计判定（不等释放），识别候选后抑制单击。
      * 全程用本帧真实逻辑坐标（points 尚未被改写）跟踪/判定 */
     if (out_pressed) {
         lv_coord_t lx = points[0].x;
@@ -161,22 +192,51 @@ esp_err_t gesture_read_cb(esp_lcd_touch_handle_t tp,
 
         if (!s_swipe_triggered) {
             int dx = lx - s_swipe_start_x;
-            if (s_swipe_start_x <= SWIPE_EDGE_X) {
-                /* 候选：dx>25 即禁单击 → 官方 lv_indev_wait_release：
-                 * 释放时 LVGL 走 PRESS_LOST 分支，act_obj=NULL，CLICKED 不派发 */
-                if (!s_swipe_candidate && dx > SWIPE_CANDIDATE_DX) {
+
+            /* 贴边候选：右移 >10px 即禁单击 → 官方 lv_indev_wait_release：
+             * 释放时 LVGL 走 PRESS_LOST 分支，act_obj=NULL，CLICKED 不派发 */
+            if (s_swipe_start_x <= SWIPE_EDGE_X && dx > SWIPE_CANDIDATE_DX) {
+                if (!s_swipe_candidate) {
                     s_swipe_candidate = true;
                     lv_indev_wait_release(lv_indev_active());
-                    ESP_LOGI(TAG, "[SWIPE] CANDIDATE dx=%d -> wait_release (suppress click)", dx);
+                    ESP_LOGI(TAG, "[SWIPE] edge CANDIDATE dx=%d -> wait_release (suppress click)", dx);
                 }
-                /* 触发：dx≥30 → 立即返回（不等释放，Y 轴偏差不限）。
+            }
+
+            if (s_swipe_start_x <= SWIPE_EDGE_X) {
+                /* 贴边右滑：dx≥20 → 立即返回（不等释放，Y 轴偏差不限）。
                  * 触发后上报 RELEASED，让 LVGL 先释放按住再删 APP，
                  * 避免按住中删对象导致整屏重绘闪烁 */
                 if (dx >= SWIPE_MIN_DX) {
                     s_swipe_triggered = true;
-                    ESP_LOGI(TAG, "[SWIPE] TRIGGER start_x=%d dx=%d -> back event", s_swipe_start_x, dx);
+                    ESP_LOGI(TAG, "[SWIPE] edge TRIGGER start_x=%d dx=%d -> back event",
+                             s_swipe_start_x, dx);
                     fire_back_event();
                 }
+            } else if (dx >= SWIPE_GLOBAL_DX) {
+                /* 全局右滑（任意起点）：dx≥50 → 仅识别，发 right 事件（不触发返回） */
+                if (!s_swipe_candidate) {
+                    s_swipe_candidate = true;
+                    lv_indev_wait_release(lv_indev_active());
+                    ESP_LOGI(TAG, "[SWIPE] global-right CANDIDATE start_x=%d dx=%d -> wait_release",
+                             s_swipe_start_x, dx);
+                }
+                s_swipe_triggered = true;
+                ESP_LOGI(TAG, "[SWIPE] global-right TRIGGER start_x=%d dx=%d -> right event",
+                         s_swipe_start_x, dx);
+                fire_right_event();
+            } else if (dx <= -SWIPE_GLOBAL_DX) {
+                /* 全局左滑（任意起点）：dx≤-50 → 仅识别，发 left 事件 */
+                if (!s_swipe_candidate) {
+                    s_swipe_candidate = true;
+                    lv_indev_wait_release(lv_indev_active());
+                    ESP_LOGI(TAG, "[SWIPE] global-left CANDIDATE start_x=%d dx=%d -> wait_release",
+                             s_swipe_start_x, dx);
+                }
+                s_swipe_triggered = true;
+                ESP_LOGI(TAG, "[SWIPE] global-left TRIGGER start_x=%d dx=%d -> left event",
+                         s_swipe_start_x, dx);
+                fire_left_event();
             }
         }
     } else if (s_swipe_tracking) {
@@ -203,6 +263,20 @@ void gesture_set_back_handler(gesture_back_cb_t cb, void *ctx)
     s_back_cb = cb;
     s_back_ctx = ctx;
     ESP_LOGI(TAG, "back handler %s", cb ? "registered" : "cleared");
+}
+
+void gesture_set_right_handler(gesture_right_cb_t cb, void *ctx)
+{
+    s_right_cb = cb;
+    s_right_ctx = ctx;
+    ESP_LOGI(TAG, "right handler %s", cb ? "registered" : "cleared");
+}
+
+void gesture_set_left_handler(gesture_left_cb_t cb, void *ctx)
+{
+    s_left_cb = cb;
+    s_left_ctx = ctx;
+    ESP_LOGI(TAG, "left handler %s", cb ? "registered" : "cleared");
 }
 
 bool gesture_is_pressed(void)
