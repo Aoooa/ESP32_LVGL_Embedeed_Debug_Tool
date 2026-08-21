@@ -751,9 +751,10 @@ lv_obj_t *launcher_create(lv_obj_t *parent)
                     lv_display_get_vertical_resolution(lv_display_get_default()));
     s_launcher.root = root;
 
-    /* 滚筒容器：原生滚动（跟手 1:1 + 松手惯性滑行），无弹性边界 */
+    /* 滚筒容器：原生滚动（跟手 1:1 + 松手惯性滑行 + 边界弹性回弹）。
+     * 保留 LV_OBJ_FLAG_SCROLL_ELASTIC：按住拖过边界减速弹性跟手（diff/4），
+     * 松手惯性撞边后由 LVGL 回弹动画拉回（用户要求） */
     lv_obj_t *drum = lv_obj_create(root);
-    lv_obj_remove_flag(drum, LV_OBJ_FLAG_SCROLL_ELASTIC);
     lv_obj_set_scroll_dir(drum, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(drum, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_style_bg_opa(drum, LV_OPA_TRANSP, 0);
@@ -764,6 +765,18 @@ lv_obj_t *launcher_create(lv_obj_t *parent)
     launcher_build_cards();
     launcher_build_wheel();
     launcher_relayout_core();
+
+    /* 增强触摸滚动惯性：LVGL 默认 scroll_throw=10（速度每帧衰减 10%，
+     * 滑行距离 ≈10×甩动速度），叠加 50ms 防抖的松开确认窗口（最后 1-2 帧
+     * vect=0 稀释速度矢量）后滑行感弱。调低到 4（衰减 4%/帧，≈2.5×滑行距离）。
+     * 注：scroll_throw 是 indev 级全局参数，所有可滚动对象（桌面/文件列表/
+     * 阅读器等）共用，此处对触摸 indev 统一设置 */
+    lv_indev_t *indev = NULL;
+    while ((indev = lv_indev_get_next(indev)) != NULL) {
+        if (lv_indev_get_type(indev) == LV_INDEV_TYPE_POINTER) {
+            lv_indev_set_scroll_throw(indev, 4);
+        }
+    }
 
     /* 注册输入层返回事件（右滑手势触发 → 统一分发当前 APP） */
     gesture_set_back_handler(launcher_app_swipe_back, NULL);
