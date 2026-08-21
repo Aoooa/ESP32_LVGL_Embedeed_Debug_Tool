@@ -31,9 +31,12 @@
 #define SC_MEAS_H   32
 #define SC_BAR_H    40
 
-/* ── 采样率档位（官方合法 611..83333） ── */
-static const int s_rates[] = { 80000, 40000, 20000, 10000, 5000, 2000, 1000 };
-#define SC_RATE_N   (sizeof(s_rates) / sizeof(s_rates[0]))
+/* ── 采样率：num_input 输入（官方合法 611..83333 SPS）。
+ * 显示窗口固定 2048 点 → 横轴总时长 = 2048/采样率（时间轴缩放）。
+ * 默认 80000（接近官方上限，需更长时间窗时输入更小值）。 */
+#define SC_RATE_MIN   611
+#define SC_RATE_MAX   83333
+#define SC_RATE_DEF   80000
 
 /* ── 通道输入 GPIO（ADC1 空闲脚；IO5 板面未引出，改用 9/10） ── */
 #define SC_IO_CH1   9
@@ -54,13 +57,14 @@ typedef enum {
 static const char *const s_ch_mode_strs[] = { "CH1", "CH2", "Dual" };
 #define SC_CH_MODE_N  (sizeof(s_ch_mode_strs) / sizeof(s_ch_mode_strs[0]))
 
-/* 采样率(hz) → 档位索引（未命中回 0） */
-static int sc_rate_index(int hz)
+/* 采样率显示文本：>=1000 → "80k"，否则原值 */
+static void sc_rate_label(int hz, char *buf, size_t len)
 {
-    for (size_t i = 0; i < SC_RATE_N; i++) {
-        if (s_rates[i] == hz) return (int)i;
+    if (hz >= 1000) {
+        snprintf(buf, len, "%dk", hz / 1000);
+    } else {
+        snprintf(buf, len, "%d", hz);
     }
-    return 0;
 }
 
 typedef struct {
@@ -202,10 +206,6 @@ static void scope_update_meas(const scope_frame_t *f)
 }
 
 /* ── 状态点 + 键文本刷新 ── */
-static const char *const s_rate_strs[SC_RATE_N] = {
-    "80k", "40k", "20k", "10k", "5k", "2k", "1k",
-};
-
 static void scope_refresh_status(void)
 {
     scope_t *s = s_scope;
@@ -221,7 +221,9 @@ static void scope_refresh_status(void)
 
     lv_label_set_text(s->lbl[1], s->cfg.trig_mode == SCOPE_TRIG_AUTO ? "AUTO"
                                      : (s->cfg.trig_mode == SCOPE_TRIG_NORM ? "NORM" : "SINGLE"));
-    lv_label_set_text(s->lbl[2], s_rate_strs[sc_rate_index(s->cfg.sample_rate_hz)]);
+    char rb[16];
+    sc_rate_label(s->cfg.sample_rate_hz, rb, sizeof(rb));
+    lv_label_set_text(s->lbl[2], rb);
 }
 
 /* ── 重启采集（配置变化后，停旧启新） ── */
@@ -297,16 +299,26 @@ static void on_trig_btn(lv_event_t *e)
     scope_apply_cfg();
 }
 
-/* BASE 键：采样率档位循环 */
+/* BASE 键：num_input 输入采样率（611..83333，默认最大值 80000） */
+static void on_rate_done(void *ctx, bool ok, int value)
+{
+    scope_t *s = ctx;
+    if (!s) return;
+    if (ok) {
+        ESP_LOGI(S_TAG, "btn: BASE done rate=%d", value);
+        s->cfg.sample_rate_hz = value;
+        scope_apply_cfg();
+    }
+}
+
 static void on_rate_btn(lv_event_t *e)
 {
     (void)e;
     scope_t *s = s_scope;
     if (!s) return;
-    ESP_LOGI(S_TAG, "btn: BASE cycle");
-    int idx = (sc_rate_index(s->cfg.sample_rate_hz) + 1) % SC_RATE_N;
-    s->cfg.sample_rate_hz = s_rates[idx];
-    scope_apply_cfg();
+    ESP_LOGI(S_TAG, "btn: BASE (sample rate)");
+    num_input_show(s->root, s->cfg.sample_rate_hz, SC_RATE_MIN, SC_RATE_MAX, false,
+                   on_rate_done, s);
 }
 
 static void on_v_done(void *ctx, bool ok, int value)
@@ -447,7 +459,7 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
     s->back_ctx = ctx;
     s->ch_mode = SC_CH_MODE_CH1;
     s->vr_idx = 0;
-    s->cfg.sample_rate_hz = 40000;
+    s->cfg.sample_rate_hz = SC_RATE_DEF;   /* 默认最大值 80k */
     s->cfg.io[0] = SC_IO_CH1;
     s->cfg.io[1] = -1;
     s->cfg.trig_mode = SCOPE_TRIG_AUTO;
@@ -513,7 +525,7 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
     lv_obj_set_style_text_color(ml2, lv_color_hex(SC_MEAS), 0);
     s->m_lbl2 = ml2;
 
-    const char *btns[] = { "RUN", "AUTO", "40k", "V" };
+    const char *btns[] = { "RUN", "AUTO", "80k", "V" };
     lv_event_cb_t cbs[] = { on_run_btn, on_trig_btn, on_rate_btn, on_v_btn };
     for (int i = 0; i < 4; i++) {
         lv_obj_t *b = sc_make_btn(root, btns[i]);
