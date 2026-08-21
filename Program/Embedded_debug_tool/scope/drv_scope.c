@@ -239,7 +239,12 @@ esp_err_t drv_scope_init(void)
 
 esp_err_t drv_scope_start(const scope_cfg_t *cfg)
 {
-    if (!s_lock || !s_handle) return ESP_ERR_INVALID_STATE;
+    /* 惰性初始化：启动期不占内部 RAM，首次进 Scope 才 init */
+    if (!s_lock) {
+        esp_err_t ir = drv_scope_init();
+        if (ir != ESP_OK) return ir;
+    }
+    if (!s_handle) return ESP_ERR_INVALID_STATE;
     xSemaphoreTake(s_lock, portMAX_DELAY);
 
     /* 停旧启新（若正在运行） */
@@ -314,6 +319,35 @@ esp_err_t drv_scope_stop(void)
     if (s_frame) s_frame->running = false;
     xSemaphoreGive(s_lock);
     ESP_LOGI(S_TAG, "stopped");
+    return ESP_OK;
+}
+
+/* 释放全部资源（Scope APP 退出时调用）：停采集 → 删驱动/校准 → 释放缓冲 */
+esp_err_t drv_scope_deinit(void)
+{
+    if (!s_lock) return ESP_OK;   /* 未初始化过，无需释放 */
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    scope_teardown_locked();
+    if (s_cali) {
+        adc_cali_delete_scheme_curve_fitting(s_cali);
+        s_cali = NULL;
+    }
+    if (s_handle) {
+        adc_continuous_deinit(s_handle);
+        s_handle = NULL;
+    }
+    for (int c = 0; c < SCOPE_CH_MAX; c++) {
+        if (s_ring[c]) heap_caps_free(s_ring[c]);
+        s_ring[c] = NULL;
+    }
+    if (s_parse_buf) heap_caps_free(s_parse_buf);
+    s_parse_buf = NULL;
+    if (s_frame) heap_caps_free(s_frame);
+    s_frame = NULL;
+    xSemaphoreGive(s_lock);
+    vSemaphoreDelete(s_lock);
+    s_lock = NULL;
+    ESP_LOGI(S_TAG, "deinit: resources released");
     return ESP_OK;
 }
 

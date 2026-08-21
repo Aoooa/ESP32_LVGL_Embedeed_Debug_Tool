@@ -69,8 +69,14 @@ typedef struct {
     float pw_ms;               /* 脉宽 ms */
 } scope_frame_t;
 
-/* 初始化（幂等）：创建互斥锁 + adc_continuous handle + esp_adc_cal 校准句柄 */
+/* 初始化（幂等）：创建互斥锁 + adc_continuous handle + esp_adc_cal 校准句柄。
+ * 惰性调用：首次 drv_scope_start 前未 init 会自动 init（避开启动期内部 RAM
+ * 竞争）；Scope APP 退出时调 drv_scope_deinit 释放全部内部 RAM 资源 */
 esp_err_t drv_scope_init(void);
+
+/* 释放全部资源（停采集 + adc_continuous_deinit + 校准 + 缓冲），
+ * Scope APP 退出时调用，给其他 APP 腾内部 RAM；下次 start 自动重新 init */
+esp_err_t drv_scope_deinit(void);
 
 /* 启动采集（停旧启新，同 drv_wave_ch_apply 语义）：
  * 按 cfg 配置 adc_continuous（pattern/频率）→ start → 创建采集任务 */

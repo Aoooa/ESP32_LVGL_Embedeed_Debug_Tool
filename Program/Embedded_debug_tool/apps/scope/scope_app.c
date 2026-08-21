@@ -453,7 +453,7 @@ void scope_destroy(lv_obj_t *root)
 {
     scope_t *s = s_scope;
     if (s) {
-        drv_scope_stop();
+        drv_scope_deinit();   /* 停采集 + 释放 ADC/缓冲（给其他 APP 腾内部 RAM） */
         if (s->tick) lv_timer_delete(s->tick);
         if (s->canvas_buf) heap_caps_free(s->canvas_buf);
         s->canvas_buf = NULL;
