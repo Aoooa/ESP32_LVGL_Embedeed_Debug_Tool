@@ -1,10 +1,11 @@
-﻿#include "launcher.h"
+#include "launcher.h"
 #include "file_browser.h"
 #include "reader_app.h"
 #include "net_console.h"
 #include "terminal.h"
 #include "card_reader.h"
 #include "dap_link.h"
+#include "wave_gen.h"
 #include "gesture.h"
 #include "esp_heap_caps.h"
 #include <string.h>
@@ -33,6 +34,7 @@ static const lv_image_dsc_t *const s_app_icons[APP_COUNT] = {
     &launcher_icon_serialip,   /* SerialIP */
     &launcher_icon_cardr,      /* CardR */
     &launcher_icon_dap,        /* DAPLink */
+    &launcher_icon_terminal,   /* WaveGen（复用图标，后续可换） */
 };
 
 static const struct {
@@ -46,18 +48,19 @@ static const struct {
     { "Uart2IP", APP_TYPE_LAUNCH,     LAUNCH_APP_NET },
     { "MSD",    APP_TYPE_LAUNCH,     LAUNCH_APP_CARDREADER },
     { "SWD",  APP_TYPE_LAUNCH,     LAUNCH_APP_DAPLINK },
+    { "Wave",  APP_TYPE_LAUNCH,     LAUNCH_APP_WAVEGEN },
 };
 
-/* ── 主题色 ── */
-#define ACCENT_COLOR     0x39C5BB   /* 初音绿：卡片边框固定色 */
-#define ACCENT_COLOR_HI  0x6FE3D8   /* 初音绿加亮（按下边框/内光晕） */
-#define WHEEL_COLOR      0xFF3E9E   /* 霓虹粉：调速拨轮（轨道/填充/圆钮） */
-#define THEME_DARK_BG    0x080A0C
-#define THEME_DARK_CARD  0x161616   /* 卡片底色（不透明） */
-#define THEME_DARK_TEXT  0xFFFFFF
-#define THEME_LIGHT_BG   0xF5F5F5
+/* ── 主题色（赛博朋克：暗底 + 霓虹青边框 + 霓虹品红拨轮） ── */
+#define ACCENT_COLOR     0x00F0FF   /* 霓虹青：卡片边框固定色 */
+#define ACCENT_COLOR_HI  0x7DF9FF   /* 亮青（按下边框/内光晕/名称文字） */
+#define WHEEL_COLOR      0xFF00E5   /* 霓虹品红：调速拨轮（轨道/填充/圆钮） */
+#define THEME_DARK_BG    0x0A0A12
+#define THEME_DARK_CARD  0x12121F   /* 卡片底色（不透明） */
+#define THEME_DARK_TEXT  0xE8E8F0
+#define THEME_LIGHT_BG   0xE8E8F0
 #define THEME_LIGHT_CARD 0xFFFFFF
-#define THEME_LIGHT_TEXT 0x374151
+#define THEME_LIGHT_TEXT 0x1A1A2E
 
 /* ── 卡片渲染模式开关 ──
  * 1 = 整卡预烘焙位图（圆角+边框+图标+文字一次性画进 PSRAM，滚动帧零矢量渲染）
@@ -73,7 +76,7 @@ static const struct {
 #define CARD_BORDER      4    /* 卡片边框厚度 */
 #define CARD_RADIUS      18   /* 卡片圆角倒角半径（圆弧形） */
 #define FONT_LINE_H      16   /* lv_font_montserrat_14 的 line_height */
-#define WHEEL_DRUM_GAP   10   /* 卡片右缘与拨轮左缘的间距 */
+#define WHEEL_DRUM_GAP   10   /* 卡片右缘与拨轮左  缘的间距 */
 
 /* ── 调速拨轮参数（屏幕右侧垂直正中） ── */
 #define WHEEL_W          14    /* 拨轮视觉总宽 */
@@ -254,9 +257,9 @@ static void on_wheel_event(lv_event_t *e)
 
 #if LAUNCHER_CARDS_BAKED
 /* ── 卡片背景预烘焙 ──
- * 圆角+边框+底色一次性画进 PSRAM 位图（RGB565 不透明），6 张卡共享同一张，
- * 滚动帧只贴这一张背景图 + 实时画图标/文字（小面积）——省掉每帧重绘 6 个
- * 圆角矩形的成本，又比整卡烘焙省内存（1 张 vs 6 张）且文字/图标仍可动态改。
+ * 圆角+边框+底色一次性画进 PSRAM 位图（RGB565 不透明），8 张卡共享同一张，
+ * 滚动帧只贴这一张背景图 + 实时画图标/文字（小面积）——省掉每帧重绘 8 个
+ * 圆角矩形的成本，又比整卡烘焙省内存（1 张 vs 8 张）且文字/图标仍可动态改。
  * 尺寸或主题变化时重新烘焙（旋转/切主题低频）。 */
 static lv_image_dsc_t s_card_bg_dsc;
 static void *s_card_bg_buf;
@@ -483,6 +486,16 @@ const app_manifest_t app_manifests[LAUNCH_APP_COUNT] = {
         .rotate = NULL,
         .refresh = NULL,
         .debug_event = NULL,
+    },
+    [LAUNCH_APP_WAVEGEN] = {
+        .id = LAUNCH_APP_WAVEGEN,
+        .name = "WaveGen",
+        .launch = (void *(*)(lv_obj_t *, void (*)(void *), void *))wave_gen_create,
+        .destroy = (void (*)(void *))wave_gen_destroy,
+        .back = (bool (*)(void *))wave_gen_swipe_back,
+        .rotate = (void (*)(void *, int))wave_gen_rotate,
+        .refresh = NULL,
+        .debug_event = (void (*)(void *, int))wave_gen_debug_event,
     },
 };
 
