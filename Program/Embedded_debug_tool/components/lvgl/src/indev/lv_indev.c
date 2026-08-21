@@ -1179,12 +1179,19 @@ static void indev_button_proc(lv_indev_t * i, lv_indev_data_t * data)
  * @param x scroll throw vector component
  * @param t expired time in milliseconds
  * @return decayed vector component
+ *
+ * NOTE (project customization): velocity window widened from 99ms to 150ms.
+ * The touch layer applies a 50ms debounce release-confirm window (gesture.c),
+ * during which the reported coordinates freeze (vect=0 frames). With a 99ms
+ * window those zero frames pushed the real last velocity out of the sampling
+ * window, so release momentum was ~1/3 of the actual finger speed. 150ms keeps
+ * the last real displacement inside the window -> noticeably stronger inertia.
  */
 static int32_t indev_scroll_throw_decay(int32_t x, int32_t t)
 {
     if(t <= 0) return x;
-    if(t >= 99) return 0;
-    return x * (512 - (512 * t) / 99) / 512;
+    if(t >= 150) return 0;
+    return x * (512 - (512 * t) / 150) / 512;
 }
 
 /**

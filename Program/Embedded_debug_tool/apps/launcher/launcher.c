@@ -766,15 +766,17 @@ lv_obj_t *launcher_create(lv_obj_t *parent)
     launcher_build_wheel();
     launcher_relayout_core();
 
-    /* 增强触摸滚动惯性：LVGL 默认 scroll_throw=10（速度每帧衰减 10%，
-     * 滑行距离 ≈10×甩动速度），叠加 50ms 防抖的松开确认窗口（最后 1-2 帧
-     * vect=0 稀释速度矢量）后滑行感弱。调低到 4（衰减 4%/帧，≈2.5×滑行距离）。
+    /* 增强触摸滚动惯性：
+     * - lv_indev.c 速度采样窗口 99ms → 150ms（补偿 50ms 防抖释放确认窗口
+     *   对速度矢量的稀释，见 lv_indev.c indev_scroll_throw_decay 注释）
+     * - scroll_throw = 3（速度每帧衰减 3%，滑行距离 ≈33×甩动速度）
+     *   手感调节：改小 → 惯性更长更拖尾；改大 → 更短更利落
      * 注：scroll_throw 是 indev 级全局参数，所有可滚动对象（桌面/文件列表/
      * 阅读器等）共用，此处对触摸 indev 统一设置 */
     lv_indev_t *indev = NULL;
     while ((indev = lv_indev_get_next(indev)) != NULL) {
         if (lv_indev_get_type(indev) == LV_INDEV_TYPE_POINTER) {
-            lv_indev_set_scroll_throw(indev, 4);
+            lv_indev_set_scroll_throw(indev, 3);
         }
     }
 
