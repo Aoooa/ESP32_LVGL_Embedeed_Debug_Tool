@@ -337,6 +337,7 @@ static void on_canvas_press(lv_event_t *e)
     lv_indev_get_point(indev, &p);
     if (lv_event_get_code(e) == LV_EVENT_PRESSED) {
         s_canvas_drag_x = p.x;
+        ESP_LOGI(S_TAG, "canvas: drag start x=%d (hz=x%d)", p.x, 1 << s->hz_idx);
     } else if (lv_event_get_code(e) == LV_EVENT_PRESSING && p.x != s_canvas_drag_x) {
         int npts = (s->frame && s->frame->points) ? (s->frame->points >> s->hz_idx) : 0;
         if (npts < 1 || s->canvas_w <= 0) return;
@@ -638,7 +639,9 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
     s->canvas = cv;
     s->canvas_w = s->canvas_h = 0;
     lv_obj_set_pos(cv, 0, SC_TOP_H);
-    /* canvas 左右拖动 = H 缩放平移（PRESSED/PRESSING 逐个注册） */
+    /* canvas 左右拖动 = H 缩放平移。lv_canvas 默认非 CLICKABLE（命中测试
+     * 跳过），必须显式加 flag 才能收到 PRESSED/PRESSING */
+    lv_obj_add_flag(cv, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(cv, on_canvas_press, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(cv, on_canvas_press, LV_EVENT_PRESSING, NULL);
 
