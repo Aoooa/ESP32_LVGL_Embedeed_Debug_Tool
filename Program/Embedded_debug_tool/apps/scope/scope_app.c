@@ -141,11 +141,17 @@ static void scope_draw(const scope_frame_t *f)
     for (int x = 0; x < cw; x++) buf[(chh / 2) * cw + x] = c_mid;
     for (int x = 0; x < cw; x++) buf[(margin + usable - 1) * cw + x] = c_mid;
 
-    /* 波形（峰值检测：每列 min/max 竖线，防漏峰；y 按垂直范围档位 + 余量映射） */
+    /* 波形（峰值检测：每列 min/max 竖线，防漏峰；y 按垂直范围档位 + 余量映射）
+     * 单通道时颜色跟随当前通道（CH1=青绿 CH2=橙），Dual 时双色 */
     int vfull = s_vranges[s->vr_idx];
     if (f && f->frameno && f->points > 0) {
         for (int c = 0; c < f->channels && c < SCOPE_CH_MAX; c++) {
-            uint16_t cc = (c == 0) ? c_w1 : c_w2;
+            uint16_t cc;
+            if (f->channels == 1 && s->ch_mode == SC_CH_MODE_CH2) {
+                cc = c_w2;                       /* 单通道 CH2 */
+            } else {
+                cc = (c == 0) ? c_w1 : c_w2;     /* CH1 或 Dual */
+            }
             for (int col = 0; col < cw; col++) {
                 int i0 = col * f->points / cw;
                 int i1 = (col + 1) * f->points / cw;
@@ -207,6 +213,9 @@ static void scope_refresh_status(void)
     lv_obj_set_style_bg_color(s->state_dot, lv_color_hex(s->running ? SC_RUN : SC_STOP), 0);
     lv_label_set_text(s->state_lbl, s->running ? "RUN" : "STOP");
     lv_label_set_text(s->ch_lbl, s_ch_mode_strs[s->ch_mode]);
+    /* 通道键文字色跟随当前通道波形色（CH1=青绿 CH2=橙） */
+    lv_obj_set_style_text_color(s->ch_lbl,
+                                lv_color_hex(s->ch_mode == SC_CH_MODE_CH2 ? SC_WAVE2 : SC_WAVE1), 0);
     lv_label_set_text(s->vr_lbl, s_vrange_strs[s->vr_idx]);
     lv_label_set_text(s->lbl[0], s->running ? "STOP" : "RUN");   /* 底栏首键 = 当前状态 */
 
