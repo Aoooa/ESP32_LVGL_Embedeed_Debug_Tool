@@ -123,6 +123,11 @@ static void scope_draw(const scope_frame_t *f)
 
     memset(buf, 0, (size_t)cw * chh * 2);   /* 清黑底 */
 
+    /* 垂直余量：有效量程映射到中间（上下各留 margin，避免贴边显示）。
+     * 0V → y = chh-margin-1，满量程 → y = margin */
+    int margin = chh / 12;
+    int usable = chh - 2 * margin;
+
     /* 网格 10x8（垂直线 9 + 水平线 7，像素直写） */
     for (int i = 1; i < 10; i++) {
         int x = i * cw / 10;
@@ -132,11 +137,11 @@ static void scope_draw(const scope_frame_t *f)
         int y = j * chh / 8;
         for (int x = 0; x < cw; x++) buf[y * cw + x] = c_grid;
     }
-    /* 中心横轴（零参考）+ 0V 底边（亮青） */
+    /* 中心横轴（零参考）+ 0V 基准线（亮青，位于量程底 = margin 上方） */
     for (int x = 0; x < cw; x++) buf[(chh / 2) * cw + x] = c_mid;
-    for (int x = 0; x < cw; x++) buf[(chh - 1) * cw + x] = c_mid;
+    for (int x = 0; x < cw; x++) buf[(margin + usable - 1) * cw + x] = c_mid;
 
-    /* 波形（峰值检测：每列 min/max 竖线，防漏峰；y 按垂直范围档位缩放） */
+    /* 波形（峰值检测：每列 min/max 竖线，防漏峰；y 按垂直范围档位 + 余量映射） */
     int vfull = s_vranges[s->vr_idx];
     if (f && f->frameno && f->points > 0) {
         for (int c = 0; c < f->channels && c < SCOPE_CH_MAX; c++) {
@@ -150,8 +155,8 @@ static void scope_draw(const scope_frame_t *f)
                     if (f->ch[c][i] < mn) mn = f->ch[c][i];
                     if (f->ch[c][i] > mx) mx = f->ch[c][i];
                 }
-                int y_hi = chh - 1 - (int)(mx * (uint32_t)chh / vfull);
-                int y_lo = chh - 1 - (int)(mn * (uint32_t)chh / vfull);
+                int y_hi = margin + (usable - 1) - (int)(mx * (uint32_t)(usable - 1) / vfull);
+                int y_lo = margin + (usable - 1) - (int)(mn * (uint32_t)(usable - 1) / vfull);
                 if (y_hi < 0) y_hi = 0;          /* 超范围 clip */
                 if (y_lo >= chh) y_lo = chh - 1;
                 if (y_lo < y_hi) y_lo = y_hi;
@@ -161,11 +166,11 @@ static void scope_draw(const scope_frame_t *f)
         }
     }
 
-    /* 触发线（红实线；y 按垂直范围缩放，超范围 clip） */
-    int ty = chh - 1 - (int)((uint32_t)s->cfg.trigger_level * chh / vfull);
+    /* 触发线：仅左侧短标记（不横贯全屏，避免与波形混淆为第二通道） */
+    int ty = margin + (usable - 1) - (int)((uint32_t)s->cfg.trigger_level * (usable - 1) / vfull);
     if (ty < 0) ty = 0;
     if (ty >= chh) ty = chh - 1;
-    for (int x = 0; x < cw; x++) buf[ty * cw + x] = c_trig;
+    for (int x = 0; x < 14 && x < cw; x++) buf[ty * cw + x] = c_trig;
 
     lv_obj_invalidate(s->canvas);
 }
@@ -203,6 +208,7 @@ static void scope_refresh_status(void)
     lv_label_set_text(s->state_lbl, s->running ? "RUN" : "STOP");
     lv_label_set_text(s->ch_lbl, s_ch_mode_strs[s->ch_mode]);
     lv_label_set_text(s->vr_lbl, s_vrange_strs[s->vr_idx]);
+    lv_label_set_text(s->lbl[0], s->running ? "STOP" : "RUN");   /* 底栏首键 = 当前状态 */
 
     lv_label_set_text(s->lbl[1], s->cfg.trig_mode == SCOPE_TRIG_AUTO ? "AUTO"
                                      : (s->cfg.trig_mode == SCOPE_TRIG_NORM ? "NORM" : "SINGLE"));
@@ -398,7 +404,8 @@ static void scope_relayout(void)
         }
     }
     lv_obj_set_pos(s->canvas, 0, SC_TOP_H);
-    lv_obj_set_pos(s->z0_lbl, 4, SC_TOP_H + s->canvas_h - 12);
+    /* 0V 标注跟随量程底（0V 线 y = chh - chh/12，字高约 11px） */
+    lv_obj_set_pos(s->z0_lbl, 4, SC_TOP_H + (s->canvas_h - s->canvas_h / 12) - 11);
 
     lv_obj_set_pos(s->m_lbl1, 8, SC_TOP_H + 4);
     lv_obj_set_pos(s->m_lbl2, 8, SC_TOP_H + 18);
