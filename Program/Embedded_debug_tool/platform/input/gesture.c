@@ -1,7 +1,8 @@
-/* gesture.c —— 输入层：触摸坐标旋转映射 + 左缘右滑返回手势检测（LVGL 线程） */
+/* gesture.c —— 输入层：触摸坐标旋转映射 + 防抖 + 左缘右滑返回手势检测（LVGL 线程） */
 
 #include "gesture.h"
 #include "drv_display.h"
+#include "esp_timer.h"
 #include "esp_log.h"
 #include <stdbool.h>
 
@@ -12,6 +13,13 @@ static const char *TAG = "gesture";
 #define SWIPE_MIN_DX      30     /* 累计水平右移 ≥30px 即触发返回（移动中触发，不等释放） */
 #define SWIPE_CANDIDATE_DX 10    /* 累计右移 >10px 即判定为返回手势候选 → 官方 wait_release 禁单击 */
 
+/* ── 触摸防抖（时间戳锁存） ──
+ * 物理层按下/松开各需持续 TOUCH_DEBOUNCE_MS 才确认上报给 LVGL：
+ *   · 按下 <35ms 即消失 → 抖动，直接丢弃（不上报按下）
+ *   · 松开 <35ms 又按下 → 保持按下（平滑接触不良的"松开→按下"波动）
+ * 时间戳方案不依赖 LVGL 轮询频率，精确可控；对 LVGL 完全透明。 */
+#define TOUCH_DEBOUNCE_MS  35    /* 30-50ms 区间取 35 */
+
 /* ── 状态（read_cb 同一线程访问，无需锁） ── */
 static int s_orientation_deg;                 /* 当前逻辑方向 0/90/180/270 */
 static gesture_back_cb_t s_back_cb;           /* 返回事件回调（launcher 注册） */
@@ -21,6 +29,14 @@ static lv_coord_t s_swipe_start_x, s_swipe_start_y;
 static lv_coord_t s_swipe_last_x, s_swipe_last_y;
 static bool s_swipe_candidate;                /* 已判定为返回手势候选（禁单击） */
 static bool s_swipe_triggered;                /* 已触发返回 */
+
+/* 防抖状态 */
+static bool s_touch_started;                  /* 物理层检测到按下（未确认） */
+static bool s_touch_confirmed;                /* 已确认按下（已上报 LVGL） */
+static uint64_t s_touch_start_us;             /* 检测到按下的时间戳 */
+static bool s_release_started;                /* 松开确认计时中 */
+static uint64_t s_release_start_us;
+static lv_coord_t s_touch_x, s_touch_y;       /* 有效坐标（确认后最新帧，物理坐标） */
 
 /* 返回事件（read_cb 上下文直调，LVGL 线程） */
 static void fire_back_event(void)
@@ -56,26 +72,71 @@ esp_err_t gesture_read_cb(esp_lcd_touch_handle_t tp,
     esp_lcd_touch_read_data(tp);
     esp_lcd_touch_get_coordinates(tp, &raw_x, &raw_y, NULL, &cnt, 1);
 
-    if (cnt > 0) {
+    /* ── 触摸防抖：时间戳锁存 ── */
+    bool raw_pressed = (cnt > 0);
+    uint64_t now = (uint64_t)esp_timer_get_time();
+    bool out_pressed = false;
+
+    if (raw_pressed) {
+        if (!s_touch_started) {
+            s_touch_started = true;
+            s_touch_start_us = now;
+            s_touch_confirmed = false;
+            s_release_started = false;
+        }
+        if (!s_touch_confirmed) {
+            if ((uint64_t)(now - s_touch_start_us) >= TOUCH_DEBOUNCE_MS * 1000ULL) {
+                s_touch_confirmed = true;   /* 按下持续达标 → 确认上报 */
+            }
+        }
+        if (s_touch_confirmed) {
+            out_pressed = true;
+            s_touch_x = raw_x;              /* 有效坐标 = 最新帧（确认期间可能已移动） */
+            s_touch_y = raw_y;
+        }
+    } else {
+        if (s_touch_started) {
+            if (s_touch_confirmed) {
+                if (!s_release_started) {
+                    s_release_started = true;
+                    s_release_start_us = now;
+                }
+                if ((uint64_t)(now - s_release_start_us) >= TOUCH_DEBOUNCE_MS * 1000ULL) {
+                    /* 松开持续达标 → 确认松开 */
+                    s_touch_started = false;
+                    s_touch_confirmed = false;
+                    s_release_started = false;
+                } else {
+                    out_pressed = true;     /* 松开未确认：保持按下（平滑波动） */
+                }
+            } else {
+                /* 按下未确认即消失 → 抖动，整段丢弃 */
+                s_touch_started = false;
+            }
+        }
+    }
+
+    /* ── 上报 LVGL（防抖后状态 + 有效坐标旋转映射） ── */
+    if (out_pressed) {
         *count = 1;
         switch (s_orientation_deg) {
         case 90:
             /* 实测基准：第一版 (319-raw_y, raw_x) 显示正确但触摸差 180°，
              * 逻辑坐标翻转修正：x=raw_y, y=(240-1)-raw_x */
-            points[0].x = raw_y;
-            points[0].y = (DRV_LCD_H_RES - 1) - raw_x;
+            points[0].x = s_touch_y;
+            points[0].y = (DRV_LCD_H_RES - 1) - s_touch_x;
             break;
         case 180:
-            points[0].x = (DRV_LCD_H_RES - 1) - raw_x;
-            points[0].y = (DRV_LCD_V_RES - 1) - raw_y;
+            points[0].x = (DRV_LCD_H_RES - 1) - s_touch_x;
+            points[0].y = (DRV_LCD_V_RES - 1) - s_touch_y;
             break;
         case 270:
-            points[0].x = (DRV_LCD_V_RES - 1) - raw_y;
-            points[0].y = raw_x;
+            points[0].x = (DRV_LCD_V_RES - 1) - s_touch_y;
+            points[0].y = s_touch_x;
             break;
         default:   /* 0°：竖屏直连 */
-            points[0].x = raw_x;
-            points[0].y = raw_y;
+            points[0].x = s_touch_x;
+            points[0].y = s_touch_y;
             break;
         }
         points[0].strength = 1;
@@ -85,7 +146,7 @@ esp_err_t gesture_read_cb(esp_lcd_touch_handle_t tp,
 
     /* 左缘右滑返回手势：移动中累计判定（不等释放），识别候选后抑制单击。
      * 全程用本帧真实逻辑坐标（points 尚未被改写）跟踪/判定 */
-    if (cnt > 0) {
+    if (out_pressed) {
         lv_coord_t lx = points[0].x;
         lv_coord_t ly = points[0].y;
         if (!s_swipe_tracking) {
@@ -124,7 +185,7 @@ esp_err_t gesture_read_cb(esp_lcd_touch_handle_t tp,
 
     /* 已触发返回 → 本帧及后续帧上报 RELEASED（保证手指抬起前 LVGL 保持 RELEASED，
      * 避免 APP 销毁后残留 PRESSED 造成二次点击） */
-    if (cnt > 0 && s_swipe_triggered) {
+    if (out_pressed && s_swipe_triggered) {
         *count = 0;
     }
 
