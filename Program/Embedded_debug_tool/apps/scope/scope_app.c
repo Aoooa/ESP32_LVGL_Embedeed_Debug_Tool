@@ -136,6 +136,8 @@ static void scope_draw(const scope_frame_t *f)
     const uint16_t c_trig = (uint16_t)lv_color_to_u16(lv_color_hex(SC_TRIG));
     const uint16_t c_w1   = (uint16_t)lv_color_to_u16(lv_color_hex(SC_WAVE1));
     const uint16_t c_w2   = (uint16_t)lv_color_to_u16(lv_color_hex(SC_WAVE2));
+    const uint16_t c_bar  = (uint16_t)lv_color_to_u16(lv_color_hex(0x2A3A46));   /* 时间轴横线 */
+    const uint16_t c_sel  = (uint16_t)lv_color_to_u16(lv_color_hex(SC_WAVE1));   /* 时间轴滑块 */
 
     memset(buf, 0, (size_t)cw * chh * 2);   /* 清黑底 */
 
@@ -197,6 +199,20 @@ static void scope_draw(const scope_frame_t *f)
                 uint16_t *p = buf + y_hi * cw + col;
                 for (int y = y_hi; y <= y_lo; y++, p += cw) *p = cc;
             }
+        }
+
+        /* 右下角时间轴定位条：横线=缩放前全窗口(2048 点)，滑块=当前缩放窗口，
+         * 宽度 ∝ 显示点数/全窗口，位置 ∝ 切片起点/全窗口（拖动时实时移动） */
+        int tb_y = chh - 3;
+        int tb_w = cw * 45 / 100;
+        int tb_x = cw - tb_w - 4;
+        for (int x = tb_x; x < tb_x + tb_w; x++) buf[tb_y * cw + x] = c_bar;
+        int sw = tb_w * npts / f->points;
+        if (sw < 2) sw = 2;
+        int sx = tb_x + tb_w * wstart / f->points;
+        if (sx + sw > tb_x + tb_w) sx = tb_x + tb_w - sw;
+        for (int y = tb_y - 2; y <= tb_y; y++) {
+            for (int x = sx; x < sx + sw; x++) buf[y * cw + x] = c_sel;
         }
     }
 
@@ -342,7 +358,7 @@ static void on_canvas_press(lv_event_t *e)
         int npts = (s->frame && s->frame->points) ? (s->frame->points >> s->hz_idx) : 0;
         if (npts < 1 || s->canvas_w <= 0) return;
         int per_px = (npts + s->canvas_w - 1) / s->canvas_w;   /* 像素 → 采样点 */
-        s->hz_pan += (p.x - s_canvas_drag_x) * per_px;
+        s->hz_pan += (s_canvas_drag_x - p.x) * per_px;   /* 右拖看更早（跟手） */
         s_canvas_drag_x = p.x;
         int base = s->frame->points / 4;
         int max = s->frame->points - npts;
