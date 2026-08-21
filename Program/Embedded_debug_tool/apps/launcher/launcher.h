@@ -50,9 +50,25 @@ void launcher_set_theme(lv_obj_t *obj, bool dark);
 
 /* ── APP 栈管理 ── */
 
+/* 带结果返回的启动回调：B 被关闭（弹栈）时由 launcher 调用，
+ * result = B 通过 launcher_app_set_result() 写入的结果（launcher 内部
+ * 拷贝，回调返回后失效；NULL=无结果/直接返回）。ctx 为启动方注册的上下文。 */
+typedef void (*launcher_result_cb_t)(void *ctx, const char *result);
+
 /* 启动 APP：压栈（来源 APP 保活，状态保留）。arg=带参启动参数（可 NULL，
- * 阅读器传 txt 路径=直接打开）。 */
+ * 阅读器传 txt 路径=直接打开）。无结果回调（等价 with_cb 传 NULL）。 */
 void launcher_app_launch(launch_app_id_t id, const char *arg);
+
+/* 带结果返回的启动：与 launcher_app_launch 相同，另注册结果回调——
+ * 本 APP 关闭（弹栈）时 on_result(ctx, result) 被调用，把借用期间写入的
+ * 结果回传给启动方（如 A 借用 file_browser 选文件，选中路径经此回传）。
+ * on_result 可 NULL=不关心结果。 */
+void launcher_app_launch_with_cb(launch_app_id_t id, const char *arg,
+                                 launcher_result_cb_t on_result, void *ctx);
+
+/* 当前 APP 写入返回结果（借用完成/关闭前调用；launcher 拷贝保存，
+ * 弹栈时转交启动方回调）。result 可 NULL=清除。 */
+void launcher_app_set_result(const char *result);
 
 /* 带参启动参数查询（launcher 保存，APP 在 launch 内调用获取）：
  * 阅读器：arg=NULL=书架模式；非 NULL=txt 路径直接打开 */

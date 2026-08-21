@@ -8,6 +8,7 @@
 #include "wave_gen.h"
 #include "gesture.h"
 #include "esp_heap_caps.h"
+#include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include <stdio.h>
@@ -420,10 +421,14 @@ static void launcher_build_wheel(void)
 typedef struct {
     void *app;                    /* APP 实例（NULL=空槽） */
     const app_manifest_t *m;      /* 描述符 */
+    launcher_result_cb_t result_cb;  /* 本 APP 关闭时通知启动方（可能 NULL） */
+    void *result_ctx;
 } app_slot_t;
 
 static app_slot_t s_stack[APP_STACK_MAX];
 static int s_depth;               /* 当前栈深度（0=桌面） */
+
+static char *s_result_buf;        /* 当前 APP 写入的返回结果（strdup 拷贝，弹栈时转交并释放） */
 
 /* 全部 APP 描述符表（索引 = launch_app_id_t） */
 const app_manifest_t app_manifests[LAUNCH_APP_COUNT] = {
@@ -515,6 +520,12 @@ const char *launcher_app_get_arg(void)
 
 void launcher_app_launch(launch_app_id_t id, const char *arg)
 {
+    launcher_app_launch_with_cb(id, arg, NULL, NULL);
+}
+
+void launcher_app_launch_with_cb(launch_app_id_t id, const char *arg,
+                                 launcher_result_cb_t on_result, void *ctx)
+{
     if (id < 0 || id >= LAUNCH_APP_COUNT) return;
     if (s_depth >= APP_STACK_MAX) {
         ESP_LOGW("launcher", "app stack full (%d), launch %d ignored", APP_STACK_MAX, id);
@@ -527,12 +538,31 @@ void launcher_app_launch(launch_app_id_t id, const char *arg)
     slot->app = m->launch(lv_screen_active(), launcher_app_close, NULL);
     s_launch_arg = NULL;
     slot->m = m;
+    slot->result_cb = on_result;   /* 本 APP 关闭时回传结果给启动方 */
+    slot->result_ctx = ctx;
     s_depth++;
-    ESP_LOGI("launcher", "[APP] push %s (depth=%d%s)", m->name, s_depth,
-             arg ? ", arg=direct-open" : "");
+    ESP_LOGI("launcher", "[APP] push %s (depth=%d%s%s)", m->name, s_depth,
+             arg ? ", arg=direct-open" : "",
+             on_result ? ", result-cb" : "");
 }
 
-/* 关闭栈顶 APP：弹栈回来源（来源对象树保活，状态天然保留） */
+/* 当前 APP 写入返回结果：strdup 拷贝保存（结果须跨本 APP 生命周期存活，
+ * 弹栈时 launcher 转交启动方回调并释放拷贝）。result=NULL 清除。 */
+void launcher_app_set_result(const char *result)
+{
+    if (s_result_buf) {
+        free(s_result_buf);
+        s_result_buf = NULL;
+    }
+    if (result) {
+        s_result_buf = strdup(result);
+        ESP_LOGI("launcher", "[RESULT] stored (len=%d)", (int)strlen(result));
+    }
+}
+
+/* 关闭栈顶 APP：弹栈回来源。签名兼容 back 回调（ctx 忽略）。
+ * 顺序：destroy → 弹栈 → 结果回传（此时栈已正确弹出，回调内再 launch
+ * 压入新槽安全）。结果由 launcher 拷贝保存，回调内同步使用，返回后释放。 */
 void launcher_app_close(void *ctx)
 {
     (void)ctx;
@@ -544,6 +574,17 @@ void launcher_app_close(void *ctx)
     ESP_LOGI("launcher", "[APP] pop %s (depth=%d->%d)", top->m ? top->m->name : "?",
              s_depth, s_depth - 1);
     s_depth--;
+    if (top->result_cb) {
+        top->result_cb(top->result_ctx, s_result_buf);
+        ESP_LOGI("launcher", "[RESULT] delivered to caller%s",
+                 s_result_buf ? "" : " (null)");
+    }
+    top->result_cb = NULL;
+    top->result_ctx = NULL;
+    if (s_result_buf) {
+        free(s_result_buf);
+        s_result_buf = NULL;
+    }
 }
 
 bool launcher_app_running(void)
