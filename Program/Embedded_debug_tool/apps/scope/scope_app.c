@@ -50,9 +50,11 @@ static void scope_refresh_off_btns(void);
 #define SC_IO_CH1   9
 #define SC_IO_CH2   10
 
-/* 垂直范围档位（满量程 raw 值；波形 y 映射按此缩放） */
-static const int s_vranges[] = { 4095, 2047, 1023, 511, 255 };   /* 3.1/1.5/0.8/0.4/0.2V */
-static const char *const s_vrange_strs[] = { "3.1V", "1.5V", "0.8V", "0.4V", "0.2V" };
+/* 垂直范围档位（满量程 raw 值；波形 y 映射按此缩放，双向）：
+ *   12V/6V 档 > 4095 → 波形压缩（缩小显示）；
+ *   3.1V 默认；1.5V 以下 → 波形放大（0.2V 放大 16 倍） */
+static const int s_vranges[] = { 4095, 2047, 1023, 511, 255, 8190, 16380 };
+static const char *const s_vrange_strs[] = { "3.1V", "1.5V", "0.8V", "0.4V", "0.2V", "6V", "12V" };
 #define SC_VRANGE_N  (sizeof(s_vranges) / sizeof(s_vranges[0]))
 
 /* 通道模式（顶栏循环键） */
@@ -228,6 +230,22 @@ static void scope_draw(const scope_frame_t *f)
     if (ty >= chh) ty = chh - 1;
     for (int x = 0; x < 14 && x < cw; x++) buf[ty * cw + x] = c_trig;
 
+    /* 右上角 V 轴指示器（非默认档显示）：琥珀竖线 = 未缩放全范围(0..4095)，
+     * 琥珀滑块 = 当前档位覆盖的电压段（0V 基线起，放大档贴底短、缩小档顶满） */
+    if (s->vr_idx != 0) {
+        int vx = cw - 5;                       /* 竖线 x */
+        int v_top = margin, v_bot = chh - margin - 1;
+        for (int y = v_top; y <= v_bot; y++) buf[y * cw + vx] = c_bar;
+        int vfull_disp = vfull > 4095 ? 4095 : vfull;   /* 显示段 clip 到全范围 */
+        int sh = (v_bot - v_top) * vfull_disp / 4095;
+        if (sh < 2) sh = 2;
+        int s_top = v_bot - sh + 1;
+        if (s_top < v_top) s_top = v_top;
+        for (int y = s_top; y <= v_bot; y++) {
+            for (int x = vx - 1; x <= vx + 2 && x < cw; x++) buf[y * cw + x] = c_sel;
+        }
+    }
+
     lv_obj_invalidate(s->canvas);
 }
 
@@ -288,7 +306,8 @@ static void scope_apply_cfg(void)
 
 /* ── 事件 ── */
 
-/* 通道键：CH1 → CH2 → Dual 循环 */
+/* 通道键：CH1 → CH2 → Dual 循环（切换后无条件重启采集，刷新波形、
+ * 重新开始当前测量模式——SINGLE 重新等触发） */
 static void on_ch_btn(lv_event_t *e)
 {
     (void)e;
@@ -303,7 +322,14 @@ static void on_ch_btn(lv_event_t *e)
         s->cfg.io[0] = (s->ch_mode == SC_CH_MODE_CH1) ? SC_IO_CH1 : SC_IO_CH2;
         s->cfg.io[1] = -1;
     }
-    scope_apply_cfg();
+    s->last_frameno = 0xFFFFFFFF;   /* 强制重绘 */
+    scope_refresh_off_btns();
+    if (drv_scope_start(&s->cfg) == ESP_OK) {   /* 无条件重启 */
+        s->running = true;
+        s->last_frameno = 0;
+        s->last_meas_tick = 0;
+    }
+    scope_refresh_status();
 }
 
 /* 垂直范围键：3.1V → 1.5V → 0.8V 循环 */
