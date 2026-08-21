@@ -585,14 +585,14 @@ static void scope_relayout(void)
     lv_obj_align(s->state_dot, LV_ALIGN_TOP_RIGHT, -56, 9);
     lv_obj_align(s->state_lbl, LV_ALIGN_TOP_RIGHT, -8, 7);
 
-    /* 垂直偏移按钮（canvas 左右边缘垂直居中，上下排布留间隔；
+    /* 垂直偏移按钮（左右边缘，关于中心横轴上下对称：+ 上 / - 下；
      * 单通道只显示对应侧；右侧避开右上角 V 指示器） */
     int obw = 26, obh = 18, ogap = 6;
-    int ocy = SC_TOP_H + (s->canvas_h - 2 * obh - ogap) / 2;
+    int mid_y = SC_TOP_H + s->canvas_h / 2;   /* 中心横轴绝对坐标 */
     for (int ch = 0; ch < 2; ch++) {
         int x = (ch == 0) ? 2 : s->canvas_w - obw - 2;
         for (int d = 0; d < 2; d++) {
-            int y = ocy + d * (obh + ogap);
+            int y = (d == 0) ? (mid_y - obh - ogap / 2) : (mid_y + ogap / 2);
             lv_obj_set_pos(s->off_btn[ch][d], x, y);
             lv_obj_set_size(s->off_btn[ch][d], obw, obh);
         }
