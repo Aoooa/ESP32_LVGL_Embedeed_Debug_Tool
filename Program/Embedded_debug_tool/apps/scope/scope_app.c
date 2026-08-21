@@ -17,9 +17,10 @@
 #define SC_BAR_BORDER    0x1F2A36
 #define SC_WAVE1         0x39C5BB   /* CH1 波形绿 */
 #define SC_WAVE2         0xFFB86C   /* CH2 波形橙 */
-#define SC_GRID          0x15303A   /* 网格暗青 */
-#define SC_GRID_MID      0x1F4A50   /* 中心横轴 */
+#define SC_GRID          0x3A3A44   /* 网格浅灰 */
+#define SC_GRID_MID      0x4A4A58   /* 中心横轴（略亮） */
 #define SC_TRIG          0xE5484D   /* 触发线红 */
+#define SC_SEL           0xFFC857   /* 时间轴滑块（琥珀，50% 半透明混合） */
 #define SC_RUN           0x22C55E   /* RUN 状态点绿 */
 #define SC_STOP          0x6B7280   /* STOP 状态点灰 */
 #define SC_TEXT          0xE8E8F0
@@ -137,7 +138,9 @@ static void scope_draw(const scope_frame_t *f)
     const uint16_t c_w1   = (uint16_t)lv_color_to_u16(lv_color_hex(SC_WAVE1));
     const uint16_t c_w2   = (uint16_t)lv_color_to_u16(lv_color_hex(SC_WAVE2));
     const uint16_t c_bar  = (uint16_t)lv_color_to_u16(lv_color_hex(0x2A3A46));   /* 时间轴横线 */
-    const uint16_t c_sel  = (uint16_t)lv_color_to_u16(lv_color_hex(SC_WAVE1));   /* 时间轴滑块 */
+    /* 滑块：琥珀色 50% 混合黑底 → 半透明观感，与波形色区分 */
+    const uint16_t c_sel  = (uint16_t)lv_color_to_u16(
+        lv_color_mix(lv_color_hex(SC_SEL), lv_color_hex(0x000000), 128));
 
     memset(buf, 0, (size_t)cw * chh * 2);   /* 清黑底 */
 
