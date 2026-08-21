@@ -590,9 +590,10 @@ static void scope_relayout(void)
     lv_obj_align(s->state_dot, LV_ALIGN_TOP_RIGHT, -56, 9);
     lv_obj_align(s->state_lbl, LV_ALIGN_TOP_RIGHT, -8, 7);
 
-    /* 垂直偏移按钮（左右边缘，关于中心横轴上下对称：+ 上 / - 下；
+    /* 垂直偏移按钮（热区容器，视觉按钮 26x18 居中于 36x28 热区；
+     * 关于中心横轴上下对称：+ 上 / - 下；热区间距 12px 保证不重合；
      * 单通道只显示对应侧；右侧避开右上角 V 指示器） */
-    int obw = 26, obh = 18, ogap = 10;   /* 上下间距大一点 */
+    int obw = 36, obh = 28, ogap = 12;
     int mid_y = SC_TOP_H + chh / 2;   /* 中心横轴绝对坐标（用局部 chh） */
     for (int ch = 0; ch < 2; ch++) {
         int x = (ch == 0) ? 2 : cw - obw - 2;
@@ -685,14 +686,22 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
     s->hz_btn = hz_btn;
     s->hz_lbl = lv_obj_get_child(hz_btn, 0);
 
-    /* 垂直偏移按钮（canvas 左右边缘，半透明：+/− 上移/下移对应通道 0 点） */
+    /* 垂直偏移按钮：透明热区容器（加大触摸面积）+ 视觉子按钮（+/−）；
+     * user_data = 通道*2 + 方向（0=上移 1=下移） */
     for (int ch = 0; ch < 2; ch++) {
         for (int d = 0; d < 2; d++) {
-            lv_obj_t *b = sc_make_btn(root, d ? "-" : "+");
-            lv_obj_set_user_data(b, (void *)(intptr_t)(ch * 2 + d));
-            lv_obj_add_event_cb(b, on_off_btn, LV_EVENT_CLICKED, NULL);
+            lv_obj_t *hot = lv_obj_create(root);
+            lv_obj_remove_flag(hot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC
+                               | LV_OBJ_FLAG_SCROLL_MOMENTUM);
+            lv_obj_set_style_bg_opa(hot, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(hot, 0, 0);
+            lv_obj_set_style_pad_all(hot, 0, 0);
+            lv_obj_set_user_data(hot, (void *)(intptr_t)(ch * 2 + d));
+            lv_obj_add_event_cb(hot, on_off_btn, LV_EVENT_CLICKED, NULL);
+            lv_obj_t *b = sc_make_btn(hot, d ? "-" : "+");
             lv_obj_set_style_bg_opa(b, LV_OPA_30, 0);   /* 半透明叠 canvas 边缘 */
-            s->off_btn[ch][d] = b;
+            lv_obj_center(b);
+            s->off_btn[ch][d] = hot;   /* 保存热区容器引用 */
         }
     }
 
