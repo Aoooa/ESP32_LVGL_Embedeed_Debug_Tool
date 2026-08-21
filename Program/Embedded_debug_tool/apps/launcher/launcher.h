@@ -31,6 +31,14 @@ typedef enum {
     LAUNCH_APP_COUNT,
 } launch_app_id_t;
 
+/* 应用级手势事件（系统返回仍走 back：贴边右滑；此处为 launcher 向栈顶
+ * APP 转发的非返回手势。APP 按需处理，未处理由 launcher 兜底） */
+typedef enum {
+    APP_GESTURE_SWIPE_RIGHT = 0,   /* 全局右滑（任意起点，dx ≥ 50px） */
+    APP_GESTURE_SWIPE_LEFT,        /* 全局左滑（任意起点，dx ≤ -50px） */
+    /* 预留：SWIPE_UP / SWIPE_DOWN / LONG_PRESS ... */
+} app_gesture_t;
+
 /* 创建启动器（parent 通常为当前 screen；root 铺满 parent） */
 lv_obj_t *launcher_create(lv_obj_t *parent);
 
@@ -60,6 +68,10 @@ bool launcher_app_running(void);
 
 /* 返回事件（输入层右滑触发） */
 void launcher_app_swipe_back(void *ctx);
+
+/* 手势事件（输入层全局右滑/左滑触发 → 栈顶 gesture 回调；
+ * false/无回调 = 未处理 → 桌面兜底（暂无实现，日志忽略）） */
+void launcher_app_swipe_gesture(app_gesture_t evt);
 
 /* 旋转事件（平台旋转完成；栈顶无 rotate 回调则弹栈关闭回桌面） */
 void launcher_event_rotate(int deg);

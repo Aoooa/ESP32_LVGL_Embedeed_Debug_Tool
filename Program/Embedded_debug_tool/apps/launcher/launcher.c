@@ -566,6 +566,34 @@ void launcher_app_swipe_back(void *ctx)
     launcher_app_close(NULL);
 }
 
+/* 手势事件（输入层全局右滑/左滑触发，launcher_app_swipe_gesture 入口）：
+ * 栈顶 gesture 回调——true=APP 已处理；false/无回调 = 未处理 → 桌面兜底
+ * （当前无实现，日志忽略）。LVGL 线程直调。 */
+void launcher_app_swipe_gesture(app_gesture_t evt)
+{
+    app_slot_t *top = stack_top();
+    if (top && top->m && top->m->gesture) {
+        if (top->m->gesture(top->app, evt)) {
+            ESP_LOGI("launcher", "[EVT] gesture(%d) -> %s handled", evt, top->m->name);
+            return;
+        }
+    }
+    ESP_LOGI("launcher", "[EVT] gesture(%d) unhandled -> desktop, ignored", evt);
+}
+
+/* 输入层右/左滑 → 统一手势路由（ctx 未用，事件类型由注册区分） */
+static void launcher_on_swipe_right(void *ctx)
+{
+    (void)ctx;
+    launcher_app_swipe_gesture(APP_GESTURE_SWIPE_RIGHT);
+}
+
+static void launcher_on_swipe_left(void *ctx)
+{
+    (void)ctx;
+    launcher_app_swipe_gesture(APP_GESTURE_SWIPE_LEFT);
+}
+
 /* 旋转事件（平台旋转完成）：栈顶 rotate 回调，NULL=弹栈关闭回桌面 */
 void launcher_event_rotate(int deg)
 {
@@ -780,8 +808,10 @@ lv_obj_t *launcher_create(lv_obj_t *parent)
         }
     }
 
-    /* 注册输入层返回事件（右滑手势触发 → 统一分发当前 APP） */
+    /* 注册输入层事件：贴边右滑=返回；全局右滑/左滑=手势事件路由 */
     gesture_set_back_handler(launcher_app_swipe_back, NULL);
+    gesture_set_right_handler(launcher_on_swipe_right, NULL);
+    gesture_set_left_handler(launcher_on_swipe_left, NULL);
 
     return root;
 }
