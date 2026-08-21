@@ -378,7 +378,7 @@ static void on_off_btn(lv_event_t *e)
     if (!s || ch < 0 || ch >= SCOPE_CH_MAX) return;
     int step = s->canvas_h / 30;
     if (step < 2) step = 2;
-    s->ch_off[ch] += dir ? -step : step;
+    s->ch_off[ch] += (dir == 0) ? -step : step;   /* + 上移（波形跟手指），- 下移 */
     int lim = s->canvas_h;                 /* 限幅防推出屏外 */
     if (s->ch_off[ch] > lim) s->ch_off[ch] = lim;
     if (s->ch_off[ch] < -lim) s->ch_off[ch] = -lim;
@@ -588,7 +588,7 @@ static void scope_relayout(void)
 
     /* 垂直偏移按钮（左右边缘，关于中心横轴上下对称：+ 上 / - 下；
      * 单通道只显示对应侧；右侧避开右上角 V 指示器） */
-    int obw = 26, obh = 18, ogap = 6;
+    int obw = 26, obh = 18, ogap = 10;   /* 上下间距大一点 */
     int mid_y = SC_TOP_H + chh / 2;   /* 中心横轴绝对坐标（用局部 chh） */
     for (int ch = 0; ch < 2; ch++) {
         int x = (ch == 0) ? 2 : cw - obw - 2;

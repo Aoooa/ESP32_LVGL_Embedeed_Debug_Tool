@@ -355,12 +355,15 @@ esp_err_t drv_scope_start(const scope_cfg_t *cfg)
     s_frame->running = true;
     s_run = true;
 
-    ret = xTaskCreateWithCaps(scope_task, "scope", 4096, NULL, 6, &s_task, MALLOC_CAP_SPIRAM);
+    ret = xTaskCreateWithCaps(scope_task, "scope", 2048, NULL, 6, &s_task, MALLOC_CAP_SPIRAM);
     if (ret != pdPASS) {
         s_run = false;
         adc_continuous_stop(s_handle);
         xSemaphoreGive(s_lock);
-        ESP_LOGE(S_TAG, "start: task create FAILED (err %d)", (int)ret);
+        ESP_LOGE(S_TAG, "start: task create FAILED (err %d) internal free=%u psram free=%u",
+                 (int)ret,
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
         return ESP_ERR_NO_MEM;
     }
     ESP_LOGI(S_TAG, "start: running (%d Hz, %d ch, trig=%s/%d mode=%d, task ok)",
