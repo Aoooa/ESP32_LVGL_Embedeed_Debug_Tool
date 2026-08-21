@@ -35,9 +35,14 @@
 static const int s_rates[] = { 80000, 40000, 20000, 10000, 5000, 2000, 1000 };
 #define SC_RATE_N   (sizeof(s_rates) / sizeof(s_rates[0]))
 
-/* ── 通道输入 GPIO（ADC1 空闲脚） ── */
-#define SC_IO_CH1   5
-#define SC_IO_CH2   6
+/* ── 通道输入 GPIO（ADC1 空闲脚；IO5 板面未引出，改用 9/10） ── */
+#define SC_IO_CH1   9
+#define SC_IO_CH2   10
+
+/* 垂直范围档位（满量程 raw 值；波形 y 映射按此缩放） */
+static const int s_vranges[] = { 4095, 2047, 1023 };   /* 3.1V / 1.5V / 0.8V */
+static const char *const s_vrange_strs[] = { "3.1V", "1.5V", "0.8V" };
+#define SC_VRANGE_N  (sizeof(s_vranges) / sizeof(s_vranges[0]))
 
 /* 通道模式（顶栏循环键） */
 typedef enum {
@@ -60,15 +65,22 @@ static int sc_rate_index(int hz)
 
 typedef struct {
     lv_obj_t *root;
+    /* 顶栏 */
     lv_obj_t *ch_btn, *ch_lbl;
+    lv_obj_t *vr_btn, *vr_lbl;      /* 垂直范围档位键 */
     lv_obj_t *state_dot, *state_lbl;
+    /* 波形 canvas */
     lv_obj_t *canvas;
     lv_color_t *canvas_buf;
     int canvas_w, canvas_h;
+    lv_obj_t *z0_lbl;               /* 0V 基准标注（独立 label，canvas 上层） */
+    /* 测量栏 */
     lv_obj_t *m_lbl1, *m_lbl2;
+    /* 底栏 */
     lv_obj_t *btn[4];
     lv_obj_t *lbl[4];
     scope_ch_mode_t ch_mode;
+    int vr_idx;                      /* 垂直范围档位索引（0=满量程） */
     scope_cfg_t cfg;
     bool running;
     uint32_t last_frameno;
@@ -93,43 +105,42 @@ static int sc_screen_h(void)
     return d ? lv_display_get_vertical_resolution(d) : 320;
 }
 
-/* ── canvas 波形绘制（100ms 节流，全量重绘） ── */
+/* ── canvas 波形绘制（100ms 节流，全量重绘）
+ * 直接写 PSRAM buffer（memset + 像素直写）——lv_draw_line 逐条软件渲染
+ * 240 条竖线实测单帧 300-600ms，把 LVGL 任务占死导致触摸无响应；
+ * 直写 buffer 单帧 <1ms，invalidate 后由 LVGL 统一 blit 到 LCD。 ── */
 static void scope_draw(const scope_frame_t *f)
 {
     scope_t *s = s_scope;
     if (!s || !s->canvas || !s->canvas_buf) return;
     int cw = s->canvas_w, chh = s->canvas_h;
+    uint16_t *buf = (uint16_t *)s->canvas_buf;
+    const uint16_t c_grid = (uint16_t)lv_color_to_u16(lv_color_hex(SC_GRID));
+    const uint16_t c_mid  = (uint16_t)lv_color_to_u16(lv_color_hex(SC_GRID_MID));
+    const uint16_t c_trig = (uint16_t)lv_color_to_u16(lv_color_hex(SC_TRIG));
+    const uint16_t c_w1   = (uint16_t)lv_color_to_u16(lv_color_hex(SC_WAVE1));
+    const uint16_t c_w2   = (uint16_t)lv_color_to_u16(lv_color_hex(SC_WAVE2));
 
-    lv_canvas_fill_bg(s->canvas, lv_color_hex(0x000000), LV_OPA_COVER);
-    lv_layer_t layer;
-    lv_canvas_init_layer(s->canvas, &layer);
+    memset(buf, 0, (size_t)cw * chh * 2);   /* 清黑底 */
 
-    lv_draw_line_dsc_t line;
-    lv_draw_line_dsc_init(&line);
-    line.width = 1;
-
-    /* 网格 10x8 */
-    line.color = lv_color_hex(SC_GRID);
+    /* 网格 10x8（垂直线 9 + 水平线 7，像素直写） */
     for (int i = 1; i < 10; i++) {
-        line.p1.x = i * cw / 10; line.p1.y = 0;
-        line.p2.x = i * cw / 10; line.p2.y = chh - 1;
-        lv_draw_line(&layer, &line);
+        int x = i * cw / 10;
+        for (int y = 0; y < chh; y++) buf[y * cw + x] = c_grid;
     }
     for (int j = 1; j < 8; j++) {
-        line.p1.x = 0; line.p1.y = j * chh / 8;
-        line.p2.x = cw - 1; line.p2.y = j * chh / 8;
-        lv_draw_line(&layer, &line);
+        int y = j * chh / 8;
+        for (int x = 0; x < cw; x++) buf[y * cw + x] = c_grid;
     }
-    /* 中心横轴（零参考）亮一档 */
-    line.color = lv_color_hex(SC_GRID_MID);
-    line.p1.x = 0; line.p1.y = chh / 2;
-    line.p2.x = cw - 1; line.p2.y = chh / 2;
-    lv_draw_line(&layer, &line);
+    /* 中心横轴（零参考）+ 0V 底边（亮青） */
+    for (int x = 0; x < cw; x++) buf[(chh / 2) * cw + x] = c_mid;
+    for (int x = 0; x < cw; x++) buf[(chh - 1) * cw + x] = c_mid;
 
-    /* 波形（峰值检测：每列 min/max 竖线，防漏峰） */
+    /* 波形（峰值检测：每列 min/max 竖线，防漏峰；y 按垂直范围档位缩放） */
+    int vfull = s_vranges[s->vr_idx];
     if (f && f->frameno && f->points > 0) {
         for (int c = 0; c < f->channels && c < SCOPE_CH_MAX; c++) {
-            line.color = lv_color_hex(c == 0 ? SC_WAVE1 : SC_WAVE2);
+            uint16_t cc = (c == 0) ? c_w1 : c_w2;
             for (int col = 0; col < cw; col++) {
                 int i0 = col * f->points / cw;
                 int i1 = (col + 1) * f->points / cw;
@@ -139,26 +150,23 @@ static void scope_draw(const scope_frame_t *f)
                     if (f->ch[c][i] < mn) mn = f->ch[c][i];
                     if (f->ch[c][i] > mx) mx = f->ch[c][i];
                 }
-                int y_hi = chh - 1 - (int)(mx * (uint32_t)chh / 4095);
-                int y_lo = chh - 1 - (int)(mn * (uint32_t)chh / 4095);
+                int y_hi = chh - 1 - (int)(mx * (uint32_t)chh / vfull);
+                int y_lo = chh - 1 - (int)(mn * (uint32_t)chh / vfull);
+                if (y_hi < 0) y_hi = 0;          /* 超范围 clip */
+                if (y_lo >= chh) y_lo = chh - 1;
                 if (y_lo < y_hi) y_lo = y_hi;
-                line.p1.x = col; line.p1.y = y_hi;
-                line.p2.x = col; line.p2.y = y_lo;
-                lv_draw_line(&layer, &line);
+                uint16_t *p = buf + y_hi * cw + col;
+                for (int y = y_hi; y <= y_lo; y++, p += cw) *p = cc;
             }
         }
     }
 
-    /* 触发线（红实线） */
-    line.color = lv_color_hex(SC_TRIG);
-    int ty = chh - 1 - (int)((uint32_t)s->cfg.trigger_level * chh / 4095);
+    /* 触发线（红实线；y 按垂直范围缩放，超范围 clip） */
+    int ty = chh - 1 - (int)((uint32_t)s->cfg.trigger_level * chh / vfull);
     if (ty < 0) ty = 0;
     if (ty >= chh) ty = chh - 1;
-    line.p1.x = 0; line.p1.y = ty;
-    line.p2.x = cw - 1; line.p2.y = ty;
-    lv_draw_line(&layer, &line);
+    for (int x = 0; x < cw; x++) buf[ty * cw + x] = c_trig;
 
-    lv_canvas_finish_layer(s->canvas, &layer);
     lv_obj_invalidate(s->canvas);
 }
 
@@ -194,6 +202,7 @@ static void scope_refresh_status(void)
     lv_obj_set_style_bg_color(s->state_dot, lv_color_hex(s->running ? SC_RUN : SC_STOP), 0);
     lv_label_set_text(s->state_lbl, s->running ? "RUN" : "STOP");
     lv_label_set_text(s->ch_lbl, s_ch_mode_strs[s->ch_mode]);
+    lv_label_set_text(s->vr_lbl, s_vrange_strs[s->vr_idx]);
 
     lv_label_set_text(s->lbl[1], s->cfg.trig_mode == SCOPE_TRIG_AUTO ? "AUTO"
                                      : (s->cfg.trig_mode == SCOPE_TRIG_NORM ? "NORM" : "SINGLE"));
@@ -205,6 +214,7 @@ static void scope_apply_cfg(void)
 {
     scope_t *s = s_scope;
     if (!s) return;
+    s->last_frameno = 0xFFFFFFFF;   /* 强制下一帧重绘（清掉旧通道/旧档位画面） */
     if (s->running) {
         drv_scope_start(&s->cfg);
     }
@@ -219,6 +229,7 @@ static void on_ch_btn(lv_event_t *e)
     (void)e;
     scope_t *s = s_scope;
     if (!s) return;
+    ESP_LOGI(S_TAG, "btn: CH cycle");
     s->ch_mode = (scope_ch_mode_t)((s->ch_mode + 1) % SC_CH_MODE_N);
     if (s->ch_mode == SC_CH_MODE_DUAL) {
         s->cfg.io[0] = SC_IO_CH1;
@@ -230,11 +241,23 @@ static void on_ch_btn(lv_event_t *e)
     scope_apply_cfg();
 }
 
+/* 垂直范围键：3.1V → 1.5V → 0.8V 循环 */
+static void on_vr_btn(lv_event_t *e)
+{
+    (void)e;
+    scope_t *s = s_scope;
+    if (!s) return;
+    ESP_LOGI(S_TAG, "btn: V-range cycle");
+    s->vr_idx = (s->vr_idx + 1) % SC_VRANGE_N;
+    scope_apply_cfg();
+}
+
 static void on_run_btn(lv_event_t *e)
 {
     (void)e;
     scope_t *s = s_scope;
     if (!s) return;
+    ESP_LOGI(S_TAG, "btn: RUN/STOP");
     if (s->running) {
         drv_scope_stop();
         s->running = false;
@@ -254,6 +277,7 @@ static void on_trig_btn(lv_event_t *e)
     (void)e;
     scope_t *s = s_scope;
     if (!s) return;
+    ESP_LOGI(S_TAG, "btn: TRIG cycle");
     s->cfg.trig_mode = (scope_trig_mode_t)(((int)s->cfg.trig_mode + 1) % 3);
     scope_apply_cfg();
 }
@@ -264,6 +288,7 @@ static void on_rate_btn(lv_event_t *e)
     (void)e;
     scope_t *s = s_scope;
     if (!s) return;
+    ESP_LOGI(S_TAG, "btn: BASE cycle");
     int idx = (sc_rate_index(s->cfg.sample_rate_hz) + 1) % SC_RATE_N;
     s->cfg.sample_rate_hz = s_rates[idx];
     scope_apply_cfg();
@@ -274,6 +299,7 @@ static void on_v_done(void *ctx, bool ok, int value)
     scope_t *s = ctx;
     if (!s) return;
     if (ok) {
+        ESP_LOGI(S_TAG, "btn: V done level=%d", value);
         s->cfg.trigger_level = value;
         scope_apply_cfg();
     }
@@ -284,6 +310,7 @@ static void on_v_btn(lv_event_t *e)
     (void)e;
     scope_t *s = s_scope;
     if (!s) return;
+    ESP_LOGI(S_TAG, "btn: V (trigger level)");
     num_input_show(s->root, s->cfg.trigger_level, 0, 4095, false, on_v_done, s);
 }
 
@@ -295,6 +322,7 @@ static void scope_tick(lv_timer_t *t)
     if (!s) return;
     if (num_input_is_active()) return;
 
+    uint32_t t0 = lv_tick_get();
     if (drv_scope_get_frame(s->frame) != ESP_OK) {
         ESP_LOGW(S_TAG, "tick: get_frame failed");
         return;
@@ -303,7 +331,7 @@ static void scope_tick(lv_timer_t *t)
 
     if (f->frameno != s->last_frameno) {
         /* 首帧/帧号恢复时打印一次（采集链路是否出数） */
-        if (s->last_frameno == 0) {
+        if (s->last_frameno == 0 || s->last_frameno == 0xFFFFFFFF) {
             ESP_LOGI(S_TAG, "tick: first frame #%u (%d pts, %d ch)", f->frameno,
                      f->points, f->channels);
         }
@@ -314,6 +342,10 @@ static void scope_tick(lv_timer_t *t)
         }
         scope_draw(f);
         scope_update_meas(f);
+    }
+    uint32_t dt = lv_tick_get() - t0;
+    if (dt > 50) {
+        ESP_LOGW(S_TAG, "tick: slow cycle %ums (draw too heavy?)", dt);
     }
 }
 
@@ -348,7 +380,9 @@ static void scope_relayout(void)
     lv_obj_set_size(s->root, sw, sh);
 
     lv_obj_set_pos(s->ch_btn, 8, 2);
-    lv_obj_set_size(s->ch_btn, 64, SC_TOP_H - 4);
+    lv_obj_set_size(s->ch_btn, 56, SC_TOP_H - 4);
+    lv_obj_set_pos(s->vr_btn, 68, 2);
+    lv_obj_set_size(s->vr_btn, 56, SC_TOP_H - 4);
     lv_obj_align(s->state_dot, LV_ALIGN_TOP_RIGHT, -56, 9);
     lv_obj_align(s->state_lbl, LV_ALIGN_TOP_RIGHT, -8, 7);
 
@@ -364,6 +398,7 @@ static void scope_relayout(void)
         }
     }
     lv_obj_set_pos(s->canvas, 0, SC_TOP_H);
+    lv_obj_set_pos(s->z0_lbl, 4, SC_TOP_H + s->canvas_h - 12);
 
     lv_obj_set_pos(s->m_lbl1, 8, SC_TOP_H + 4);
     lv_obj_set_pos(s->m_lbl2, 8, SC_TOP_H + 18);
@@ -395,6 +430,7 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
     s->back_cb = back_cb;
     s->back_ctx = ctx;
     s->ch_mode = SC_CH_MODE_CH1;
+    s->vr_idx = 0;
     s->cfg.sample_rate_hz = 40000;
     s->cfg.io[0] = SC_IO_CH1;
     s->cfg.io[1] = -1;
@@ -417,6 +453,12 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
     s->ch_btn = ch_btn;
     s->ch_lbl = lv_obj_get_child(ch_btn, 0);
 
+    /* 顶栏垂直范围键（3.1V/1.5V/0.8V 循环） */
+    lv_obj_t *vr_btn = sc_make_btn(root, "3.1V");
+    lv_obj_add_event_cb(vr_btn, on_vr_btn, LV_EVENT_CLICKED, NULL);
+    s->vr_btn = vr_btn;
+    s->vr_lbl = lv_obj_get_child(vr_btn, 0);
+
     lv_obj_t *dot = lv_obj_create(root);
     lv_obj_remove_flag(dot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC
                        | LV_OBJ_FLAG_SCROLL_MOMENTUM | LV_OBJ_FLAG_CLICKABLE);
@@ -436,6 +478,13 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
     s->canvas = cv;
     s->canvas_w = s->canvas_h = 0;
     lv_obj_set_pos(cv, 0, SC_TOP_H);
+
+    /* 0V 基准标注（独立 label 盖在 canvas 左下角，canvas 重绘不影响） */
+    lv_obj_t *z0 = lv_label_create(root);
+    lv_label_set_text(z0, "0V");
+    lv_obj_set_style_text_font(z0, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(z0, lv_color_hex(SC_MEAS), 0);
+    s->z0_lbl = z0;
 
     lv_obj_t *ml1 = lv_label_create(root);
     lv_label_set_text(ml1, "FREQ --  Vpp --");
