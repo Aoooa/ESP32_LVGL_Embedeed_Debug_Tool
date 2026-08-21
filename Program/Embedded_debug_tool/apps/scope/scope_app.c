@@ -307,7 +307,9 @@ static void scope_apply_cfg(void)
 /* ── 事件 ── */
 
 /* 通道键：CH1 → CH2 → Dual 循环（切换后无条件重启采集，刷新波形、
- * 重新开始当前测量模式——SINGLE 重新等触发） */
+ * 重新开始当前测量模式——SINGLE 重新等触发）。
+ * Dual 自动布局：V 档缩到 6V + CH1 0V 基线移上部 1/4、CH2 移下部 3/4，
+ * 两波形上下分离不重叠；切回单通道复位偏移 */
 static void on_ch_btn(lv_event_t *e)
 {
     (void)e;
@@ -318,9 +320,14 @@ static void on_ch_btn(lv_event_t *e)
     if (s->ch_mode == SC_CH_MODE_DUAL) {
         s->cfg.io[0] = SC_IO_CH1;
         s->cfg.io[1] = SC_IO_CH2;
+        s->vr_idx = 5;   /* 6V 档（s_vranges[5]=8190，波形压缩） */
+        int usable = s->canvas_h - 2 * (s->canvas_h / 12);
+        s->ch_off[0] = -(usable * 3 / 4);   /* CH1 0V 基线 → 上部 1/4 */
+        s->ch_off[1] = -(usable * 1 / 4);   /* CH2 0V 基线 → 下部 3/4 */
     } else {
         s->cfg.io[0] = (s->ch_mode == SC_CH_MODE_CH1) ? SC_IO_CH1 : SC_IO_CH2;
         s->cfg.io[1] = -1;
+        s->ch_off[0] = s->ch_off[1] = 0;   /* 单通道复位自动偏移 */
     }
     s->last_frameno = 0xFFFFFFFF;   /* 强制重绘 */
     scope_refresh_off_btns();
