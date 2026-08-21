@@ -700,6 +700,7 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
             lv_obj_add_event_cb(hot, on_off_btn, LV_EVENT_CLICKED, NULL);
             lv_obj_t *b = sc_make_btn(hot, d ? "-" : "+");
             lv_obj_set_style_bg_opa(b, LV_OPA_30, 0);   /* 半透明叠 canvas 边缘 */
+            lv_obj_set_size(b, 26, 18);                 /* 视觉尺寸固定（热区 36x28 居中） */
             lv_obj_center(b);
             s->off_btn[ch][d] = hot;   /* 保存热区容器引用 */
         }
