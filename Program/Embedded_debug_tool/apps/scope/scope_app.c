@@ -38,6 +38,10 @@
 #define SC_RATE_MAX   83333
 #define SC_RATE_DEF   80000
 
+/* ── 水平缩放档位（窗口切片点数 = 2048 >> idx；触发点为中心） ── */
+static const char *const s_hzoom_strs[] = { "x1", "x2", "x4", "x8" };
+#define SC_HZOOM_N  (sizeof(s_hzoom_strs) / sizeof(s_hzoom_strs[0]))
+
 /* ── 通道输入 GPIO（ADC1 空闲脚；IO5 板面未引出，改用 9/10） ── */
 #define SC_IO_CH1   9
 #define SC_IO_CH2   10
@@ -72,6 +76,7 @@ typedef struct {
     /* 顶栏 */
     lv_obj_t *ch_btn, *ch_lbl;
     lv_obj_t *vr_btn, *vr_lbl;      /* 垂直范围档位键 */
+    lv_obj_t *hz_btn, *hz_lbl;      /* 水平缩放键（窗口切片） */
     lv_obj_t *state_dot, *state_lbl;
     /* 波形 canvas */
     lv_obj_t *canvas;
@@ -85,6 +90,7 @@ typedef struct {
     lv_obj_t *lbl[4];
     scope_ch_mode_t ch_mode;
     int vr_idx;                      /* 垂直范围档位索引（0=满量程） */
+    int hz_idx;                      /* 水平缩放索引（0=×1 全窗口） */
     scope_cfg_t cfg;
     bool running;
     uint32_t last_frameno;
@@ -146,9 +152,17 @@ static void scope_draw(const scope_frame_t *f)
     for (int x = 0; x < cw; x++) buf[(margin + usable - 1) * cw + x] = c_mid;
 
     /* 波形（峰值检测：每列 min/max 竖线，防漏峰；y 按垂直范围档位 + 余量映射）
-     * 单通道时颜色跟随当前通道（CH1=青绿 CH2=橙），Dual 时双色 */
+     * 单通道时颜色跟随当前通道（CH1=青绿 CH2=橙），Dual 时双色。
+     * 水平缩放：显示窗口切片（点数 = 全窗口 >> hz_idx，触发点为中心） */
     int vfull = s_vranges[s->vr_idx];
     if (f && f->frameno && f->points > 0) {
+        int npts = f->points >> s->hz_idx;
+        if (npts < 1) npts = 1;
+        int wstart = (f->points / 4) - npts / 2;   /* 触发点(25%)为中心 */
+        if (wstart < 0) wstart = 0;
+        if (wstart + npts > f->points) wstart = f->points - npts;
+        int wend = wstart + npts;
+
         for (int c = 0; c < f->channels && c < SCOPE_CH_MAX; c++) {
             uint16_t cc;
             if (f->channels == 1 && s->ch_mode == SC_CH_MODE_CH2) {
@@ -157,11 +171,13 @@ static void scope_draw(const scope_frame_t *f)
                 cc = (c == 0) ? c_w1 : c_w2;     /* CH1 或 Dual */
             }
             for (int col = 0; col < cw; col++) {
-                int i0 = col * f->points / cw;
-                int i1 = (col + 1) * f->points / cw;
+                int i0 = wstart + col * npts / cw;
+                int i1 = wstart + (col + 1) * npts / cw;
                 if (i1 <= i0) i1 = i0 + 1;
+                if (i0 >= wend) break;
+                if (i1 > wend) i1 = wend;
                 uint32_t mn = 4096, mx = 0;
-                for (int i = i0; i < i1 && i < f->points; i++) {
+                for (int i = i0; i < i1; i++) {
                     if (f->ch[c][i] < mn) mn = f->ch[c][i];
                     if (f->ch[c][i] > mx) mx = f->ch[c][i];
                 }
@@ -217,6 +233,7 @@ static void scope_refresh_status(void)
     lv_obj_set_style_text_color(s->ch_lbl,
                                 lv_color_hex(s->ch_mode == SC_CH_MODE_CH2 ? SC_WAVE2 : SC_WAVE1), 0);
     lv_label_set_text(s->vr_lbl, s_vrange_strs[s->vr_idx]);
+    lv_label_set_text(s->hz_lbl, s_hzoom_strs[s->hz_idx]);
     lv_label_set_text(s->lbl[0], s->running ? "STOP" : "RUN");   /* 底栏首键 = 当前状态 */
 
     lv_label_set_text(s->lbl[1], s->cfg.trig_mode == SCOPE_TRIG_AUTO ? "AUTO"
@@ -266,6 +283,17 @@ static void on_vr_btn(lv_event_t *e)
     if (!s) return;
     ESP_LOGI(S_TAG, "btn: V-range cycle");
     s->vr_idx = (s->vr_idx + 1) % SC_VRANGE_N;
+    scope_apply_cfg();
+}
+
+/* 水平缩放键：x1 → x2 → x4 → x8 循环（显示窗口切片，采集不动） */
+static void on_hz_btn(lv_event_t *e)
+{
+    (void)e;
+    scope_t *s = s_scope;
+    if (!s) return;
+    ESP_LOGI(S_TAG, "btn: H-zoom cycle");
+    s->hz_idx = (s->hz_idx + 1) % SC_HZOOM_N;
     scope_apply_cfg();
 }
 
@@ -410,6 +438,8 @@ static void scope_relayout(void)
     lv_obj_set_size(s->ch_btn, 56, SC_TOP_H - 4);
     lv_obj_set_pos(s->vr_btn, 68, 2);
     lv_obj_set_size(s->vr_btn, 56, SC_TOP_H - 4);
+    lv_obj_set_pos(s->hz_btn, 128, 2);
+    lv_obj_set_size(s->hz_btn, 48, SC_TOP_H - 4);
     lv_obj_align(s->state_dot, LV_ALIGN_TOP_RIGHT, -56, 9);
     lv_obj_align(s->state_lbl, LV_ALIGN_TOP_RIGHT, -8, 7);
 
@@ -459,6 +489,7 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
     s->back_ctx = ctx;
     s->ch_mode = SC_CH_MODE_CH1;
     s->vr_idx = 0;
+    s->hz_idx = 0;
     s->cfg.sample_rate_hz = SC_RATE_DEF;   /* 默认最大值 80k */
     s->cfg.io[0] = SC_IO_CH1;
     s->cfg.io[1] = -1;
@@ -486,6 +517,12 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
     lv_obj_add_event_cb(vr_btn, on_vr_btn, LV_EVENT_CLICKED, NULL);
     s->vr_btn = vr_btn;
     s->vr_lbl = lv_obj_get_child(vr_btn, 0);
+
+    /* 顶栏水平缩放键（x1/x2/x4/x8 窗口切片） */
+    lv_obj_t *hz_btn = sc_make_btn(root, "x1");
+    lv_obj_add_event_cb(hz_btn, on_hz_btn, LV_EVENT_CLICKED, NULL);
+    s->hz_btn = hz_btn;
+    s->hz_lbl = lv_obj_get_child(hz_btn, 0);
 
     lv_obj_t *dot = lv_obj_create(root);
     lv_obj_remove_flag(dot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC
