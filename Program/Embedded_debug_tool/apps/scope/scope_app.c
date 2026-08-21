@@ -160,9 +160,12 @@ static void scope_draw(const scope_frame_t *f)
         int y = j * chh / 8;
         for (int x = 0; x < cw; x++) buf[y * cw + x] = c_grid;
     }
-    /* 中心横轴（零参考）+ 0V 基准线（亮青，位于量程底 = margin 上方） */
+    /* 中心横轴（1.55V 参考）+ 0V 基准线（主通道 0V 位置，随 ch_off[0] 移动） */
     for (int x = 0; x < cw; x++) buf[(chh / 2) * cw + x] = c_mid;
-    for (int x = 0; x < cw; x++) buf[(margin + usable - 1) * cw + x] = c_mid;
+    int z0_y = margin + usable - 1 + s->ch_off[0];
+    if (z0_y < 0) z0_y = 0;
+    if (z0_y >= chh) z0_y = chh - 1;
+    for (int x = 0; x < cw; x++) buf[z0_y * cw + x] = c_mid;
 
     /* 波形（峰值检测：每列 min/max 竖线，防漏峰；y 按垂直范围档位 + 余量映射）
      * 单通道时颜色跟随当前通道（CH1=青绿 CH2=橙），Dual 时双色。
@@ -231,17 +234,20 @@ static void scope_draw(const scope_frame_t *f)
     for (int x = 0; x < 14 && x < cw; x++) buf[ty * cw + x] = c_trig;
 
     /* 右上角 V 轴指示器（非默认档显示）：琥珀竖线 = 未缩放全范围(0..4095)，
-     * 琥珀滑块 = 当前档位覆盖的电压段（0V 基线起，放大档贴底短、缩小档顶满） */
+     * 琥珀滑块 = 当前显示电压段 [v_lo, v_hi]（由主通道偏移换算，随按钮移动） */
     if (s->vr_idx != 0) {
         int vx = cw - 5;                       /* 竖线 x */
         int v_top = margin, v_bot = chh - margin - 1;
         for (int y = v_top; y <= v_bot; y++) buf[y * cw + vx] = c_bar;
-        int vfull_disp = vfull > 4095 ? 4095 : vfull;   /* 显示段 clip 到全范围 */
-        int sh = (v_bot - v_top) * vfull_disp / 4095;
-        if (sh < 2) sh = 2;
-        int s_top = v_bot - sh + 1;
-        if (s_top < v_top) s_top = v_top;
-        for (int y = s_top; y <= v_bot; y++) {
+        /* ch_off[0] 像素 → 显示段起点电压 v_lo（raw） */
+        int v_lo = -(s->ch_off[0] * vfull / usable);
+        int v_hi = v_lo + vfull;
+        int y_hi_v = v_bot - v_hi * (v_bot - v_top) / 4095;   /* 高电压 → 小 y */
+        int y_lo_v = v_bot - v_lo * (v_bot - v_top) / 4095;
+        if (y_hi_v < v_top) y_hi_v = v_top;
+        if (y_lo_v > v_bot) y_lo_v = v_bot;
+        if (y_lo_v < y_hi_v) y_lo_v = y_hi_v;
+        for (int y = y_hi_v; y <= y_lo_v; y++) {
             for (int x = vx - 1; x <= vx + 2 && x < cw; x++) buf[y * cw + x] = c_sel;
         }
     }
@@ -526,6 +532,13 @@ static void scope_tick(lv_timer_t *t)
         }
         scope_draw(f);
         scope_update_meas(f);
+
+        /* 0V 标注跟随主通道 0V 线（ch_off[0] 移动显示段） */
+        int usable = s->canvas_h - 2 * (s->canvas_h / 12);
+        int z0_y = s->canvas_h / 12 + usable - 1 + s->ch_off[0];
+        if (z0_y < 0) z0_y = 0;
+        if (z0_y >= s->canvas_h) z0_y = s->canvas_h - 1;
+        lv_obj_set_pos(s->z0_lbl, 4, SC_TOP_H + z0_y - 11);
     }
     uint32_t dt = lv_tick_get() - t0;
     if (dt > 50) {
@@ -572,12 +585,14 @@ static void scope_relayout(void)
     lv_obj_align(s->state_dot, LV_ALIGN_TOP_RIGHT, -56, 9);
     lv_obj_align(s->state_lbl, LV_ALIGN_TOP_RIGHT, -8, 7);
 
-    /* 垂直偏移按钮（canvas 左右边缘；单通道只显示对应侧） */
-    int obw = 24, obh = 15;
+    /* 垂直偏移按钮（canvas 左右边缘垂直居中，上下排布留间隔；
+     * 单通道只显示对应侧；右侧避开右上角 V 指示器） */
+    int obw = 26, obh = 18, ogap = 6;
+    int ocy = SC_TOP_H + (s->canvas_h - 2 * obh - ogap) / 2;
     for (int ch = 0; ch < 2; ch++) {
         int x = (ch == 0) ? 2 : s->canvas_w - obw - 2;
         for (int d = 0; d < 2; d++) {
-            int y = SC_TOP_H + (d ? obh + 2 : 2);
+            int y = ocy + d * (obh + ogap);
             lv_obj_set_pos(s->off_btn[ch][d], x, y);
             lv_obj_set_size(s->off_btn[ch][d], obw, obh);
         }
