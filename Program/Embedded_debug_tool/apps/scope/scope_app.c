@@ -761,6 +761,13 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
     scope_refresh_status();
     scope_refresh_off_btns();   /* 初始 CH1 模式：只显示左侧偏移按钮 */
 
+    /* 偏移按钮提到最上层：创建顺序在 canvas 之前，会被全黑 canvas 盖住 */
+    for (int ch = 0; ch < 2; ch++) {
+        for (int d = 0; d < 2; d++) {
+            lv_obj_move_foreground(s->off_btn[ch][d]);
+        }
+    }
+
     ESP_LOGI(S_TAG, "scope UI created (%dx%d)", sc_screen_w(), sc_screen_h());
     return root;
 }
