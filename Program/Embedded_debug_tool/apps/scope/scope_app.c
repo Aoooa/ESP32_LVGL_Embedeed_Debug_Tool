@@ -376,7 +376,10 @@ static void on_ch_btn(lv_event_t *e)
     if (s->ch_mode == SC_CH_MODE_DUAL) {
         s->cfg.io[0] = SC_IO_CH1;
         s->cfg.io[1] = SC_IO_CH2;
-        s->vr_idx = 5;   /* 6V 档（s_vranges[5]=8190，波形压缩） */
+        /* Dual 自动 12V 档：6V 档下满幅信号（0-3.1V 单极性向上画）占半屏，
+         * CH1 0V 在中间时波形顶出 canvas 顶部被 clip 成竖线群（看不清形状）；
+         * 12V 档信号占 1/4 屏，CH1 波形 3/8~1/2、CH2 波形 3/4~1 完整可见 */
+        s->vr_idx = 6;   /* 12V 档（s_vranges[6]=16380） */
         int usable = s->canvas_h - 2 * (s->canvas_h / 12);
         s->ch_off[0] = -(usable / 2);   /* CH1 0V 基线 → 垂直中间 */
         s->ch_off[1] = 0;               /* CH2 0V 基线 → 底部 */
