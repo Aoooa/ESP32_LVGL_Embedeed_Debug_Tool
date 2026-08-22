@@ -250,8 +250,9 @@ static void scope_draw(const scope_frame_t *f)
         int v_top = margin + (chh - 2 * margin - v_h) / 2;
         int v_bot = v_top + v_h - 1;
         for (int y = v_top; y <= v_bot; y++) buf[y * cw + vx] = c_bar;
-        /* ch_off[0] 像素 → 显示段起点电压 v_lo（raw） */
-        int v_lo = -(s->ch_off[0] * vfull / usable);
+        /* ch_off[0] 像素 → 显示段起点电压 v_lo（raw）。
+         * 方向：波形上移(ch_off 减小) → v_lo 减小 → 滑块下移（与波形跟手一致） */
+        int v_lo = (s->ch_off[0] * vfull / usable);
         int v_hi = v_lo + vfull;
         int y_hi_v = v_bot - v_hi * v_h / 4095;   /* 高电压 → 小 y */
         int y_lo_v = v_bot - v_lo * v_h / 4095;
