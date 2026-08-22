@@ -50,6 +50,7 @@ static const char *const s_hzoom_strs[] = { "x1", "x2", "x4", "x8" };
 
 /* 前向声明（scope_apply_cfg 在定义前调用） */
 static void scope_refresh_z0_btns(void);
+static void scope_update_z0_pos(void);
 
 /* ── 通道输入 GPIO（ADC1 空闲脚；IO5 板面未引出，改用 9/10） ── */
 #define SC_IO_CH1   9
@@ -206,7 +207,8 @@ static void scope_draw(const scope_frame_t *f)
                            + s->ch_off[c];
                 int y_lo = margin + (usable - 1) - (int)(mn * (uint32_t)(usable - 1) / vfull)
                            + s->ch_off[c];
-                if (y_hi < 0) y_hi = 0;          /* 超范围 clip */
+                if (y_lo < 0 || y_hi >= chh) continue;   /* 波形完全出屏：跳过（防满屏竖线） */
+                if (y_hi < 0) y_hi = 0;          /* 部分出屏 clip */
                 if (y_lo >= chh) y_lo = chh - 1;
                 if (y_lo < y_hi) y_lo = y_hi;
                 uint16_t *p = buf + y_hi * cw + col;
@@ -380,13 +382,16 @@ static void on_hz_btn(lv_event_t *e)
     scope_apply_cfg();
 }
 
-/* 0V 标签按钮拖动：user_data = 通道；dy → 该通道 ch_off（波形跟手上下） */
+/* 0V 标签按钮拖动：仅 V 缩小（vfull>4095）时有效——移动整个波形。
+ * V 放大时禁用（显示段移动用 canvas 直接滚动；拖 0V 标签会把波形移出屏
+ * 触发满屏竖线渲染 bug） */
 static void on_z0_press(lv_event_t *e)
 {
     lv_obj_t *b = lv_event_get_target_obj(e);
     int ch = (int)(intptr_t)lv_obj_get_user_data(b);
     scope_t *s = s_scope;
     if (!s || ch < 0 || ch >= SCOPE_CH_MAX) return;
+    if (s_vranges[s->vr_idx] < 4095) return;   /* V 放大：0V 标签不响应 */
     lv_indev_t *indev = lv_indev_active();
     lv_point_t p;
     lv_indev_get_point(indev, &p);
@@ -400,6 +405,7 @@ static void on_z0_press(lv_event_t *e)
         if (s->ch_off[ch] < -lim) s->ch_off[ch] = -lim;
         s->z0_drag_y[ch] = p.y;
         scope_draw(s->frame);        /* 同步重绘跟手 */
+        scope_update_z0_pos();       /* 标签跟随拖动（不等待 tick） */
     }
 }
 
@@ -420,9 +426,26 @@ static void scope_refresh_z0_btns(void)
     }
 }
 
-/* canvas 拖动：垂直方向始终响应（V 轴移动显示段/波形，跟手）；
- * 水平方向仅 H 放大后可平移（×1 无意义） */
+/* 0V 标签按钮位置跟随各自通道 0V 线（ch_off 移动显示段/波形） */
+static void scope_update_z0_pos(void)
+{
+    scope_t *s = s_scope;
+    if (!s || s->canvas_h <= 0) return;
+    int usable = s->canvas_h - 2 * (s->canvas_h / 12);
+    int z0_base = s->canvas_h / 12 + usable - 1;
+    for (int ch = 0; ch < SCOPE_CH_MAX; ch++) {
+        int z0_y = z0_base + s->ch_off[ch];
+        if (z0_y < 0) z0_y = 0;
+        if (z0_y >= s->canvas_h) z0_y = s->canvas_h - 1;
+        int zx = (ch == 0) ? 2 : s->canvas_w - Z0_HOT_W - 2;
+        lv_obj_set_pos(s->z0_btn[ch], zx, SC_TOP_H + z0_y - Z0_HOT_H / 2);
+    }
+}
+
+/* canvas 拖动：水平仅 H 放大后可平移；垂直仅 V 放大（显示段移动）时响应，
+ * V 缩小/默认时垂直拖动无效（移动波形只能拖 0V 标签）。拖动重绘节流防 LVGL 满载 */
 static int s_canvas_drag_x, s_canvas_drag_y;
+static uint32_t s_canvas_last_draw;
 
 static void on_canvas_press(lv_event_t *e)
 {
@@ -434,10 +457,12 @@ static void on_canvas_press(lv_event_t *e)
     if (lv_event_get_code(e) == LV_EVENT_PRESSED) {
         s_canvas_drag_x = p.x;
         s_canvas_drag_y = p.y;
+        s_canvas_last_draw = 0;
     } else if (lv_event_get_code(e) == LV_EVENT_PRESSING) {
         bool changed = false;
-        /* 垂直：始终响应（波形/显示段跟手上下） */
-        if (p.y != s_canvas_drag_y) {
+        int vfull = s_vranges[s->vr_idx];
+        /* 垂直：仅 V 放大时移动显示段（vfull<4095）；缩小/默认禁用 */
+        if (vfull < 4095 && p.y != s_canvas_drag_y) {
             int dy = p.y - s_canvas_drag_y;
             s->ch_off[0] += dy;
             int lim = s->canvas_h;
@@ -460,7 +485,16 @@ static void on_canvas_press(lv_event_t *e)
                 changed = true;
             }
         }
-        if (changed) scope_draw(s->frame);   /* 同步重绘：跟手 */
+        if (changed) {
+            /* 重绘节流（≥50ms≈20fps）：PSRAM canvas blit ~20-40ms，重绘频率
+             * 超过渲染能力会让 LVGL 任务持续满载 → IDLE0 饿死 → WDT */
+            uint32_t now = lv_tick_get();
+            if (now - s_canvas_last_draw >= 50) {
+                s_canvas_last_draw = now;
+                scope_draw(s->frame);
+                scope_update_z0_pos();   /* 0V 标签跟随拖动 */
+            }
+        }
     }
 }
 
@@ -564,17 +598,7 @@ static void scope_tick(lv_timer_t *t)
         }
         scope_draw(f);
         scope_update_meas(f);
-
-        /* 0V 标签按钮位置跟随各自通道 0V 线（ch_off 移动显示段） */
-        int usable = s->canvas_h - 2 * (s->canvas_h / 12);
-        int z0_base = s->canvas_h / 12 + usable - 1;
-        for (int ch = 0; ch < SCOPE_CH_MAX; ch++) {
-            int z0_y = z0_base + s->ch_off[ch];
-            if (z0_y < 0) z0_y = 0;
-            if (z0_y >= s->canvas_h) z0_y = s->canvas_h - 1;
-            int zx = (ch == 0) ? 2 : s->canvas_w - Z0_HOT_W - 2;
-            lv_obj_set_pos(s->z0_btn[ch], zx, SC_TOP_H + z0_y - Z0_HOT_H / 2);
-        }
+        scope_update_z0_pos();   /* 0V 标签位置跟随各自通道 0V 线 */
     }
     uint32_t dt = lv_tick_get() - t0;
     if (dt > 50) {
