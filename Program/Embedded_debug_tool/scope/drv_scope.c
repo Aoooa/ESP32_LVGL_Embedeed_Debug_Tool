@@ -194,7 +194,6 @@ static void scope_teardown_locked(void)
 esp_err_t drv_scope_init(void)
 {
     if (s_lock) {
-        ESP_LOGI(S_TAG, "init: already initialized (idempotent)");
         return ESP_OK;
     }
 
@@ -203,7 +202,6 @@ esp_err_t drv_scope_init(void)
         ESP_LOGE(S_TAG, "init: mutex create failed");
         return ESP_ERR_NO_MEM;
     }
-    ESP_LOGI(S_TAG, "init: mutex created");
 
     for (int i = 0; i < 10; i++) s_ch_map[i] = -1;
 
@@ -216,7 +214,6 @@ esp_err_t drv_scope_init(void)
             goto err;
         }
     }
-    ESP_LOGI(S_TAG, "init: ring buffers ok (2 x %dKB PSRAM)", (int)(SCOPE_RING_N * sizeof(uint16_t) / 1024));
     s_frame = heap_caps_malloc(sizeof(scope_frame_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_frame) goto err;
     memset(s_frame, 0, sizeof(scope_frame_t));
@@ -235,19 +232,12 @@ esp_err_t drv_scope_init(void)
         .max_store_buf_size = 4 * 1024,
         .conv_frame_size = 512,
     };
-    ESP_LOGI(S_TAG, "init: heap before new_handle: internal free=%u max_block=%u",
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
-    ESP_LOGI(S_TAG, "init: dma-capable free=%u max_block=%u",
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
-             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
     esp_err_t ret = adc_continuous_new_handle(&hdl, &s_handle);
     if (ret != ESP_OK) {
         ESP_LOGE(S_TAG, "init: adc_continuous_new_handle FAILED: %s (internal RAM?)",
                  esp_err_to_name(ret));
         goto err;
     }
-    ESP_LOGI(S_TAG, "init: adc_continuous handle ok (ringbuf 4KB + dma 1KB)");
 
     /* 电压校准（S3：curve fitting；v5.5.3 API = create_scheme + check_scheme） */
     adc_cali_curve_fitting_config_t cali = {
@@ -263,7 +253,6 @@ esp_err_t drv_scope_init(void)
         if (ret != ESP_OK) {
             ESP_LOGW(S_TAG, "init: cali check failed: %s", esp_err_to_name(ret));
         }
-        ESP_LOGI(S_TAG, "init: calibration ok (curve fitting)");
     } else {
         ESP_LOGW(S_TAG, "init: cali scheme failed: %s, fallback raw*3100/4095", esp_err_to_name(ret));
         s_cali = NULL;   /* 校准失败可继续（近似换算） */
@@ -290,7 +279,6 @@ esp_err_t drv_scope_start(const scope_cfg_t *cfg)
 {
     /* 惰性初始化：启动期不占内部 RAM，首次进 Scope 才 init */
     if (!s_lock) {
-        ESP_LOGI(S_TAG, "start: lazy init (first use)");
         esp_err_t ir = drv_scope_init();
         if (ir != ESP_OK) {
             ESP_LOGE(S_TAG, "start: lazy init failed: %s", esp_err_to_name(ir));
@@ -341,7 +329,6 @@ esp_err_t drv_scope_start(const scope_cfg_t *cfg)
                  esp_err_to_name(ret));
         return ret;
     }
-    ESP_LOGI(S_TAG, "start: config ok (%d Hz x%d ch)", cfg->sample_rate_hz, nch);
     ret = adc_continuous_start(s_handle);
     if (ret != ESP_OK) {
         xSemaphoreGive(s_lock);
@@ -367,9 +354,6 @@ esp_err_t drv_scope_start(const scope_cfg_t *cfg)
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
         return ESP_ERR_NO_MEM;
     }
-    ESP_LOGI(S_TAG, "start: running (%d Hz, %d ch, trig=%s/%d mode=%d, task ok)",
-             cfg->sample_rate_hz, nch, cfg->edge == SCOPE_EDGE_RISING ? "rise" : "fall",
-             cfg->trigger_level, cfg->trig_mode);
     xSemaphoreGive(s_lock);
     return ESP_OK;
 }
@@ -381,7 +365,6 @@ esp_err_t drv_scope_stop(void)
     scope_teardown_locked();
     if (s_frame) s_frame->running = false;
     xSemaphoreGive(s_lock);
-    ESP_LOGI(S_TAG, "stopped");
     return ESP_OK;
 }
 
@@ -410,7 +393,6 @@ esp_err_t drv_scope_deinit(void)
     xSemaphoreGive(s_lock);
     vSemaphoreDelete(s_lock);
     s_lock = NULL;
-    ESP_LOGI(S_TAG, "deinit: resources released");
     return ESP_OK;
 }
 

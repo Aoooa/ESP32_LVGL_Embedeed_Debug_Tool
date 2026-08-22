@@ -367,7 +367,6 @@ static void on_ch_btn(lv_event_t *e)
     (void)e;
     scope_t *s = s_scope;
     if (!s) return;
-    ESP_LOGI(S_TAG, "btn: CH cycle");
     s->ch_mode = (scope_ch_mode_t)((s->ch_mode + 1) % SC_CH_MODE_N);
     /* 通用复原：H 缩放、平移、手势 */
     s->hz_idx = 0;
@@ -376,10 +375,8 @@ static void on_ch_btn(lv_event_t *e)
     if (s->ch_mode == SC_CH_MODE_DUAL) {
         s->cfg.io[0] = SC_IO_CH1;
         s->cfg.io[1] = SC_IO_CH2;
-        /* Dual 自动 12V 档：6V 档下满幅信号（0-3.1V 单极性向上画）占半屏，
-         * CH1 0V 在中间时波形顶出 canvas 顶部被 clip 成竖线群（看不清形状）；
-         * 12V 档信号占 1/4 屏，CH1 波形 3/8~1/2、CH2 波形 3/4~1 完整可见 */
-        s->vr_idx = 6;   /* 12V 档（s_vranges[6]=16380） */
+        /* Dual 自动 6V 档：波形压缩留出上下空间，CH1 中间/CH2 底部分离 */
+        s->vr_idx = 5;   /* 6V 档（s_vranges[5]=8190） */
         int usable = s->canvas_h - 2 * (s->canvas_h / 12);
         s->ch_off[0] = -(usable / 2);   /* CH1 0V 基线 → 垂直中间 */
         s->ch_off[1] = 0;               /* CH2 0V 基线 → 底部 */
@@ -405,7 +402,6 @@ static void on_vr_btn(lv_event_t *e)
     (void)e;
     scope_t *s = s_scope;
     if (!s) return;
-    ESP_LOGI(S_TAG, "btn: V-range cycle");
     s->vr_idx = (s->vr_idx + 1) % SC_VRANGE_N;
     /* 切档复位偏移：放大/缩小语义不同，残留偏移会让 0V 标签/波形错位 */
     s->ch_off[0] = s->ch_off[1] = 0;
@@ -422,7 +418,6 @@ static void on_hz_btn(lv_event_t *e)
     (void)e;
     scope_t *s = s_scope;
     if (!s) return;
-    ESP_LOGI(S_TAG, "btn: H-zoom cycle");
     s->hz_idx = (s->hz_idx + 1) % SC_HZOOM_N;
     s->hz_pan = 0;                  /* 换档重新居中（触发点为中心） */
     gesture_set_global_swipe(s->hz_idx == 0);
@@ -465,7 +460,6 @@ static void on_rst_btn(lv_event_t *e)
     (void)e;
     scope_t *s = s_scope;
     if (!s) return;
-    ESP_LOGI(S_TAG, "btn: RST (reset zoom)");
     s->vr_idx = 0;
     s->hz_idx = 0;
     s->hz_pan = 0;
@@ -575,7 +569,6 @@ static void on_run_btn(lv_event_t *e)
     (void)e;
     scope_t *s = s_scope;
     if (!s) return;
-    ESP_LOGI(S_TAG, "btn: RUN/STOP");
     if (s->running) {
         drv_scope_stop();
         s->running = false;
@@ -597,7 +590,6 @@ static void on_trig_btn(lv_event_t *e)
     (void)e;
     scope_t *s = s_scope;
     if (!s) return;
-    ESP_LOGI(S_TAG, "btn: TRIG cycle");
     s->cfg.trig_mode = (scope_trig_mode_t)(((int)s->cfg.trig_mode + 1) % 3);
     s->last_frameno = 0;
     scope_draw(NULL);   /* 切换采样模式清空当前波形 */
@@ -610,7 +602,6 @@ static void on_rate_done(void *ctx, bool ok, int value)
     scope_t *s = ctx;
     if (!s) return;
     if (ok) {
-        ESP_LOGI(S_TAG, "btn: BASE done rate=%d", value);
         s->cfg.sample_rate_hz = value;
         scope_apply_cfg();
     }
@@ -621,7 +612,6 @@ static void on_rate_btn(lv_event_t *e)
     (void)e;
     scope_t *s = s_scope;
     if (!s) return;
-    ESP_LOGI(S_TAG, "btn: BASE (sample rate)");
     num_input_show(s->root, s->cfg.sample_rate_hz, SC_RATE_MIN, SC_RATE_MAX, false,
                    on_rate_done, s);
 }
@@ -631,7 +621,6 @@ static void on_v_done(void *ctx, bool ok, int value)
     scope_t *s = ctx;
     if (!s) return;
     if (ok) {
-        ESP_LOGI(S_TAG, "btn: V done level=%d", value);
         s->cfg.trigger_level = value;
         scope_apply_cfg();
     }
@@ -642,7 +631,6 @@ static void on_v_btn(lv_event_t *e)
     (void)e;
     scope_t *s = s_scope;
     if (!s) return;
-    ESP_LOGI(S_TAG, "btn: V (trigger level)");
     num_input_show(s->root, s->cfg.trigger_level, 0, 4095, false, on_v_done, s);
 }
 
@@ -653,8 +641,6 @@ static void scope_tick(lv_timer_t *t)
     scope_t *s = s_scope;
     if (!s) return;
     if (num_input_is_active()) return;
-
-    uint32_t t0 = lv_tick_get();
     if (drv_scope_get_frame(s->frame) != ESP_OK) {
         ESP_LOGW(S_TAG, "tick: get_frame failed");
         return;
@@ -662,11 +648,6 @@ static void scope_tick(lv_timer_t *t)
     const scope_frame_t *f = s->frame;
 
     if (f->frameno != s->last_frameno) {
-        /* 首帧打印一次（采集链路是否出数） */
-        if (s->last_frameno == 0) {
-            ESP_LOGI(S_TAG, "tick: first frame #%u (%d pts, %d ch)", f->frameno,
-                     f->points, f->channels);
-        }
         s->last_frameno = f->frameno;
         if (f->running != s->running) {
             s->running = f->running;
@@ -675,10 +656,6 @@ static void scope_tick(lv_timer_t *t)
         scope_draw(f);
         scope_update_meas(f);
         scope_update_z0_pos();   /* 0V 标签位置跟随各自通道 0V 线 */
-    }
-    uint32_t dt = lv_tick_get() - t0;
-    if (dt > 50) {
-        ESP_LOGW(S_TAG, "tick: slow cycle %ums (draw too heavy?)", dt);
     }
 }
 
@@ -907,9 +884,6 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
     }
 
     scope_relayout();
-    ESP_LOGI(S_TAG, "create: UI built (%dx%d, canvas %dx%d, %dKB PSRAM)", sc_screen_w(),
-             sc_screen_h(), s->canvas_w, s->canvas_h,
-             (int)(s->canvas_w * s->canvas_h * 2 / 1024));
 
     s->tick = lv_timer_create(scope_tick, 100, NULL);
 
@@ -917,7 +891,6 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
     esp_err_t sr = drv_scope_start(&s->cfg);
     if (sr == ESP_OK) {
         s->running = true;
-        ESP_LOGI(S_TAG, "create: acquisition started");
     } else {
         ESP_LOGE(S_TAG, "create: drv_scope_start FAILED: %s (UI stays, STOP state)",
                  esp_err_to_name(sr));
@@ -930,8 +903,6 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
         lv_obj_move_foreground(s->z0_btn[ch]);
     }
     lv_obj_move_foreground(s->rst_btn);
-
-    ESP_LOGI(S_TAG, "scope UI created (%dx%d)", sc_screen_w(), sc_screen_h());
     return root;
 }
 
