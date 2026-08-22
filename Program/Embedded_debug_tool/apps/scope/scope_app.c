@@ -326,8 +326,8 @@ static void scope_apply_cfg(void)
 
 /* 通道键：CH1 → CH2 → Dual 循环（切换后无条件重启采集，刷新波形、
  * 重新开始当前测量模式——SINGLE 重新等触发）。
- * Dual 自动布局：V 档缩到 6V + CH1 0V 基线移上部 1/4、CH2 移下部 3/4，
- * 两波形上下分离不重叠；切回单通道复位偏移 */
+ * 切换时 V/H 缩放、偏移全部复原：
+ *   Dual 自动 6V 档 + CH1/CH2 0V 基线上下分离；单通道 3.1V 默认 + 偏移清零 */
 static void on_ch_btn(lv_event_t *e)
 {
     (void)e;
@@ -335,6 +335,10 @@ static void on_ch_btn(lv_event_t *e)
     if (!s) return;
     ESP_LOGI(S_TAG, "btn: CH cycle");
     s->ch_mode = (scope_ch_mode_t)((s->ch_mode + 1) % SC_CH_MODE_N);
+    /* 通用复原：H 缩放、平移、手势 */
+    s->hz_idx = 0;
+    s->hz_pan = 0;
+    gesture_set_global_swipe(true);
     if (s->ch_mode == SC_CH_MODE_DUAL) {
         s->cfg.io[0] = SC_IO_CH1;
         s->cfg.io[1] = SC_IO_CH2;
@@ -345,7 +349,8 @@ static void on_ch_btn(lv_event_t *e)
     } else {
         s->cfg.io[0] = (s->ch_mode == SC_CH_MODE_CH1) ? SC_IO_CH1 : SC_IO_CH2;
         s->cfg.io[1] = -1;
-        s->ch_off[0] = s->ch_off[1] = 0;   /* 单通道复位自动偏移 */
+        s->vr_idx = 0;               /* V 缩放复原（3.1V 默认） */
+        s->ch_off[0] = s->ch_off[1] = 0;   /* 偏移复原 */
     }
     s->last_frameno = 0;   /* 等新帧 */
     scope_draw(NULL);      /* 立即清空 canvas（空白网格），避免旧通道波形残留 */
@@ -393,6 +398,7 @@ static void on_z0_press(lv_event_t *e)
     scope_t *s = s_scope;
     if (!s || ch < 0 || ch >= SCOPE_CH_MAX) return;
     if (s_vranges[s->vr_idx] < 4095) return;   /* V 放大：0V 标签不响应 */
+    if (s->ch_mode != SC_CH_MODE_DUAL) ch = 0;   /* 单通道：波形用 ch_off[0] */
     lv_indev_t *indev = lv_indev_active();
     lv_point_t p;
     lv_indev_get_point(indev, &p);
@@ -435,7 +441,9 @@ static void scope_update_z0_pos(void)
     int usable = s->canvas_h - 2 * (s->canvas_h / 12);
     int z0_base = s->canvas_h / 12 + usable - 1;
     for (int ch = 0; ch < SCOPE_CH_MAX; ch++) {
-        int z0_y = z0_base + s->ch_off[ch];
+        /* 单通道：波形用 ch_off[0]，标签统一跟随 ch_off[0]（否则 CH2 标签错位） */
+        int off_idx = (s->ch_mode != SC_CH_MODE_DUAL) ? 0 : ch;
+        int z0_y = z0_base + s->ch_off[off_idx];
         if (z0_y < 0) z0_y = 0;
         if (z0_y >= s->canvas_h) z0_y = s->canvas_h - 1;
         int zx = (ch == 0) ? 2 : s->canvas_w - Z0_HOT_W - 2;
@@ -462,13 +470,16 @@ static void on_canvas_press(lv_event_t *e)
     } else if (lv_event_get_code(e) == LV_EVENT_PRESSING) {
         bool changed = false;
         int vfull = s_vranges[s->vr_idx];
-        /* 垂直：仅 V 放大时移动显示段（vfull<4095）；缩小/默认禁用 */
+        /* 垂直：仅 V 放大时移动显示段（vfull<4095）；缩小/默认禁用。
+         * 显示段 v_lo = ch_off*vfull/usable 必须 ∈ [0, 4095-vfull]：
+         * ch_off=0 → 看 0V 底部；ch_off=max → 看满量程顶部（波峰可见） */
         if (vfull < 4095 && p.y != s_canvas_drag_y) {
             int dy = p.y - s_canvas_drag_y;
             s->ch_off[0] += dy;
-            int lim = s->canvas_h;
-            if (s->ch_off[0] > lim) s->ch_off[0] = lim;
-            if (s->ch_off[0] < -lim) s->ch_off[0] = -lim;
+            int usable = s->canvas_h - 2 * (s->canvas_h / 12);
+            int ch_max = usable > 0 ? (4095 - vfull) * usable / vfull : 0;
+            if (s->ch_off[0] < 0) s->ch_off[0] = 0;
+            if (s->ch_off[0] > ch_max) s->ch_off[0] = ch_max;
             s_canvas_drag_y = p.y;
             changed = true;
         }
