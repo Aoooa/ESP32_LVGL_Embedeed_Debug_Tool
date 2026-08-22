@@ -30,7 +30,7 @@
 
 /* ── 布局 ── */
 #define SC_TOP_H    28
-#define SC_MEAS_H   32
+#define SC_MEAS_H   44   /* 测量栏（2 行测量 + 1 行格子单位） */
 #define SC_BAR_H    40
 
 /* ── 采样率：num_input 输入（官方合法 611..83333 SPS）。
@@ -99,7 +99,7 @@ typedef struct {
     lv_color_t *canvas_buf;
     int canvas_w, canvas_h;
     /* 测量栏 */
-    lv_obj_t *m_lbl1, *m_lbl2;
+    lv_obj_t *m_lbl1, *m_lbl2, *m_lbl3;   /* 测量 2 行 + 格子单位 1 行 */
     /* 底栏 */
     lv_obj_t *btn[4];
     lv_obj_t *lbl[4];
@@ -239,8 +239,9 @@ static void scope_draw(const scope_frame_t *f)
         }
     }
 
-    /* 触发线：仅左侧短标记（不横贯全屏，避免与波形混淆为第二通道） */
-    int ty = margin + (usable - 1) - (int)((uint32_t)s->cfg.trigger_level * (usable - 1) / vfull);
+    /* 触发线：仅左侧短标记（不横贯全屏）。跟随主通道波形移动（加 ch_off[0]） */
+    int ty = margin + (usable - 1) - (int)((uint32_t)s->cfg.trigger_level * (usable - 1) / vfull)
+             + s->ch_off[0];
     if (ty < 0) ty = 0;
     if (ty >= chh) ty = chh - 1;
     for (int x = 0; x < 14 && x < cw; x++) buf[ty * cw + x] = c_trig;
@@ -290,6 +291,26 @@ static void scope_update_meas(const scope_frame_t *f)
     snprintf(b2, sizeof(b2), "DUTY %.1f%%  PW %.3fms", f->duty_pct, f->pw_ms);
     lv_label_set_text(s->m_lbl1, b1);
     lv_label_set_text(s->m_lbl2, b2);
+
+    /* 格子单位：垂直 V/div（8 格），水平 Time/div（10 格） */
+    int vfull = s_vranges[s->vr_idx];
+    float vper = (float)vfull * 3.1f / 4095.0f / 8.0f;
+    float tper = (float)SCOPE_FRAME_POINTS / s->cfg.sample_rate_hz / 10.0f;
+    char b3[48];
+    if (vper >= 0.1f) {
+        snprintf(b3, sizeof(b3), "%.2fV/div  ", vper);
+    } else {
+        snprintf(b3, sizeof(b3), "%.0fmV/div  ", vper * 1000.0f);
+    }
+    size_t bl = strlen(b3);
+    if (tper >= 1.0f) {
+        snprintf(b3 + bl, sizeof(b3) - bl, "%.1fs/div", tper);
+    } else if (tper >= 0.001f) {
+        snprintf(b3 + bl, sizeof(b3) - bl, "%.2fms/div", tper * 1000.0f);
+    } else {
+        snprintf(b3 + bl, sizeof(b3) - bl, "%.1fus/div", tper * 1000000.0f);
+    }
+    lv_label_set_text(s->m_lbl3, b3);
 }
 
 /* ── 状态点 + 键文本刷新 ── */
@@ -357,8 +378,8 @@ static void on_ch_btn(lv_event_t *e)
         s->cfg.io[1] = SC_IO_CH2;
         s->vr_idx = 5;   /* 6V 档（s_vranges[5]=8190，波形压缩） */
         int usable = s->canvas_h - 2 * (s->canvas_h / 12);
-        s->ch_off[0] = -(usable * 3 / 4);   /* CH1 0V 基线 → 上部 1/4 */
-        s->ch_off[1] = -(usable * 1 / 4);   /* CH2 0V 基线 → 下部 3/4 */
+        s->ch_off[0] = -(usable / 2);   /* CH1 0V 基线 → 垂直中间 */
+        s->ch_off[1] = 0;               /* CH2 0V 基线 → 底部 */
     } else {
         s->cfg.io[0] = (s->ch_mode == SC_CH_MODE_CH1) ? SC_IO_CH1 : SC_IO_CH2;
         s->cfg.io[1] = -1;
@@ -383,6 +404,10 @@ static void on_vr_btn(lv_event_t *e)
     if (!s) return;
     ESP_LOGI(S_TAG, "btn: V-range cycle");
     s->vr_idx = (s->vr_idx + 1) % SC_VRANGE_N;
+    /* 切档复位偏移：放大/缩小语义不同，残留偏移会让 0V 标签/波形错位 */
+    s->ch_off[0] = s->ch_off[1] = 0;
+    s->last_frameno = 0;
+    scope_draw(NULL);
     scope_apply_cfg();
 }
 
@@ -410,7 +435,7 @@ static void on_z0_press(lv_event_t *e)
     int ch = (int)(intptr_t)lv_obj_get_user_data(b);
     scope_t *s = s_scope;
     if (!s || ch < 0 || ch >= SCOPE_CH_MAX) return;
-    if (s_vranges[s->vr_idx] < 4095) return;   /* V 放大：0V 标签不响应 */
+    if (s_vranges[s->vr_idx] <= 4095) return;   /* 默认/放大：0V 标签不响应 */
     if (s->ch_mode != SC_CH_MODE_DUAL) ch = 0;   /* 单通道：波形用 ch_off[0] */
     lv_indev_t *indev = lv_indev_active();
     lv_point_t p;
@@ -715,8 +740,9 @@ static void scope_relayout(void)
     lv_obj_set_pos(s->rst_btn, (cw - RST_HOT_W) / 2, SC_TOP_H + chh - RST_HOT_H - 6);
     lv_obj_set_size(s->rst_btn, RST_HOT_W, RST_HOT_H);
 
-    lv_obj_set_pos(s->m_lbl1, 8, SC_TOP_H + s->canvas_h + 4);
-    lv_obj_set_pos(s->m_lbl2, 8, SC_TOP_H + s->canvas_h + 18);
+    lv_obj_set_pos(s->m_lbl1, 8, SC_TOP_H + s->canvas_h + 2);
+    lv_obj_set_pos(s->m_lbl2, 8, SC_TOP_H + s->canvas_h + 17);
+    lv_obj_set_pos(s->m_lbl3, 8, SC_TOP_H + s->canvas_h + 32);
 
     int bw = (sw - 12 - 15) / 4;
     for (int i = 0; i < 4; i++) {
@@ -862,6 +888,11 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
     lv_obj_set_style_text_font(ml2, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(ml2, lv_color_hex(SC_MEAS), 0);
     s->m_lbl2 = ml2;
+    lv_obj_t *ml3 = lv_label_create(root);
+    lv_label_set_text(ml3, "--V/div  --ms/div");
+    lv_obj_set_style_text_font(ml3, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(ml3, lv_color_hex(SC_MEAS), 0);
+    s->m_lbl3 = ml3;
 
     const char *btns[] = { "RUN", "AUTO", "80k", "V" };
     lv_event_cb_t cbs[] = { on_run_btn, on_trig_btn, on_rate_btn, on_v_btn };
