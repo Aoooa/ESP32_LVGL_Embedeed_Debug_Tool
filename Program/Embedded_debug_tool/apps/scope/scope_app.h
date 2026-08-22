@@ -34,4 +34,7 @@ void scope_rotate(lv_obj_t *root, int deg);
 /* 调试事件（测试模块用）：打印当前配置 */
 void scope_debug_event(lv_obj_t *root, int evt);
 
+/* 进入动画完成（launcher 回调）：此时才启动采集业务（滑入期间只渲染 UI） */
+void scope_entered(lv_obj_t *root);
+
 #endif /* SCOPE_APP_H */

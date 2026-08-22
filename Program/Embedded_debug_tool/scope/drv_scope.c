@@ -17,7 +17,7 @@
 #define S_TAG "drv_scope"
 
 #define SCOPE_ATTEN        ADC_ATTEN_DB_12   /* 满量程 ~3.1V（0..3.1V 单极性） */
-#define SCOPE_FRAME_BYTES  512               /* read_parse 每帧最大样本数 */
+#define SCOPE_FRAME_BYTES  1024              /* read_parse 每帧最大样本数 */
 #define SCOPE_READ_TIMEOUT 100               /* 拉帧阻塞超时 ms */
 #define SCOPE_PRE_TRIG     512               /* 预触发 25%（2048×25%） */
 #define SCOPE_POST_TRIG    (SCOPE_FRAME_POINTS - SCOPE_PRE_TRIG)
@@ -223,14 +223,14 @@ esp_err_t drv_scope_init(void)
                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_parse_buf) goto err;
 
-    /* adc_continuous 句柄。内部 RAM 需求压到极限（实测本机启动后：
-     *   internal free~15KB / max_block~6.5KB；DMA free~8KB / max_block~4KB。
-     *   rx_dma_buf = INTERNAL_BUF_NUM(5) × conv_frame_size，必须 < 4KB：
-     *   conv_frame_size 512 → rx_dma_buf 2.5KB（conv 512 字节 = 128 样本/帧，
-     *   DMA 中断 80k/128≈625Hz，可接受）；ringbuf 4KB < 6.5KB 上限。 */
+    /* adc_continuous 句柄。内部 RAM 需求：现在 httpd 栈移 PSRAM 后
+     *   DMA free~20KB / max_block~13.3KB（实测），较开发时（~8KB/4KB）翻倍：
+     *   conv_frame_size 1024 → rx_dma_buf = INTERNAL_BUF_NUM(5)×1024 = 5KB，
+     *   DMA 中断 80k/256≈312Hz（较 512 时减半，CPU 省一半）；
+     *   store buf 8KB + rx_dma 5KB = 13KB ≤ 13.3KB 上限（留余量不超）。 */
     adc_continuous_handle_cfg_t hdl = {
-        .max_store_buf_size = 4 * 1024,
-        .conv_frame_size = 512,
+        .max_store_buf_size = 8 * 1024,
+        .conv_frame_size = 1024,
     };
     esp_err_t ret = adc_continuous_new_handle(&hdl, &s_handle);
     if (ret != ESP_OK) {

@@ -19,6 +19,10 @@
 
 void app_display_start(void);
 
+/* 构建桌面 UI（launcher）。上电先黑屏：等 main.c 全部初始化完成后调用，
+ * 一次刷新到位避免闪烁。须在 LVGL 线程/持锁上下文调用 */
+void app_display_build_ui(void);
+
 /* 运行时旋转 0/90/180/270 度（须在 LVGL 线程/持锁上下文调用） */
 void app_display_set_rotation(int deg);
 

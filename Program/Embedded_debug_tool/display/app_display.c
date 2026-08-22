@@ -271,6 +271,16 @@ void app_display_start(void)
     ESP_LOGI(TAG, "Serial monitor UI ready");
 }
 
+/* 构建桌面 UI（launcher）。从 app_display_start 拆出：上电先保持黑屏，
+ * 等 main.c 全部初始化（网络/SD/任务）完成后调用，一次刷新到位避免闪烁 */
+void app_display_build_ui(void)
+{
+    if (esp_lv_adapter_lock(-1) == ESP_OK) {
+        build_ui();
+        esp_lv_adapter_unlock();
+    }
+}
+
 
 /* SD 挂载后异步加载中文字体（LVGL 线程执行，加载完成后通知当前 APP 刷新） */
 static void sd_font_retry_timer_cb(lv_timer_t *t)

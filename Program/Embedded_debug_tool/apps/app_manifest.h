@@ -31,6 +31,7 @@ typedef struct app_manifest {
     void (*rotate)(void *app, int deg);
     void (*refresh)(void *app);
     void (*debug_event)(void *app, int evt);
+    void (*entered)(void *app);   /* 可选：进入动画完成时调用（APP 启动重业务时延迟到此处） */
 } app_manifest_t;
 
 /* 全部 APP 描述符表（索引 = launch_app_id_t） */

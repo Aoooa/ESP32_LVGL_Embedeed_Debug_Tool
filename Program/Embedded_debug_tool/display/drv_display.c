@@ -112,6 +112,28 @@ void drv_display_init(drv_display_t *disp)
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(disp->panel, true));
     ESP_LOGI(TAG, "LCD ST7789 ready: %dx%d", DRV_LCD_H_RES, DRV_LCD_V_RES);
 
+    /* 上电先黑屏：面板 RAM 初始未定义（可能白噪），在桌面渲染前立即填充纯黑，
+     * 避免闪屏。ST7789 开了 invert_color：写 0xFFFF 显示为黑。
+     * PSRAM 源缓冲分块提交（每块 ≤ max_transfer_sz=7.5KB = 16 行）：
+     * spi_master 对 PSRAM 源要在 ISR 分配内部 DMA priv buffer（=事务大小），
+     * 整帧 153.6KB 一次提交会分配失败（开发时实测过） */
+    #define LCD_BLACK_BLOCK_H 16   /* 240px×16 行 ×2B = 7680B ≤ max_transfer_sz */
+    uint16_t *fb = heap_caps_malloc((size_t)DRV_LCD_H_RES * LCD_BLACK_BLOCK_H * 2,
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (fb) {
+        memset(fb, 0xFF, (size_t)DRV_LCD_H_RES * LCD_BLACK_BLOCK_H * 2);
+        for (int y = 0; y < DRV_LCD_V_RES; y += LCD_BLACK_BLOCK_H) {
+            esp_err_t err = esp_lcd_panel_draw_bitmap(disp->panel, 0, y,
+                                                      DRV_LCD_H_RES,
+                                                      y + LCD_BLACK_BLOCK_H, fb);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "black fill block y=%d failed: %s", y, esp_err_to_name(err));
+                break;
+            }
+        }
+        heap_caps_free(fb);
+    }
+
     s_disp = *disp;   /* 全部初始化完成后保存全局句柄（滚动命令用） */
 
     /* I2C 总线 */

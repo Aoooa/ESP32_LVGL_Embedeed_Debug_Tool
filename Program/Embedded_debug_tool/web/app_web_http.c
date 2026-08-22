@@ -180,7 +180,7 @@ void app_web_start(void)
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.max_uri_handlers = 8;
-    config.stack_size = 16384;
+    config.stack_size = 4096;      /* word 单位（xTaskCreate 语义）= 16KB；实测峰值 ~5.4KB，留足余量 */
     config.lru_purge_enable = true;
     config.max_open_sockets = 5;   /* 实际并发：1 页面 + 2 WS；受 LWIP_MAX_SOCKETS 约束 */
     config.task_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;  /* httpd 16KB 栈移 PSRAM，省内部 RAM */

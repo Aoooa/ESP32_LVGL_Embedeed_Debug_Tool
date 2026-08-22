@@ -15,7 +15,8 @@
 #include "drv_sdcard.h"
 #include "drv_wave.h"
 #include "esp_lv_adapter.h"
-#include "esp_heap_caps.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static uart_bridge_t s_bridge1 = {
     .port = UART_NUM_1, .tx_pin = 2, .rx_pin = 4,
@@ -61,8 +62,7 @@ void app_main(void)
 #endif
     app_web_start();
 
-    /* 先建 UI（文件浏览器显示"SD card not ready"），SD 挂载成功后通知刷新。
-     * SD 与 LCD 共享 SPI2 总线：挂载/枚举期间持 LVGL 锁，独占总线防并发 */
+    /* 先初始化显示平台（保持黑屏，暂不建 UI），SD 挂载完成后一次刷新 */
     app_display_start();
 
     /* APP 回调测试（交付默认关闭；启用：CMakeLists 取消 app_test.c 注释 + 此处改 #if 1） */
@@ -86,20 +86,13 @@ void app_main(void)
     xTaskCreateWithCaps(app_uart_fwd_task, "fwd1", 4096, &s_bridge1, 5, NULL, MALLOC_CAP_SPIRAM);
     xTaskCreateWithCaps(app_uart_fwd_task, "fwd2", 4096, &s_bridge2, 5, NULL, MALLOC_CAP_SPIRAM);
 
+    /* 全部初始化完成 → 一次构建桌面并刷新（上电黑屏 → 桌面，无中间闪烁） */
+    app_display_build_ui();
+
     printf("\n=== Ready ===\n");
     printf(" WiFi: Embedded-debug-tool\n");
     printf(" Web:  http://192.168.4.1/\n");
     printf(" UART1: http://192.168.4.1/page?uart=0  TCP :8080\n");
     printf(" UART2: http://192.168.4.1/page?uart=1  TCP :8081\n\n");
-    fflush(stdout);
-
-    /* 内存诊断（官方 esp_heap_caps API，启动后快照） */
-    printf("MEM internal free=%d largest=%d | DMA free=%d largest=%d | PSRAM free=%d largest=%d\n",
-           (int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-           (int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
-           (int)heap_caps_get_free_size(MALLOC_CAP_DMA),
-           (int)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
-           (int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-           (int)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
     fflush(stdout);
 }

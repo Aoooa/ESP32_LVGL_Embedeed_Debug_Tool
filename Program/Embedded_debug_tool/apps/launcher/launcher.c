@@ -454,6 +454,7 @@ const app_manifest_t app_manifests[LAUNCH_APP_COUNT] = {
         .rotate = NULL,
         .refresh = (void (*)(void *))reader_app_refresh,
         .debug_event = (void (*)(void *, int))reader_app_debug_event,
+        .entered = (void (*)(void *))reader_app_entered,
     },
     [LAUNCH_APP_UART] = {
         .id = LAUNCH_APP_UART,
@@ -514,6 +515,7 @@ const app_manifest_t app_manifests[LAUNCH_APP_COUNT] = {
         .rotate = (void (*)(void *, int))scope_rotate,
         .refresh = NULL,
         .debug_event = (void (*)(void *, int))scope_debug_event,
+        .entered = (void (*)(void *))scope_entered,
     },
 };
 
@@ -529,6 +531,46 @@ static const char *s_launch_arg;   /* 最近一次 launch 的 arg（launch 内�
 const char *launcher_app_get_arg(void)
 {
     return s_launch_arg;
+}
+
+/* ── APP 转场动画：新 APP 从右滑入（200ms） ──
+ * 官方 lv_anim：APP root x 从 +屏宽 → 0（右滑入）。
+ * 不做背景渐黑遮罩（实测滑动中全屏遮罩动画加剧卡顿）。
+ * 完成后通知栈顶 APP 启动业务（entered 回调，可 NULL）。 */
+#define APP_ENTER_MS 200
+
+static void launcher_enter_x_cb(void *var, int32_t v)
+{
+    lv_obj_set_x((lv_obj_t *)var, v);
+}
+
+static void launcher_enter_done(lv_anim_t *a)
+{
+    (void)a;
+    /* 进入动画完成 → 通知栈顶 APP 启动业务（entered 回调，可 NULL）。
+     * 动画期间只渲染 UI；业务（采集/扫描等）延迟到这里执行。 */
+    app_slot_t *top = stack_top();
+    if (top && top->m && top->m->entered) {
+        top->m->entered(top->app);
+    }
+}
+
+static void launcher_play_enter_anim(lv_obj_t *app_root)
+{
+    lv_display_t *disp = lv_display_get_default();
+    int sw = lv_display_get_horizontal_resolution(disp);
+
+    /* APP 从右滑入 */
+    lv_obj_set_x(app_root, sw);
+    lv_anim_t a1;
+    lv_anim_init(&a1);
+    lv_anim_set_var(&a1, app_root);
+    lv_anim_set_exec_cb(&a1, launcher_enter_x_cb);
+    lv_anim_set_values(&a1, sw, 0);
+    lv_anim_set_duration(&a1, APP_ENTER_MS);
+    lv_anim_set_path_cb(&a1, lv_anim_path_ease_out);
+    lv_anim_set_completed_cb(&a1, launcher_enter_done);
+    lv_anim_start(&a1);
 }
 
 void launcher_app_launch(launch_app_id_t id, const char *arg)
@@ -547,9 +589,18 @@ void launcher_app_launch_with_cb(launch_app_id_t id, const char *arg,
     const app_manifest_t *m = &app_manifests[id];
     if (!m->launch) return;
     app_slot_t *slot = &s_stack[s_depth];
+    /* 转场动画：launch 前记录 child 数。新 APP root = launch 后**第一个**新增的
+     * 顶层对象（各 APP 先创建 root；个别 APP 如 DAPLink 的 dropdown 展开列表
+     * 也挂 screen——LVGL 官方 lv_dropdown.c:703，必须取第一个而非最后一个） */
+    lv_obj_t *scr = lv_screen_active();
+    uint32_t old_child_cnt = lv_obj_get_child_count(scr);
     s_launch_arg = arg;   /* APP launch 内调用 launcher_app_get_arg() 获取 */
-    slot->app = m->launch(lv_screen_active(), launcher_app_close, NULL);
+    slot->app = m->launch(scr, launcher_app_close, NULL);
     s_launch_arg = NULL;
+    if (lv_obj_get_child_count(scr) > old_child_cnt) {
+        lv_obj_t *app_root = lv_obj_get_child(scr, (int32_t)old_child_cnt);
+        launcher_play_enter_anim(app_root);
+    }
     slot->m = m;
     slot->result_cb = on_result;   /* 本 APP 关闭时回传结果给启动方 */
     slot->result_ctx = ctx;

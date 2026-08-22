@@ -36,4 +36,7 @@ void reader_app_refresh(reader_app_t *app);
 /* 调试事件（测试模块用）：打印内部状态 */
 void reader_app_debug_event(reader_app_t *app, int evt);
 
+/* 进入动画完成（launcher 回调）：此时才扫描书架/打开文件（滑入期间只渲染 UI） */
+void reader_app_entered(reader_app_t *app);
+
 #endif /* READER_APP_H */

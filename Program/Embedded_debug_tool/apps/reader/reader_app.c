@@ -327,21 +327,29 @@ reader_app_t *reader_app_create(lv_obj_t *parent, reader_app_back_cb_t back_cb, 
         reader_view_set_back_cb(app->rv, NULL, NULL);   /* 返回 = 仅关闭覆盖层，留在书架 */
     }
 
-    /* 模式分发：arg=NULL 书架模式（扫描）；arg=路径 直接打开（跳过书架） */
+    /* 业务（扫描书架 / 直接打开文件）延迟到进入动画完成后（reader_app_entered），
+     * 滑入期间只渲染 UI。direct-open 需要父对象已布局，entered 在动画完成
+     * （~300ms 后）调用时布局早已完成。 */
+    return app;
+}
+
+/* 进入动画完成（launcher 回调）：扫描书架或直接打开文件 */
+void reader_app_entered(reader_app_t *app)
+{
+    if (!app) return;
+
     const char *arg = launcher_app_get_arg();
     if (arg && *arg) {
         app->direct_mode = true;
         ESP_LOGI("reader_app", "direct-open mode: %s", arg);
-        /* 强制布局：flow_view 视口宽度依赖父对象已布局尺寸，
-         * create 内立即 open 时 pct(100%) 尚未解析，否则位图宽度错误（显示一半） */
-        lv_obj_update_layout(root);
+        /* 强制布局：flow_view 视口宽度依赖父对象已布局尺寸 */
+        lv_obj_update_layout(app->root);
         if (app->rv) {
             if (!reader_view_open(app->rv, arg)) {
                 ESP_LOGW("reader_app", "direct-open failed: %s", arg);
                 /* 打开失败（空文件等）：隐藏书架 UI 防闪现，延迟弹栈返回来源 APP。
-                 * 不能立即调 back_cb：launcher 尚未把本 APP 入栈（create 返回后才入栈），
-                 * 立即弹栈会误弹下层来源 APP。 */
-                lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
+                 * entered 在动画完成（launcher 已入栈）后调用，可安全弹栈。 */
+                lv_obj_add_flag(app->root, LV_OBJ_FLAG_HIDDEN);
                 app->defer_timer = lv_timer_create(ra_open_fail_back, 1, app);
                 lv_timer_set_repeat_count(app->defer_timer, 1);
             }
@@ -349,8 +357,6 @@ reader_app_t *reader_app_create(lv_obj_t *parent, reader_app_back_cb_t back_cb, 
     } else {
         ra_scan(app);
     }
-
-    return app;
 }
 
 void reader_app_destroy(reader_app_t *app)

@@ -707,6 +707,9 @@ static void scope_relayout(void)
         s->canvas_h = chh;
         if (s->canvas_buf && s->canvas) {
             lv_canvas_set_buffer(s->canvas, s->canvas_buf, cw, chh, LV_COLOR_FORMAT_RGB565);
+            /* 新缓冲立即画空白网格（含清黑底）——默认 STOP 时 tick 不画，
+             * 不初始化会显示 malloc 残留（花屏） */
+            scope_draw(NULL);
         }
     }
     lv_obj_set_pos(s->canvas, 0, SC_TOP_H);
@@ -887,14 +890,7 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
 
     s->tick = lv_timer_create(scope_tick, 100, NULL);
 
-    /* 采集启动（默认 AUTO 40k CH1）——失败不崩，UI 显示 STOP 可重试 */
-    esp_err_t sr = drv_scope_start(&s->cfg);
-    if (sr == ESP_OK) {
-        s->running = true;
-    } else {
-        ESP_LOGE(S_TAG, "create: drv_scope_start FAILED: %s (UI stays, STOP state)",
-                 esp_err_to_name(sr));
-    }
+    /* 采集业务延迟到进入动画完成后（scope_entered），滑入期间只渲染 UI */
     scope_refresh_status();
     scope_refresh_z0_btns();   /* 初始 CH1 模式：只显示 CH1 的 0V 标签 */
 
@@ -904,6 +900,17 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
     }
     lv_obj_move_foreground(s->rst_btn);
     return root;
+}
+
+/* 进入动画完成（launcher 回调）。默认 STOP：不自动启动采集，
+ * 等用户按 RUN 再开始（示波器一打开即 STOP，按需采集）。 */
+void scope_entered(lv_obj_t *root)
+{
+    (void)root;
+    scope_t *s = s_scope;
+    if (!s) return;
+    /* 不调用 drv_scope_start：s->running=false（STOP），按 RUN 才启动 */
+    scope_refresh_status();
 }
 
 void scope_destroy(lv_obj_t *root)
