@@ -44,8 +44,12 @@
 static const char *const s_hzoom_strs[] = { "x1", "x2", "x4", "x8" };
 #define SC_HZOOM_N  (sizeof(s_hzoom_strs) / sizeof(s_hzoom_strs[0]))
 
+/* 0V 标签按钮：热区容器（大触摸面积）+ 视觉标签居中（视觉不变大） */
+#define Z0_HOT_W   44
+#define Z0_HOT_H   30
+
 /* 前向声明（scope_apply_cfg 在定义前调用） */
-static void scope_refresh_off_btns(void);
+static void scope_refresh_z0_btns(void);
 
 /* ── 通道输入 GPIO（ADC1 空闲脚；IO5 板面未引出，改用 9/10） ── */
 #define SC_IO_CH1   9
@@ -89,7 +93,6 @@ typedef struct {
     lv_obj_t *canvas;
     lv_color_t *canvas_buf;
     int canvas_w, canvas_h;
-    lv_obj_t *z0_lbl;               /* 0V 基准标注（独立 label，canvas 上层） */
     /* 测量栏 */
     lv_obj_t *m_lbl1, *m_lbl2;
     /* 底栏 */
@@ -99,7 +102,8 @@ typedef struct {
     int vr_idx;                      /* 垂直范围档位索引（0=满量程） */
     int hz_idx;                      /* 水平缩放索引（0=×1 全窗口） */
     int ch_off[SCOPE_CH_MAX];        /* 每通道垂直偏移（像素，0 点移动） */
-    lv_obj_t *off_btn[2][2];         /* 垂直偏移按钮 [通道][0=上移 1=下移] */
+    lv_obj_t *z0_btn[SCOPE_CH_MAX];  /* 0V 标签按钮（热区容器，拖动移通道） */
+    int z0_drag_y[SCOPE_CH_MAX];     /* 0V 标签拖动起点 y */
     int hz_pan;                      /* 水平平移（采样点，H 缩放后拖动查看） */
     scope_cfg_t cfg;
     bool running;
@@ -308,7 +312,7 @@ static void scope_apply_cfg(void)
     scope_t *s = s_scope;
     if (!s) return;
     s->last_frameno = 0xFFFFFFFF;   /* 强制下一帧重绘（清掉旧通道/旧档位画面） */
-    scope_refresh_off_btns();       /* 偏移按钮可见性跟随通道模式 */
+    scope_refresh_z0_btns();        /* 0V 标签可见性跟随通道模式 */
     if (s->running) {
         drv_scope_start(&s->cfg);
     }
@@ -342,7 +346,7 @@ static void on_ch_btn(lv_event_t *e)
     }
     s->last_frameno = 0;   /* 等新帧 */
     scope_draw(NULL);      /* 立即清空 canvas（空白网格），避免旧通道波形残留 */
-    scope_refresh_off_btns();
+    scope_refresh_z0_btns();
     if (drv_scope_start(&s->cfg) == ESP_OK) {   /* 无条件重启 */
         s->running = true;
         s->last_meas_tick = 0;
@@ -376,53 +380,31 @@ static void on_hz_btn(lv_event_t *e)
     scope_apply_cfg();
 }
 
-/* 垂直偏移按钮：user_data = 通道*2 + 方向（0=上移 1=下移） */
-static void on_off_btn(lv_event_t *e)
+/* 0V 标签按钮拖动：user_data = 通道；dy → 该通道 ch_off（波形跟手上下） */
+static void on_z0_press(lv_event_t *e)
 {
     lv_obj_t *b = lv_event_get_target_obj(e);
-    int tag = (int)(intptr_t)lv_obj_get_user_data(b);
-    int ch = tag / 2, dir = tag % 2;
+    int ch = (int)(intptr_t)lv_obj_get_user_data(b);
     scope_t *s = s_scope;
     if (!s || ch < 0 || ch >= SCOPE_CH_MAX) return;
-    int step = s->canvas_h / 30;
-    if (step < 2) step = 2;
-    s->ch_off[ch] += (dir == 0) ? -step : step;   /* + 上移（波形跟手指），- 下移 */
-    int lim = s->canvas_h;                 /* 限幅防推出屏外 */
-    if (s->ch_off[ch] > lim) s->ch_off[ch] = lim;
-    if (s->ch_off[ch] < -lim) s->ch_off[ch] = -lim;
-    s->last_frameno = 0xFFFFFFFF;          /* 强制重绘（STOP 冻结时也生效） */
-    ESP_LOGI(S_TAG, "btn: CH%d offset %+d", ch + 1, s->ch_off[ch]);
-}
-
-/* canvas 左右拖动 = H 缩放后平移查看（×1 时无意义，不响应） */
-static int s_canvas_drag_x;
-
-static void on_canvas_press(lv_event_t *e)
-{
-    scope_t *s = s_scope;
-    if (!s || s->hz_idx == 0) return;      /* 仅 H 放大后可平移 */
     lv_indev_t *indev = lv_indev_active();
     lv_point_t p;
     lv_indev_get_point(indev, &p);
     if (lv_event_get_code(e) == LV_EVENT_PRESSED) {
-        s_canvas_drag_x = p.x;
-        ESP_LOGI(S_TAG, "canvas: drag start x=%d (hz=x%d)", p.x, 1 << s->hz_idx);
-    } else if (lv_event_get_code(e) == LV_EVENT_PRESSING && p.x != s_canvas_drag_x) {
-        int npts = (s->frame && s->frame->points) ? (s->frame->points >> s->hz_idx) : 0;
-        if (npts < 1 || s->canvas_w <= 0) return;
-        int per_px = (npts + s->canvas_w - 1) / s->canvas_w;   /* 像素 → 采样点 */
-        s->hz_pan += (s_canvas_drag_x - p.x) * per_px;   /* 右拖看更早（跟手） */
-        s_canvas_drag_x = p.x;
-        int base = s->frame->points / 4;
-        int max = s->frame->points - npts;
-        if (s->hz_pan < -base) s->hz_pan = -base;
-        if (s->hz_pan > max - base) s->hz_pan = max - base;
-        scope_draw(s->frame);        /* 同步重绘：拖动跟手（不等待 100ms tick） */
+        s->z0_drag_y[ch] = p.y;
+    } else if (lv_event_get_code(e) == LV_EVENT_PRESSING && p.y != s->z0_drag_y[ch]) {
+        int dy = p.y - s->z0_drag_y[ch];
+        s->ch_off[ch] += dy;
+        int lim = s->canvas_h;
+        if (s->ch_off[ch] > lim) s->ch_off[ch] = lim;
+        if (s->ch_off[ch] < -lim) s->ch_off[ch] = -lim;
+        s->z0_drag_y[ch] = p.y;
+        scope_draw(s->frame);        /* 同步重绘跟手 */
     }
 }
 
-/* 偏移按钮可见性跟随通道模式（单通道只显示对应侧） */
-static void scope_refresh_off_btns(void)
+/* 0V 标签可见性跟随通道模式（单通道只显示对应侧） */
+static void scope_refresh_z0_btns(void)
 {
     scope_t *s = s_scope;
     if (!s) return;
@@ -430,13 +412,55 @@ static void scope_refresh_off_btns(void)
         bool vis = (s->ch_mode == SC_CH_MODE_DUAL) ||
                    (s->ch_mode == SC_CH_MODE_CH1 && ch == 0) ||
                    (s->ch_mode == SC_CH_MODE_CH2 && ch == 1);
-        for (int d = 0; d < 2; d++) {
-            if (vis) {
-                lv_obj_remove_flag(s->off_btn[ch][d], LV_OBJ_FLAG_HIDDEN);
-            } else {
-                lv_obj_add_flag(s->off_btn[ch][d], LV_OBJ_FLAG_HIDDEN);
+        if (vis) {
+            lv_obj_remove_flag(s->z0_btn[ch], LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(s->z0_btn[ch], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
+
+/* canvas 拖动：垂直方向始终响应（V 轴移动显示段/波形，跟手）；
+ * 水平方向仅 H 放大后可平移（×1 无意义） */
+static int s_canvas_drag_x, s_canvas_drag_y;
+
+static void on_canvas_press(lv_event_t *e)
+{
+    scope_t *s = s_scope;
+    if (!s) return;
+    lv_indev_t *indev = lv_indev_active();
+    lv_point_t p;
+    lv_indev_get_point(indev, &p);
+    if (lv_event_get_code(e) == LV_EVENT_PRESSED) {
+        s_canvas_drag_x = p.x;
+        s_canvas_drag_y = p.y;
+    } else if (lv_event_get_code(e) == LV_EVENT_PRESSING) {
+        bool changed = false;
+        /* 垂直：始终响应（波形/显示段跟手上下） */
+        if (p.y != s_canvas_drag_y) {
+            int dy = p.y - s_canvas_drag_y;
+            s->ch_off[0] += dy;
+            int lim = s->canvas_h;
+            if (s->ch_off[0] > lim) s->ch_off[0] = lim;
+            if (s->ch_off[0] < -lim) s->ch_off[0] = -lim;
+            s_canvas_drag_y = p.y;
+            changed = true;
+        }
+        /* 水平：仅 H 放大后可平移 */
+        if (s->hz_idx > 0 && p.x != s_canvas_drag_x) {
+            int npts = (s->frame && s->frame->points) ? (s->frame->points >> s->hz_idx) : 0;
+            if (npts >= 1 && s->canvas_w > 0) {
+                int per_px = (npts + s->canvas_w - 1) / s->canvas_w;   /* 像素 → 采样点 */
+                s->hz_pan += (s_canvas_drag_x - p.x) * per_px;   /* 右拖看更早（跟手） */
+                int base = s->frame->points / 4;
+                int max = s->frame->points - npts;
+                if (s->hz_pan < -base) s->hz_pan = -base;
+                if (s->hz_pan > max - base) s->hz_pan = max - base;
+                s_canvas_drag_x = p.x;
+                changed = true;
             }
         }
+        if (changed) scope_draw(s->frame);   /* 同步重绘：跟手 */
     }
 }
 
@@ -541,12 +565,16 @@ static void scope_tick(lv_timer_t *t)
         scope_draw(f);
         scope_update_meas(f);
 
-        /* 0V 标注跟随主通道 0V 线（ch_off[0] 移动显示段） */
+        /* 0V 标签按钮位置跟随各自通道 0V 线（ch_off 移动显示段） */
         int usable = s->canvas_h - 2 * (s->canvas_h / 12);
-        int z0_y = s->canvas_h / 12 + usable - 1 + s->ch_off[0];
-        if (z0_y < 0) z0_y = 0;
-        if (z0_y >= s->canvas_h) z0_y = s->canvas_h - 1;
-        lv_obj_set_pos(s->z0_lbl, 4, SC_TOP_H + z0_y - 11);
+        int z0_base = s->canvas_h / 12 + usable - 1;
+        for (int ch = 0; ch < SCOPE_CH_MAX; ch++) {
+            int z0_y = z0_base + s->ch_off[ch];
+            if (z0_y < 0) z0_y = 0;
+            if (z0_y >= s->canvas_h) z0_y = s->canvas_h - 1;
+            int zx = (ch == 0) ? 2 : s->canvas_w - Z0_HOT_W - 2;
+            lv_obj_set_pos(s->z0_btn[ch], zx, SC_TOP_H + z0_y - Z0_HOT_H / 2);
+        }
     }
     uint32_t dt = lv_tick_get() - t0;
     if (dt > 50) {
@@ -594,22 +622,6 @@ static void scope_relayout(void)
     lv_obj_align(s->state_dot, LV_ALIGN_TOP_RIGHT, -56, 9);
     lv_obj_align(s->state_lbl, LV_ALIGN_TOP_RIGHT, -8, 7);
 
-    /* 垂直偏移按钮（热区容器，视觉按钮 26x18 居中于 36x28 热区；
-     * 关于中心横轴上下对称：+ 上 / - 下；热区间距 12px 保证不重合；
-     * 单通道只显示对应侧；右侧避开右上角 V 指示器） */
-    int obw = 36, obh = 28, ogap = 12;
-    int mid_y = SC_TOP_H + chh / 2;   /* 中心横轴绝对坐标（用局部 chh） */
-    for (int ch = 0; ch < 2; ch++) {
-        int x = (ch == 0) ? 2 : cw - obw - 2;
-        for (int d = 0; d < 2; d++) {
-            int y = (d == 0) ? (mid_y - obh - ogap / 2) : (mid_y + ogap / 2);
-            lv_obj_set_pos(s->off_btn[ch][d], x, y);
-            lv_obj_set_size(s->off_btn[ch][d], obw, obh);
-        }
-    }
-    ESP_LOGI(S_TAG, "relayout: canvas %dx%d, off-btn mid_y=%d (+y=%d -y=%d)", cw, chh,
-             mid_y, mid_y - obh - ogap / 2, mid_y + ogap / 2);
-
     if (cw != s->canvas_w || chh != s->canvas_h) {
         if (s->canvas_buf) heap_caps_free(s->canvas_buf);
         s->canvas_buf = heap_caps_aligned_alloc(128, (size_t)cw * chh * 2,
@@ -621,8 +633,12 @@ static void scope_relayout(void)
         }
     }
     lv_obj_set_pos(s->canvas, 0, SC_TOP_H);
-    /* 0V 标注跟随量程底（0V 线 y = chh - chh/12，字高约 11px） */
-    lv_obj_set_pos(s->z0_lbl, 4, SC_TOP_H + (s->canvas_h - s->canvas_h / 12) - 11);
+    /* 0V 标签按钮初始位置（后续 scope_tick 每帧跟随 0V 线） */
+    for (int ch = 0; ch < SCOPE_CH_MAX; ch++) {
+        int zx = (ch == 0) ? 2 : cw - Z0_HOT_W - 2;
+        lv_obj_set_pos(s->z0_btn[ch], zx, SC_TOP_H + chh / 2 - Z0_HOT_H / 2);
+        lv_obj_set_size(s->z0_btn[ch], Z0_HOT_W, Z0_HOT_H);
+    }
 
     lv_obj_set_pos(s->m_lbl1, 8, SC_TOP_H + 4);
     lv_obj_set_pos(s->m_lbl2, 8, SC_TOP_H + 18);
@@ -690,26 +706,6 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
     s->hz_btn = hz_btn;
     s->hz_lbl = lv_obj_get_child(hz_btn, 0);
 
-    /* 垂直偏移按钮：透明热区容器（加大触摸面积）+ 视觉子按钮（+/−）；
-     * user_data = 通道*2 + 方向（0=上移 1=下移） */
-    for (int ch = 0; ch < 2; ch++) {
-        for (int d = 0; d < 2; d++) {
-            lv_obj_t *hot = lv_obj_create(root);
-            lv_obj_remove_flag(hot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC
-                               | LV_OBJ_FLAG_SCROLL_MOMENTUM);
-            lv_obj_set_style_bg_opa(hot, LV_OPA_TRANSP, 0);
-            lv_obj_set_style_border_width(hot, 0, 0);
-            lv_obj_set_style_pad_all(hot, 0, 0);
-            lv_obj_set_user_data(hot, (void *)(intptr_t)(ch * 2 + d));
-            lv_obj_add_event_cb(hot, on_off_btn, LV_EVENT_CLICKED, NULL);
-            lv_obj_t *b = sc_make_btn(hot, d ? "-" : "+");
-            lv_obj_set_style_bg_opa(b, LV_OPA_30, 0);   /* 半透明叠 canvas 边缘 */
-            lv_obj_set_size(b, 26, 18);                 /* 视觉尺寸固定（热区 36x28 居中） */
-            lv_obj_center(b);
-            s->off_btn[ch][d] = hot;   /* 保存热区容器引用 */
-        }
-    }
-
     lv_obj_t *dot = lv_obj_create(root);
     lv_obj_remove_flag(dot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC
                        | LV_OBJ_FLAG_SCROLL_MOMENTUM | LV_OBJ_FLAG_CLICKABLE);
@@ -735,12 +731,31 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
     lv_obj_add_event_cb(cv, on_canvas_press, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(cv, on_canvas_press, LV_EVENT_PRESSING, NULL);
 
-    /* 0V 基准标注（独立 label 盖在 canvas 左下角，canvas 重绘不影响） */
-    lv_obj_t *z0 = lv_label_create(root);
-    lv_label_set_text(z0, "0V");
-    lv_obj_set_style_text_font(z0, &lv_font_montserrat_10, 0);
-    lv_obj_set_style_text_color(z0, lv_color_hex(SC_MEAS), 0);
-    s->z0_lbl = z0;
+    /* 0V 标签按钮（每通道一个）：透明热区容器（大触摸）+ 半透明带色视觉标签。
+     * 拖动标签 = 上下移动该通道波形（0V 线跟随）。CH1 左缘、CH2 右缘。 */
+    for (int ch = 0; ch < SCOPE_CH_MAX; ch++) {
+        lv_obj_t *hot = lv_obj_create(root);
+        lv_obj_remove_flag(hot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC
+                           | LV_OBJ_FLAG_SCROLL_MOMENTUM);
+        lv_obj_set_style_bg_opa(hot, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(hot, 0, 0);
+        lv_obj_set_style_pad_all(hot, 0, 0);
+        lv_obj_set_user_data(hot, (void *)(intptr_t)ch);
+        lv_obj_add_event_cb(hot, on_z0_press, LV_EVENT_PRESSED, NULL);
+        lv_obj_add_event_cb(hot, on_z0_press, LV_EVENT_PRESSING, NULL);
+        /* 视觉标签：半透明通道色背景 + 白字 0V */
+        lv_obj_t *vis = lv_label_create(hot);
+        lv_label_set_text(vis, "0V");
+        lv_obj_set_style_text_font(vis, &lv_font_montserrat_10, 0);
+        lv_obj_set_style_text_color(vis, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_color(vis, lv_color_hex(ch == 0 ? SC_WAVE1 : SC_WAVE2), 0);
+        lv_obj_set_style_bg_opa(vis, LV_OPA_30, 0);
+        lv_obj_set_style_pad_hor(vis, 8, 0);
+        lv_obj_set_style_pad_ver(vis, 3, 0);
+        lv_obj_set_style_radius(vis, 4, 0);
+        lv_obj_center(vis);
+        s->z0_btn[ch] = hot;
+    }
 
     lv_obj_t *ml1 = lv_label_create(root);
     lv_label_set_text(ml1, "FREQ --  Vpp --");
@@ -779,13 +794,11 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
                  esp_err_to_name(sr));
     }
     scope_refresh_status();
-    scope_refresh_off_btns();   /* 初始 CH1 模式：只显示左侧偏移按钮 */
+    scope_refresh_z0_btns();   /* 初始 CH1 模式：只显示 CH1 的 0V 标签 */
 
-    /* 偏移按钮提到最上层：创建顺序在 canvas 之前，会被全黑 canvas 盖住 */
-    for (int ch = 0; ch < 2; ch++) {
-        for (int d = 0; d < 2; d++) {
-            lv_obj_move_foreground(s->off_btn[ch][d]);
-        }
+    /* 0V 标签提到最上层：创建顺序在 canvas 之前，会被全黑 canvas 盖住 */
+    for (int ch = 0; ch < SCOPE_CH_MAX; ch++) {
+        lv_obj_move_foreground(s->z0_btn[ch]);
     }
 
     ESP_LOGI(S_TAG, "scope UI created (%dx%d)", sc_screen_w(), sc_screen_h());
