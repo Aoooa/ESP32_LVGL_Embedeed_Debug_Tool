@@ -32,9 +32,9 @@ static scope_cfg_t s_cfg;
 
 static int s_ch_map[10];           /* ADC1 channel(0-9) -> 应用索引(0/1)，-1=不用 */
 static uint16_t *s_ring[2];        /* 环形缓冲（PSRAM） */
-static uint32_t s_wr;              /* 写指针（环形） */
-static uint32_t s_written;         /* 总写入数（不回绕，判断缓冲是否填满） */
-static int s_trig_wr;              /* 触发点环形位置（-1=无） */
+static uint32_t s_wr[2];           /* 每通道独立写指针（触发窗口必须按 CH1 样本数计） */
+static uint32_t s_written[2];      /* 每通道总写入数（不回绕，判断缓冲是否填满） */
+static int s_trig_wr;              /* 触发点环形位置（CH1 索引，-1=无） */
 static scope_frame_t *s_frame;     /* 最新帧快照（PSRAM，s_lock 保护） */
 static adc_continuous_data_t *s_parse_buf;  /* 拉帧解析缓冲（PSRAM，避免 8KB 上任务栈） */
 
@@ -98,28 +98,29 @@ static void scope_task(void *arg)
             if (idx < 0) continue;
 
             uint16_t v = (uint16_t)s_parse_buf[i].raw_data & 0xFFF;
-            s_ring[idx][s_wr] = v;
+            s_ring[idx][s_wr[idx]] = v;
 
-            /* 主通道（idx==0）触发检测：边沿跨过阈值 */
+            /* 主通道（idx==0）触发检测：边沿跨过阈值（按 CH1 自身写指针） */
             if (idx == 0 && s_trig_wr < 0) {
-                uint32_t prev = (s_wr + SCOPE_RING_N - 1) % SCOPE_RING_N;
+                uint32_t prev = (s_wr[0] + SCOPE_RING_N - 1) % SCOPE_RING_N;
                 uint16_t pv = s_ring[0][prev];
                 bool hit = (s_cfg.edge == SCOPE_EDGE_RISING)
                                ? (pv < (uint16_t)s_cfg.trigger_level && v >= (uint16_t)s_cfg.trigger_level)
                                : (pv > (uint16_t)s_cfg.trigger_level && v <= (uint16_t)s_cfg.trigger_level);
-                if (hit) s_trig_wr = (int)s_wr;
+                if (hit) s_trig_wr = (int)s_wr[0];
             }
-            s_wr = (s_wr + 1) % SCOPE_RING_N;
-            s_written++;
+            s_wr[idx] = (s_wr[idx] + 1) % SCOPE_RING_N;
+            s_written[idx]++;
         }
 
         /* 帧更新：挂起触发等补满（预触发 25%），无触发 AUTO 滚动。
-         * 注意：触发命中后不立即消费——每批 read_parse ≤512 点 < POST_TRIG，
-         * 必须跨批等待触发后 1536 点采满才出触发窗口（否则预触发失效） */
+         * 窗口长度一律按 CH1 样本数（s_wr[0]/s_written[0]）计算——
+         * Dual 时两通道样本交替写入各自缓冲，共用写指针会导致窗口
+         * 计数翻倍、取到错乱位置（波形竖线 bug 根因） */
         int start = -1;
         bool trig_frame = false;
         if (s_trig_wr >= 0) {
-            uint32_t after = (s_wr - 1 - (uint32_t)s_trig_wr + SCOPE_RING_N) % SCOPE_RING_N;
+            uint32_t after = (s_wr[0] - 1 - (uint32_t)s_trig_wr + SCOPE_RING_N) % SCOPE_RING_N;
             if (after >= SCOPE_POST_TRIG) {
                 start = (s_trig_wr - SCOPE_PRE_TRIG + SCOPE_RING_N) % SCOPE_RING_N;
                 trig_frame = true;
@@ -127,8 +128,8 @@ static void scope_task(void *arg)
                 continue;   /* 触发后未补满：等下一批（AUTO 也等，触发优先于滚动） */
             }
         } else if (s_cfg.trig_mode == SCOPE_TRIG_AUTO) {
-            if (s_written < SCOPE_FRAME_POINTS) continue;
-            start = (int)((s_wr - SCOPE_FRAME_POINTS + SCOPE_RING_N) % SCOPE_RING_N);
+            if (s_written[0] < SCOPE_FRAME_POINTS) continue;
+            start = (int)((s_wr[0] - SCOPE_FRAME_POINTS + SCOPE_RING_N) % SCOPE_RING_N);
         } else {
             continue;   /* NORM 无触发不更新 */
         }
@@ -348,8 +349,8 @@ esp_err_t drv_scope_start(const scope_cfg_t *cfg)
         return ret;
     }
 
-    s_wr = 0;
-    s_written = 0;
+    s_wr[0] = s_wr[1] = 0;
+    s_written[0] = s_written[1] = 0;
     s_trig_wr = -1;
     s_frame->frameno = 0;
     s_frame->running = true;
