@@ -18,8 +18,8 @@
 #define SC_BAR_BORDER    0x1F2A36
 #define SC_WAVE1         0x39C5BB   /* CH1 波形绿 */
 #define SC_WAVE2         0xFFB86C   /* CH2 波形橙 */
-#define SC_GRID          0x3A3A44   /* 网格浅灰 */
-#define SC_GRID_MID      0x4A4A58   /* 中心横轴（略亮） */
+#define SC_GRID          0x2C2C36   /* 网格浅灰（更淡） */
+#define SC_GRID_MID      0x3A3A48   /* 中心横轴（略亮） */
 #define SC_TRIG          0xE5484D   /* 触发线红 */
 #define SC_SEL           0xFFC857   /* 时间轴滑块（琥珀，50% 半透明混合） */
 #define SC_RUN           0x22C55E   /* RUN 状态点绿 */
@@ -47,6 +47,10 @@ static const char *const s_hzoom_strs[] = { "x1", "x2", "x4", "x8" };
 /* 0V 标签按钮：热区容器（大触摸面积）+ 视觉标签居中（视觉不变大） */
 #define Z0_HOT_W   44
 #define Z0_HOT_H   30
+
+/* RST（一键还原缩放）按钮：同上结构，悬浮 canvas 底部中间往上 */
+#define RST_HOT_W  44
+#define RST_HOT_H  30
 
 /* 前向声明（scope_apply_cfg 在定义前调用） */
 static void scope_refresh_z0_btns(void);
@@ -104,6 +108,7 @@ typedef struct {
     int hz_idx;                      /* 水平缩放索引（0=×1 全窗口） */
     int ch_off[SCOPE_CH_MAX];        /* 每通道垂直偏移（像素，0 点移动） */
     lv_obj_t *z0_btn[SCOPE_CH_MAX];  /* 0V 标签按钮（热区容器，拖动移通道） */
+    lv_obj_t *rst_btn;               /* RST 一键还原缩放按钮（有缩放才显示） */
     int z0_drag_y[SCOPE_CH_MAX];     /* 0V 标签拖动起点 y */
     int hz_pan;                      /* 水平平移（采样点，H 缩放后拖动查看） */
     scope_cfg_t cfg;
@@ -307,6 +312,14 @@ static void scope_refresh_status(void)
     char rb[16];
     sc_rate_label(s->cfg.sample_rate_hz, rb, sizeof(rb));
     lv_label_set_text(s->lbl[2], rb);
+
+    /* RST 按钮：仅存在 V 或 H 缩放时显示 */
+    bool zoomed = (s->vr_idx != 0) || (s->hz_idx != 0);
+    if (zoomed) {
+        lv_obj_remove_flag(s->rst_btn, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s->rst_btn, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 /* ── 重启采集（配置变化后，停旧启新） ── */
@@ -407,13 +420,32 @@ static void on_z0_press(lv_event_t *e)
     } else if (lv_event_get_code(e) == LV_EVENT_PRESSING && p.y != s->z0_drag_y[ch]) {
         int dy = p.y - s->z0_drag_y[ch];
         s->ch_off[ch] += dy;
-        int lim = s->canvas_h;
-        if (s->ch_off[ch] > lim) s->ch_off[ch] = lim;
-        if (s->ch_off[ch] < -lim) s->ch_off[ch] = -lim;
+        /* 缩小档：0V 标签不出 canvas 范围，波形随标签同步停（不脱离） */
+        int usable = s->canvas_h - 2 * (s->canvas_h / 12);
+        int z0_base = s->canvas_h / 12 + usable - 1;
+        if (s->ch_off[ch] < -z0_base) s->ch_off[ch] = -z0_base;
+        if (s->ch_off[ch] > s->canvas_h - 1 - z0_base) s->ch_off[ch] = s->canvas_h - 1 - z0_base;
         s->z0_drag_y[ch] = p.y;
         scope_draw(s->frame);        /* 同步重绘跟手 */
         scope_update_z0_pos();       /* 标签跟随拖动（不等待 tick） */
     }
+}
+
+/* RST：一键还原所有缩放（V 档 3.1V、H x1、平移/偏移清零），清空重绘 */
+static void on_rst_btn(lv_event_t *e)
+{
+    (void)e;
+    scope_t *s = s_scope;
+    if (!s) return;
+    ESP_LOGI(S_TAG, "btn: RST (reset zoom)");
+    s->vr_idx = 0;
+    s->hz_idx = 0;
+    s->hz_pan = 0;
+    s->ch_off[0] = s->ch_off[1] = 0;
+    gesture_set_global_swipe(true);
+    s->last_frameno = 0;
+    scope_draw(NULL);
+    scope_refresh_status();
 }
 
 /* 0V 标签可见性跟随通道模式（单通道只显示对应侧） */
@@ -521,9 +553,11 @@ static void on_run_btn(lv_event_t *e)
         s->running = false;
         s->last_frameno = 0;
     } else {
+        /* 重新触发前清空当前波形（任何模式一致） */
+        s->last_frameno = 0;
+        scope_draw(NULL);
         if (drv_scope_start(&s->cfg) == ESP_OK) {
             s->running = true;
-            s->last_frameno = 0;
             s->last_meas_tick = 0;
         }
     }
@@ -537,6 +571,8 @@ static void on_trig_btn(lv_event_t *e)
     if (!s) return;
     ESP_LOGI(S_TAG, "btn: TRIG cycle");
     s->cfg.trig_mode = (scope_trig_mode_t)(((int)s->cfg.trig_mode + 1) % 3);
+    s->last_frameno = 0;
+    scope_draw(NULL);   /* 切换采样模式清空当前波形 */
     scope_apply_cfg();
 }
 
@@ -675,9 +711,12 @@ static void scope_relayout(void)
         lv_obj_set_pos(s->z0_btn[ch], zx, SC_TOP_H + chh / 2 - Z0_HOT_H / 2);
         lv_obj_set_size(s->z0_btn[ch], Z0_HOT_W, Z0_HOT_H);
     }
+    /* RST 按钮：canvas 底部中间往上 */
+    lv_obj_set_pos(s->rst_btn, (cw - RST_HOT_W) / 2, SC_TOP_H + chh - RST_HOT_H - 6);
+    lv_obj_set_size(s->rst_btn, RST_HOT_W, RST_HOT_H);
 
-    lv_obj_set_pos(s->m_lbl1, 8, SC_TOP_H + 4);
-    lv_obj_set_pos(s->m_lbl2, 8, SC_TOP_H + 18);
+    lv_obj_set_pos(s->m_lbl1, 8, SC_TOP_H + s->canvas_h + 4);
+    lv_obj_set_pos(s->m_lbl2, 8, SC_TOP_H + s->canvas_h + 18);
 
     int bw = (sw - 12 - 15) / 4;
     for (int i = 0; i < 4; i++) {
@@ -793,6 +832,26 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
         s->z0_btn[ch] = hot;
     }
 
+    /* RST 按钮：透明热区（大触摸）+ 小视觉标签（半透明琥珀底白字） */
+    lv_obj_t *rst_hot = lv_obj_create(root);
+    lv_obj_remove_flag(rst_hot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC
+                       | LV_OBJ_FLAG_SCROLL_MOMENTUM);
+    lv_obj_set_style_bg_opa(rst_hot, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(rst_hot, 0, 0);
+    lv_obj_set_style_pad_all(rst_hot, 0, 0);
+    lv_obj_add_event_cb(rst_hot, on_rst_btn, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *rst_vis = lv_label_create(rst_hot);
+    lv_label_set_text(rst_vis, "RST");
+    lv_obj_set_style_text_font(rst_vis, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(rst_vis, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_color(rst_vis, lv_color_hex(SC_SEL), 0);
+    lv_obj_set_style_bg_opa(rst_vis, LV_OPA_40, 0);
+    lv_obj_set_style_pad_hor(rst_vis, 6, 0);
+    lv_obj_set_style_pad_ver(rst_vis, 2, 0);
+    lv_obj_set_style_radius(rst_vis, 4, 0);
+    lv_obj_center(rst_vis);
+    s->rst_btn = rst_hot;
+
     lv_obj_t *ml1 = lv_label_create(root);
     lv_label_set_text(ml1, "FREQ --  Vpp --");
     lv_obj_set_style_text_font(ml1, &lv_font_montserrat_14, 0);
@@ -832,10 +891,11 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
     scope_refresh_status();
     scope_refresh_z0_btns();   /* 初始 CH1 模式：只显示 CH1 的 0V 标签 */
 
-    /* 0V 标签提到最上层：创建顺序在 canvas 之前，会被全黑 canvas 盖住 */
+    /* 0V 标签/RST 提到最上层：创建顺序在 canvas 之前，会被全黑 canvas 盖住 */
     for (int ch = 0; ch < SCOPE_CH_MAX; ch++) {
         lv_obj_move_foreground(s->z0_btn[ch]);
     }
+    lv_obj_move_foreground(s->rst_btn);
 
     ESP_LOGI(S_TAG, "scope UI created (%dx%d)", sc_screen_w(), sc_screen_h());
     return root;
