@@ -30,6 +30,7 @@ static gesture_right_cb_t s_right_cb;         /* 全局右滑事件回调（接�
 static void *s_right_ctx;
 static gesture_left_cb_t s_left_cb;           /* 全局左滑事件回调（接口预留，未注册） */
 static void *s_left_ctx;
+static bool s_global_swipe_en = true;         /* 全局右/左滑开关（贴边返回不受影响） */
 static bool s_swipe_tracking;                 /* 本次是否处于按下 */
 static lv_coord_t s_swipe_start_x, s_swipe_start_y;
 static lv_coord_t s_swipe_last_x, s_swipe_last_y;
@@ -213,7 +214,7 @@ esp_err_t gesture_read_cb(esp_lcd_touch_handle_t tp,
                              s_swipe_start_x, dx);
                     fire_back_event();
                 }
-            } else if (dx >= SWIPE_GLOBAL_DX) {
+            } else if (s_global_swipe_en && dx >= SWIPE_GLOBAL_DX) {
                 /* 全局右滑（任意起点）：dx≥50 → 仅识别，发 right 事件（不触发返回） */
                 if (!s_swipe_candidate) {
                     s_swipe_candidate = true;
@@ -225,7 +226,7 @@ esp_err_t gesture_read_cb(esp_lcd_touch_handle_t tp,
                 ESP_LOGI(TAG, "[SWIPE] global-right TRIGGER start_x=%d dx=%d -> right event",
                          s_swipe_start_x, dx);
                 fire_right_event();
-            } else if (dx <= -SWIPE_GLOBAL_DX) {
+            } else if (s_global_swipe_en && dx <= -SWIPE_GLOBAL_DX) {
                 /* 全局左滑（任意起点）：dx≤-50 → 仅识别，发 left 事件 */
                 if (!s_swipe_candidate) {
                     s_swipe_candidate = true;
@@ -277,6 +278,12 @@ void gesture_set_left_handler(gesture_left_cb_t cb, void *ctx)
     s_left_cb = cb;
     s_left_ctx = ctx;
     ESP_LOGI(TAG, "left handler %s", cb ? "registered" : "cleared");
+}
+
+void gesture_set_global_swipe(bool en)
+{
+    s_global_swipe_en = en;
+    ESP_LOGI(TAG, "global swipe %s", en ? "enabled" : "disabled");
 }
 
 bool gesture_is_pressed(void)

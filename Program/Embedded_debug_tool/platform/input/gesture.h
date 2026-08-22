@@ -44,6 +44,10 @@ void gesture_set_right_handler(gesture_right_cb_t cb, void *ctx);
 typedef void (*gesture_left_cb_t)(void *ctx);
 void gesture_set_left_handler(gesture_left_cb_t cb, void *ctx);
 
+/* 全局右/左滑手势总开关（en=false 时仅禁用非贴边全局手势，
+ * 贴边右滑返回不受影响）。用于 H 放大平移等需要独占水平拖动的场景。 */
+void gesture_set_global_swipe(bool en);
+
 /* 当前是否有触摸按下（调试/测试用） */
 bool gesture_is_pressed(void);
 

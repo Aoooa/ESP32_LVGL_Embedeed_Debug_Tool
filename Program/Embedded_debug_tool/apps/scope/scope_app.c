@@ -4,6 +4,7 @@
 #include "scope_app.h"
 #include "drv_scope.h"
 #include "num_input.h"
+#include "gesture.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include <stdio.h>
@@ -360,7 +361,9 @@ static void on_vr_btn(lv_event_t *e)
     scope_apply_cfg();
 }
 
-/* 水平缩放键：x1 → x2 → x4 → x8 循环（显示窗口切片，采集不动） */
+/* 水平缩放键：x1 → x2 → x4 → x8 循环（显示窗口切片，采集不动）。
+ * 放大时禁用全局右/左滑手势（避免拖动被手势 wait_release 中断），
+ * 贴边返回不受影响；x1 恢复 */
 static void on_hz_btn(lv_event_t *e)
 {
     (void)e;
@@ -369,6 +372,7 @@ static void on_hz_btn(lv_event_t *e)
     ESP_LOGI(S_TAG, "btn: H-zoom cycle");
     s->hz_idx = (s->hz_idx + 1) % SC_HZOOM_N;
     s->hz_pan = 0;                  /* 换档重新居中（触发点为中心） */
+    gesture_set_global_swipe(s->hz_idx == 0);
     scope_apply_cfg();
 }
 
@@ -413,7 +417,7 @@ static void on_canvas_press(lv_event_t *e)
         int max = s->frame->points - npts;
         if (s->hz_pan < -base) s->hz_pan = -base;
         if (s->hz_pan > max - base) s->hz_pan = max - base;
-        s->last_frameno = 0xFFFFFFFF;      /* 强制重绘 */
+        scope_draw(s->frame);        /* 同步重绘：拖动跟手（不等待 100ms tick） */
     }
 }
 
@@ -792,6 +796,7 @@ void scope_destroy(lv_obj_t *root)
 {
     scope_t *s = s_scope;
     if (s) {
+        gesture_set_global_swipe(true);   /* 恢复全局手势（H 放大可能禁用了） */
         drv_scope_deinit();   /* 停采集 + 释放 ADC/缓冲（给其他 APP 腾内部 RAM） */
         if (s->tick) lv_timer_delete(s->tick);
         if (s->canvas_buf) heap_caps_free(s->canvas_buf);
