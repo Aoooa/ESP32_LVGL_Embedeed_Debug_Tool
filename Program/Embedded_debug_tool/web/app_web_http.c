@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 
 httpd_handle_t g_httpd;
 
@@ -181,6 +182,8 @@ void app_web_start(void)
     config.max_uri_handlers = 8;
     config.stack_size = 16384;
     config.lru_purge_enable = true;
+    config.max_open_sockets = 5;   /* 实际并发：1 页面 + 2 WS；受 LWIP_MAX_SOCKETS 约束 */
+    config.task_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;  /* httpd 16KB 栈移 PSRAM，省内部 RAM */
 
     ESP_ERROR_CHECK(httpd_start(&g_httpd, &config));
 
