@@ -32,7 +32,7 @@
 
 #define SCOPE_CH_MAX        2
 #define SCOPE_FRAME_POINTS  2048    /* 显示窗口点数（预触发 25% + 触发后 75%） */
-#define SCOPE_RING_N        8192    /* 应用层环形缓冲（每通道） */
+#define SCOPE_RING_N        32768   /* 应用层环形缓冲（每通道，PSRAM）；1MHz 下覆盖 33ms 历史 */
 
 /* 触发模式 */
 typedef enum {

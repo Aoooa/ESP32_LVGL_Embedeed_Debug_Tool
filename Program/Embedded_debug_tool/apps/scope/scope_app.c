@@ -33,12 +33,14 @@
 #define SC_MEAS_H   44   /* 测量栏（2 行测量 + 1 行格子单位） */
 #define SC_BAR_H    40
 
-/* ── 采样率：num_input 输入（官方合法 611..83333 SPS）。
+/* ── 采样率：num_input 输入（vendored 1MHz 方案，官方上限已突破至 1M）。
+ * 下限 10000：80M digi 时钟下 interval=40M/采样率，<9766Hz 超 12 位 timer_target
+ * 截断失真（与 soc_caps THRES_LOW 同步）。
  * 显示窗口固定 2048 点 → 横轴总时长 = 2048/采样率（时间轴缩放）。
- * 默认 80000（接近官方上限，需更长时间窗时输入更小值）。 */
-#define SC_RATE_MIN   611
-#define SC_RATE_MAX   83333
-#define SC_RATE_DEF   80000
+ * 默认 1000000（1MHz；需更长时间窗时输入更小值）。 */
+#define SC_RATE_MIN   10000
+#define SC_RATE_MAX   1000000
+#define SC_RATE_DEF   1000000
 
 /* ── 水平缩放档位（窗口切片点数 = 2048 >> idx；触发点为中心） ── */
 static const char *const s_hzoom_strs[] = { "x1", "x2", "x4", "x8" };
@@ -80,7 +82,9 @@ static const char *const s_ch_mode_strs[] = { "CH1", "CH2", "Dual" };
 /* 采样率显示文本：>=1000 → "80k"，否则原值 */
 static void sc_rate_label(int hz, char *buf, size_t len)
 {
-    if (hz >= 1000) {
+    if (hz >= 1000000) {
+        snprintf(buf, len, "%dM", hz / 1000000);
+    } else if (hz >= 1000) {
         snprintf(buf, len, "%dk", hz / 1000);
     } else {
         snprintf(buf, len, "%d", hz);
@@ -292,10 +296,12 @@ static void scope_update_meas(const scope_frame_t *f)
     lv_label_set_text(s->m_lbl1, b1);
     lv_label_set_text(s->m_lbl2, b2);
 
-    /* 格子单位：垂直 V/div（8 格），水平 Time/div（10 格） */
+    /* 格子单位：垂直 V/div（8 格），水平 Time/div（10 格）。
+     * 用帧实际采样率（Dual 下驱动已按通道减半），否则时基差 2 倍 */
     int vfull = s_vranges[s->vr_idx];
     float vper = (float)vfull * 3.1f / 4095.0f / 8.0f;
-    float tper = (float)SCOPE_FRAME_POINTS / s->cfg.sample_rate_hz / 10.0f;
+    uint32_t rate = (f && f->sample_rate_hz) ? f->sample_rate_hz : s->cfg.sample_rate_hz;
+    float tper = (float)SCOPE_FRAME_POINTS / rate / 10.0f;
     char b3[48];
     if (vper >= 0.1f) {
         snprintf(b3, sizeof(b3), "%.2fV/div  ", vper);

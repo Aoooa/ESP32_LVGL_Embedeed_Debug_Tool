@@ -8,6 +8,7 @@
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_task_wdt.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -17,7 +18,8 @@
 #define S_TAG "drv_scope"
 
 #define SCOPE_ATTEN        ADC_ATTEN_DB_12   /* 满量程 ~3.1V（0..3.1V 单极性） */
-#define SCOPE_FRAME_BYTES  1024              /* read_parse 每帧最大样本数 */
+#define SCOPE_FRAME_BYTES  2048              /* conv_frame_size（每 DMA 帧 512 样本） */
+#define SCOPE_RAW_BUF_BYTES 2048             /* read 缓冲（1 个 DMA 帧；4B/样本） */
 #define SCOPE_READ_TIMEOUT 100               /* 拉帧阻塞超时 ms */
 #define SCOPE_PRE_TRIG     512               /* 预触发 25%（2048×25%） */
 #define SCOPE_POST_TRIG    (SCOPE_FRAME_POINTS - SCOPE_PRE_TRIG)
@@ -36,7 +38,7 @@ static uint32_t s_wr[2];           /* 每通道独立写指针（触发窗口必
 static uint32_t s_written[2];      /* 每通道总写入数（不回绕，判断缓冲是否填满） */
 static int s_trig_wr;              /* 触发点环形位置（CH1 索引，-1=无） */
 static scope_frame_t *s_frame;     /* 最新帧快照（PSRAM，s_lock 保护） */
-static adc_continuous_data_t *s_parse_buf;  /* 拉帧解析缓冲（PSRAM，避免 8KB 上任务栈） */
+static uint32_t *s_raw_buf;        /* read 原始 4B DMA 数据缓冲（PSRAM） */
 
 /* 电压校准：raw -> mV */
 static int scope_raw_to_mv(uint16_t raw)
@@ -86,18 +88,36 @@ static void scope_task(void *arg)
 {
     (void)arg;
 
-    while (s_run) {
-        uint32_t n = 0;
-        esp_err_t ret = adc_continuous_read_parse(s_handle, s_parse_buf, SCOPE_FRAME_BYTES, &n,
-                                                  SCOPE_READ_TIMEOUT);
-        if (ret != ESP_OK || n == 0) continue;
+    /* 采集任务优先级 6，1MHz 下长时间占用 CPU0 → 饿死 IDLE0 触发任务看门狗
+     * （TWDT 5s 超时打断任务，表现 = 运行 ~7s 后帧停摆）。注册 TWDT + 每批
+     * 喂狗 + taskYIELD 让出，IDLE0 得以喂狗；read 阻塞等待时任务本就让出 */
+    esp_task_wdt_add(NULL);
+    esp_task_wdt_reset();
 
+    while (s_run) {
+        esp_task_wdt_reset();   /* 每批喂狗 */
+
+        /* 直接 read 原始 4B DMA 数据（绕开 read_parse 的 12B 结构体展开——
+         * 1MHz 下 parse 的 PSRAM 读写是吞吐瓶颈）。一次 read 拿 1 个 DMA 帧
+         * （conv_frame_size=2048B=512 样本），手写位域解析。 */
+        uint32_t out_len = 0;
+        esp_err_t ret = adc_continuous_read(s_handle, (uint8_t *)s_raw_buf, SCOPE_RAW_BUF_BYTES, &out_len,
+                                            SCOPE_READ_TIMEOUT);
+        if (ret != ESP_OK || out_len == 0) continue;
+        uint32_t n = out_len / 4;   /* 每样本 4B（type2） */
+
+        /* S3 type2 原始格式（32 位字，官方 adc_types.h:213）：
+         * bit0-11 = data(12bit)，bit12 = reserved，bit13-16 = channel(4bit)，
+         * bit17 = unit(0=ADC1/1=ADC2)。直接位域解析，免 12B 结构体 */
+        const uint32_t *p = (const uint32_t *)s_raw_buf;
         for (uint32_t i = 0; i < n; i++) {
-            if (!s_parse_buf[i].valid || s_parse_buf[i].unit != ADC_UNIT_1) continue;
-            int idx = (s_parse_buf[i].channel < 10) ? s_ch_map[s_parse_buf[i].channel] : -1;
+            uint32_t raw = p[i];
+            if ((raw >> 17) & 1) continue;            /* unit=1 → ADC2，跳过（S3 只用 ADC1） */
+            int ch = (int)((raw >> 13) & 0xF);
+            int idx = (ch < 10) ? s_ch_map[ch] : -1;
             if (idx < 0) continue;
 
-            uint16_t v = (uint16_t)s_parse_buf[i].raw_data & 0xFFF;
+            uint16_t v = (uint16_t)(raw & 0xFFF);
             s_ring[idx][s_wr[idx]] = v;
 
             /* 主通道（idx==0）触发检测：边沿跨过阈值（按 CH1 自身写指针） */
@@ -161,9 +181,17 @@ static void scope_task(void *arg)
             s_frame->running = false;   /* 冻结帧标记停止 */
             xSemaphoreGive(s_lock);
         }
+
+        /* 让出 CPU（不延迟）：1MHz 下 read 大部分时间立即返回（不阻塞），任务
+         * 会连续占用 CPU0 饿死 IDLE0 → TWDT 5s 超时触发（实测 ~5.7s 帧停）。
+         * taskYIELD 让 IDLE0 得以喂狗；对吞吐影响 ~0（read 阻塞等待时本就让出，
+         * 实测 100 万/s 稳定 ovf=0）。不用 vTaskDelay(1)：会真实让出 1ms，
+         * 1MHz 下每批 512 样本仅 0.5ms 数据，1ms 让出会砍半吞吐。 */
+        taskYIELD();
     }
 
     /* 任务退出：持锁清句柄（start/stop 靠它判断任务存活），再自删 */
+    esp_task_wdt_delete(NULL);
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_task = NULL;
     xSemaphoreGive(s_lock);
@@ -183,7 +211,8 @@ static void scope_teardown_locked(void)
             vTaskDelay(pdMS_TO_TICKS(20));
             xSemaphoreTake(s_lock, portMAX_DELAY);
         }
-        if (s_task) {   /* 任务未及时退出（异常）：强删 */
+        if (s_task) {   /* 任务未及时退出（异常）：强删（先注销其 TWDT 订阅） */
+            esp_task_wdt_delete(s_task);
             vTaskDelete(s_task);
             s_task = NULL;
         }
@@ -218,19 +247,21 @@ esp_err_t drv_scope_init(void)
     if (!s_frame) goto err;
     memset(s_frame, 0, sizeof(scope_frame_t));
 
-    /* 拉帧解析缓冲（PSRAM；~8KB 不进任务栈） */
-    s_parse_buf = heap_caps_malloc(SCOPE_FRAME_BYTES * sizeof(adc_continuous_data_t),
-                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!s_parse_buf) goto err;
+    /* read 原始 4B DMA 数据缓冲（PSRAM；1 个 DMA 帧 = 2048B） */
+    s_raw_buf = heap_caps_malloc(SCOPE_RAW_BUF_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_raw_buf) goto err;
 
-    /* adc_continuous 句柄。内部 RAM 需求：现在 httpd 栈移 PSRAM 后
-     *   DMA free~20KB / max_block~13.3KB（实测），较开发时（~8KB/4KB）翻倍：
-     *   conv_frame_size 1024 → rx_dma_buf = INTERNAL_BUF_NUM(5)×1024 = 5KB，
-     *   DMA 中断 80k/256≈312Hz（较 512 时减半，CPU 省一半）；
-     *   store buf 8KB + rx_dma 5KB = 13KB ≤ 13.3KB 上限（留余量不超）。 */
+    /* adc_continuous 句柄。1MHz 方案（vendored）：
+     *  - rx_dma_buf 保持内部 DMA RAM（10KB = 5×conv 2048）：PSRAM 版实测
+     *    ~6s 后 DMA 数据流崩溃（ISR esp_cache_msync 对 PSRAM 非对齐地址周期性
+     *    失效，cache 回写覆盖 DMA 数据），内部 RAM 余量（largest~15KB）足够。
+     *  - ringbuf_storage（store 32KB）在 PSRAM：纯 CPU 读写（ISR send/任务
+     *    receive），无 DMA 直访，安全；1MHz 4MB/s 下 8ms 防丢缓冲。
+     *  - 采集任务已加 TWDT 喂狗 + 每批让出（饿死 IDLE0 触发 WDT 的 5s 停摆
+     *    根因，已修复）。 */
     adc_continuous_handle_cfg_t hdl = {
-        .max_store_buf_size = 8 * 1024,
-        .conv_frame_size = 1024,
+        .max_store_buf_size = 32 * 1024,
+        .conv_frame_size = 2048,
     };
     esp_err_t ret = adc_continuous_new_handle(&hdl, &s_handle);
     if (ret != ESP_OK) {
@@ -238,6 +269,7 @@ esp_err_t drv_scope_init(void)
                  esp_err_to_name(ret));
         goto err;
     }
+    ESP_LOGI(S_TAG, "init: handle ok (store=%d conv=%d)", hdl.max_store_buf_size, hdl.conv_frame_size);
 
     /* 电压校准（S3：curve fitting；v5.5.3 API = create_scheme + check_scheme） */
     adc_cali_curve_fitting_config_t cali = {
@@ -266,7 +298,7 @@ err:
     for (int c = 0; c < SCOPE_CH_MAX; c++) {
         if (s_ring[c]) { heap_caps_free(s_ring[c]); s_ring[c] = NULL; }
     }
-    if (s_parse_buf) { heap_caps_free(s_parse_buf); s_parse_buf = NULL; }
+    if (s_raw_buf) { heap_caps_free(s_raw_buf); s_raw_buf = NULL; }
     if (s_frame) { heap_caps_free(s_frame); s_frame = NULL; }
     if (s_handle) { adc_continuous_deinit(s_handle); s_handle = NULL; }
     vSemaphoreDelete(s_lock);
@@ -343,7 +375,9 @@ esp_err_t drv_scope_start(const scope_cfg_t *cfg)
     s_frame->running = true;
     s_run = true;
 
-    ret = xTaskCreateWithCaps(scope_task, "scope", 2048, NULL, 6, &s_task, MALLOC_CAP_SPIRAM);
+    /* 优先 6（高于 LVGL 5/网络 5）：1MHz 下任务需抢占 CPU 及时消费 DMA，
+     * 否则 store ringbuf 溢出丢样；不高过 10 避免极端饿死系统任务 */
+    ret = xTaskCreateWithCaps(scope_task, "scope", 4096, NULL, 6, &s_task, MALLOC_CAP_SPIRAM);
     if (ret != pdPASS) {
         s_run = false;
         adc_continuous_stop(s_handle);
@@ -355,6 +389,7 @@ esp_err_t drv_scope_start(const scope_cfg_t *cfg)
         return ESP_ERR_NO_MEM;
     }
     xSemaphoreGive(s_lock);
+    ESP_LOGI(S_TAG, "start ok (%dHz, %d ch)", cfg->sample_rate_hz, nch);
     return ESP_OK;
 }
 
@@ -386,8 +421,8 @@ esp_err_t drv_scope_deinit(void)
         if (s_ring[c]) heap_caps_free(s_ring[c]);
         s_ring[c] = NULL;
     }
-    if (s_parse_buf) heap_caps_free(s_parse_buf);
-    s_parse_buf = NULL;
+    if (s_raw_buf) heap_caps_free(s_raw_buf);
+    s_raw_buf = NULL;
     if (s_frame) heap_caps_free(s_frame);
     s_frame = NULL;
     xSemaphoreGive(s_lock);
