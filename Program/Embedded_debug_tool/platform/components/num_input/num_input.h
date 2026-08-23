@@ -18,14 +18,17 @@ typedef void (*num_input_cb_t)(void *ctx, bool ok, int value);
 
 /* 显示数字输入面板（无标题，纯键盘）。
  * parent      面板挂载对象（通常为当前屏幕/APP root）
- * initial     初始值（默认 0）
- * min, max    允许范围（确认时 clamp）
- * allow_decimal 是否允许小数点键
+ * initial     初始值（decimal_places>0 时 = 实际值 × 10^decimal_places 的整数，
+ *             如 2 位小数 1.55 → initial=155；显示时按小数位格式化）
+ * min, max    允许范围（decimal_places>0 时同样按 ×10^decimal_places 的整数）
+ * allow_decimal 是否允许小数点键（配合 decimal_places 显示小数）
+ * decimal_places 小数位（0=纯整数模式；>0=显示/解析带小数，回调值 = 实际×10^dec）
  * on_done     结果回调（NULL=仅关闭）
  * ctx         回调上下文
  * 返回 false = 已有面板在显示（拒绝重复打开） */
 bool num_input_show(lv_obj_t *parent, int initial, int min, int max,
-                    bool allow_decimal, num_input_cb_t on_done, void *ctx);
+                    bool allow_decimal, int decimal_places,
+                    num_input_cb_t on_done, void *ctx);
 
 /* 面板是否正在显示（用于右滑返回等层级判断） */
 bool num_input_is_active(void);

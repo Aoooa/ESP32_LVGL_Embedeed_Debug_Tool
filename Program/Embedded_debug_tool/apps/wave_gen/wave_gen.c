@@ -383,7 +383,7 @@ static void wg_num_open(lv_event_t *e)
     default:
         return;
     }
-    num_input_show(w->root, initial, min, max, dec, wg_num_confirm, w);
+    num_input_show(w->root, initial, min, max, dec, 0, wg_num_confirm, w);
 }
 
 /* 右侧区：数值输入框（按钮显示当前值，点击弹数字键盘） */

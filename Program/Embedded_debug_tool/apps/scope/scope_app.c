@@ -22,23 +22,23 @@
 #define SC_GRID_MID      0x3A3A48   /* 中心横轴（略亮） */
 #define SC_TRIG          0xE5484D   /* 触发线红 */
 #define SC_SEL           0xFFC857   /* 时间轴滑块（琥珀，50% 半透明混合） */
-#define SC_RUN           0x22C55E   /* RUN 状态点绿 */
-#define SC_STOP          0x6B7280   /* STOP 状态点灰 */
+#define SC_RUN           0x22C55E   /* RUN 文字/状态绿 */
+#define SC_STOP_RED      0xE5484D   /* STOP 文字红（RUN/STOP 按钮区分） */
 #define SC_TEXT          0xE8E8F0
 #define SC_MEAS          0x94A3B8
 #define SC_BTN_ON        0x39C5BB   /* 键按下文字色 */
 
 /* ── 布局 ── */
 #define SC_TOP_H    28
-#define SC_MEAS_H   44   /* 测量栏（2 行测量 + 1 行格子单位） */
+#define SC_MEAS_H   58   /* 测量栏（2 行测量 + 1 行格子单位 + 1 行采样率/触发电平） */
 #define SC_BAR_H    40
 
 /* ── 采样率：num_input 输入（vendored 1MHz 方案，官方上限已突破至 1M）。
- * 下限 10000：80M digi 时钟下 interval=40M/采样率，<9766Hz 超 12 位 timer_target
- * 截断失真（与 soc_caps THRES_LOW 同步）。
+ * 下限 1kHz：动态分频（adc_hal.c）下 1kHz 时 div_num=9 → interval=4000 合法；
+ * 低于 1kHz 无实用场景（50Hz 需 ≥500Hz 采样，1kHz 已足够）。
  * 显示窗口固定 2048 点 → 横轴总时长 = 2048/采样率（时间轴缩放）。
  * 默认 1000000（1MHz；需更长时间窗时输入更小值）。 */
-#define SC_RATE_MIN   10000
+#define SC_RATE_MIN   1000
 #define SC_RATE_MAX   1000000
 #define SC_RATE_DEF   1000000
 
@@ -79,31 +79,19 @@ typedef enum {
 static const char *const s_ch_mode_strs[] = { "CH1", "CH2", "Dual" };
 #define SC_CH_MODE_N  (sizeof(s_ch_mode_strs) / sizeof(s_ch_mode_strs[0]))
 
-/* 采样率显示文本：>=1000 → "80k"，否则原值 */
-static void sc_rate_label(int hz, char *buf, size_t len)
-{
-    if (hz >= 1000000) {
-        snprintf(buf, len, "%dM", hz / 1000000);
-    } else if (hz >= 1000) {
-        snprintf(buf, len, "%dk", hz / 1000);
-    } else {
-        snprintf(buf, len, "%d", hz);
-    }
-}
-
 typedef struct {
     lv_obj_t *root;
     /* 顶栏 */
     lv_obj_t *ch_btn, *ch_lbl;
     lv_obj_t *vr_btn, *vr_lbl;      /* 垂直范围档位键 */
     lv_obj_t *hz_btn, *hz_lbl;      /* 水平缩放键（窗口切片） */
-    lv_obj_t *state_dot, *state_lbl;
     /* 波形 canvas */
     lv_obj_t *canvas;
     lv_color_t *canvas_buf;
     int canvas_w, canvas_h;
     /* 测量栏 */
     lv_obj_t *m_lbl1, *m_lbl2, *m_lbl3;   /* 测量 2 行 + 格子单位 1 行 */
+    lv_obj_t *m_lbl4a, *m_lbl4b;          /* 采样率（左，绿）+ 触发电平（右贴边，橙） */
     /* 底栏 */
     lv_obj_t *btn[4];
     lv_obj_t *lbl[4];
@@ -319,26 +307,43 @@ static void scope_update_meas(const scope_frame_t *f)
     lv_label_set_text(s->m_lbl3, b3);
 }
 
-/* ── 状态点 + 键文本刷新 ── */
+/* ── 状态 + 键文本刷新 ── */
 static void scope_refresh_status(void)
 {
     scope_t *s = s_scope;
     if (!s) return;
-    lv_obj_set_style_bg_color(s->state_dot, lv_color_hex(s->running ? SC_RUN : SC_STOP), 0);
-    lv_label_set_text(s->state_lbl, s->running ? "RUN" : "STOP");
     lv_label_set_text(s->ch_lbl, s_ch_mode_strs[s->ch_mode]);
     /* 通道键文字色跟随当前通道波形色（CH1=青绿 CH2=橙） */
     lv_obj_set_style_text_color(s->ch_lbl,
                                 lv_color_hex(s->ch_mode == SC_CH_MODE_CH2 ? SC_WAVE2 : SC_WAVE1), 0);
     lv_label_set_text(s->vr_lbl, s_vrange_strs[s->vr_idx]);
     lv_label_set_text(s->hz_lbl, s_hzoom_strs[s->hz_idx]);
-    lv_label_set_text(s->lbl[0], s->running ? "STOP" : "RUN");   /* 底栏首键 = 当前状态 */
+
+    /* 底栏首键 = RUN/STOP，文字色区分状态：RUN 绿 / STOP 红 */
+    lv_label_set_text(s->lbl[0], s->running ? "STOP" : "RUN");
+    lv_obj_set_style_text_color(s->lbl[0],
+                                lv_color_hex(s->running ? SC_STOP_RED : SC_RUN), 0);
 
     lv_label_set_text(s->lbl[1], s->cfg.trig_mode == SCOPE_TRIG_AUTO ? "AUTO"
                                      : (s->cfg.trig_mode == SCOPE_TRIG_NORM ? "NORM" : "SINGLE"));
-    char rb[16];
-    sc_rate_label(s->cfg.sample_rate_hz, rb, sizeof(rb));
-    lv_label_set_text(s->lbl[2], rb);
+    /* 采样率键：固定显示英文缩写 SPS（实际值在信息文本 m_lbl4a） */
+    lv_label_set_text(s->lbl[2], "SPS");
+    /* V 键：固定显示 V（触发电平，数值在信息文本 m_lbl4b） */
+    lv_label_set_text(s->lbl[3], "V");
+    /* 信息文本第 4 行：采样率实际值（绿，左）+ 触发电平（橙，右贴边）。
+     * 按钮只显示英文缩写（SPS / V），实际值在这里完整显示 */
+    char b4a[16], b4b[16];
+    uint32_t hz = s->cfg.sample_rate_hz;
+    if (hz >= 1000000) {
+        snprintf(b4a, sizeof(b4a), "%uM", (unsigned)(hz / 1000000));
+    } else if (hz >= 1000) {
+        snprintf(b4a, sizeof(b4a), "%uk", (unsigned)(hz / 1000));
+    } else {
+        snprintf(b4a, sizeof(b4a), "%u", (unsigned)hz);
+    }
+    snprintf(b4b, sizeof(b4b), "Lv%.2fV", s->cfg.trigger_level * 3.1f / 4095.0f);
+    lv_label_set_text(s->m_lbl4a, b4a);
+    lv_label_set_text(s->m_lbl4b, b4b);
 
     /* RST 按钮：仅存在 V 或 H 缩放时显示 */
     bool zoomed = (s->vr_idx != 0) || (s->hz_idx != 0);
@@ -618,16 +623,24 @@ static void on_rate_btn(lv_event_t *e)
     (void)e;
     scope_t *s = s_scope;
     if (!s) return;
-    num_input_show(s->root, s->cfg.sample_rate_hz, SC_RATE_MIN, SC_RATE_MAX, false,
+    num_input_show(s->root, s->cfg.sample_rate_hz, SC_RATE_MIN, SC_RATE_MAX, false, 0,
                    on_rate_done, s);
 }
 
-static void on_v_done(void *ctx, bool ok, int value)
+/* 触发电平：raw(0-4095) <-> 电压(0-3.1V) 换算。输入框用电压（直觉），
+ * 存储/比较用 raw（ADC 原生值）。满量程 3.1V（ADC_ATTEN_DB_12）。
+ * 键盘 2 位小数：值 = 电压×100 整数（1.55V → 155），范围 0-310 */
+#define SC_TRIG_V_MAX  3.1f
+
+static void on_v_done(void *ctx, bool ok, int value_cv)
 {
     scope_t *s = ctx;
     if (!s) return;
     if (ok) {
-        s->cfg.trigger_level = value;
+        /* value_cv = 电压×100（厘伏）→ raw */
+        if (value_cv < 0) value_cv = 0;
+        if (value_cv > (int)(SC_TRIG_V_MAX * 100)) value_cv = (int)(SC_TRIG_V_MAX * 100);
+        s->cfg.trigger_level = (int)((uint32_t)value_cv * 4095 / (uint32_t)(SC_TRIG_V_MAX * 100));
         scope_apply_cfg();
     }
 }
@@ -637,7 +650,10 @@ static void on_v_btn(lv_event_t *e)
     (void)e;
     scope_t *s = s_scope;
     if (!s) return;
-    num_input_show(s->root, s->cfg.trigger_level, 0, 4095, false, on_v_done, s);
+    /* 当前触发点电压 ×100（厘伏）作为初始值：raw → 厘伏 */
+    int init_cv = (int)((uint32_t)s->cfg.trigger_level * (uint32_t)(SC_TRIG_V_MAX * 100) / 4095);
+    num_input_show(s->root, init_cv, 0, (int)(SC_TRIG_V_MAX * 100), true, 2,
+                   on_v_done, s);
 }
 
 /* ── 定时器：100ms 波形帧 + 500ms 测量帧 ── */
@@ -702,8 +718,6 @@ static void scope_relayout(void)
     lv_obj_set_size(s->vr_btn, 56, SC_TOP_H - 4);
     lv_obj_set_pos(s->hz_btn, 128, 2);
     lv_obj_set_size(s->hz_btn, 48, SC_TOP_H - 4);
-    lv_obj_align(s->state_dot, LV_ALIGN_TOP_RIGHT, -56, 9);
-    lv_obj_align(s->state_lbl, LV_ALIGN_TOP_RIGHT, -8, 7);
 
     if (cw != s->canvas_w || chh != s->canvas_h) {
         if (s->canvas_buf) heap_caps_free(s->canvas_buf);
@@ -729,9 +743,16 @@ static void scope_relayout(void)
     lv_obj_set_pos(s->rst_btn, (cw - RST_HOT_W) / 2, SC_TOP_H + chh - RST_HOT_H - 6);
     lv_obj_set_size(s->rst_btn, RST_HOT_W, RST_HOT_H);
 
+    /* 测量栏 4 行（行高 14px 紧凑排布）：
+     * m_lbl1/2 测量，m_lbl3 格子单位，m_lbl4a 采样率（左）+ m_lbl4b 触发电平（右贴边） */
     lv_obj_set_pos(s->m_lbl1, 8, SC_TOP_H + s->canvas_h + 2);
-    lv_obj_set_pos(s->m_lbl2, 8, SC_TOP_H + s->canvas_h + 17);
-    lv_obj_set_pos(s->m_lbl3, 8, SC_TOP_H + s->canvas_h + 32);
+    lv_obj_set_pos(s->m_lbl2, 8, SC_TOP_H + s->canvas_h + 16);
+    lv_obj_set_pos(s->m_lbl3, 8, SC_TOP_H + s->canvas_h + 30);
+    lv_obj_set_pos(s->m_lbl4a, 8, SC_TOP_H + s->canvas_h + 44);
+    /* 触发电平贴右缘：宽 70px 右对齐，10pt "Lv1.55V"≈44px 容纳 */
+    lv_obj_set_pos(s->m_lbl4b, sw - 4 - 70, SC_TOP_H + s->canvas_h + 44);
+    lv_obj_set_width(s->m_lbl4b, 70);
+    lv_obj_set_style_text_align(s->m_lbl4b, LV_TEXT_ALIGN_RIGHT, 0);
 
     int bw = (sw - 12 - 15) / 4;
     for (int i = 0; i < 4; i++) {
@@ -795,21 +816,6 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
     lv_obj_add_event_cb(hz_btn, on_hz_btn, LV_EVENT_CLICKED, NULL);
     s->hz_btn = hz_btn;
     s->hz_lbl = lv_obj_get_child(hz_btn, 0);
-
-    lv_obj_t *dot = lv_obj_create(root);
-    lv_obj_remove_flag(dot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC
-                       | LV_OBJ_FLAG_SCROLL_MOMENTUM | LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_size(dot, 10, 10);
-    lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(dot, lv_color_hex(SC_STOP), 0);
-    lv_obj_set_style_border_width(dot, 0, 0);
-    s->state_dot = dot;
-
-    lv_obj_t *sl = lv_label_create(root);
-    lv_label_set_text(sl, "STOP");
-    lv_obj_set_style_text_font(sl, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(sl, lv_color_hex(SC_TEXT), 0);
-    s->state_lbl = sl;
 
     lv_obj_t *cv = lv_canvas_create(root);
     s->canvas = cv;
@@ -882,6 +888,19 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
     lv_obj_set_style_text_font(ml3, &lv_font_montserrat_10, 0);
     lv_obj_set_style_text_color(ml3, lv_color_hex(SC_MEAS), 0);
     s->m_lbl3 = ml3;
+
+    /* 信息文本第 4 行：采样率实际值（绿，左）+ 触发电平（橙，右贴边）。
+     * 按钮只显示缩写（SPS / V），实际值在这里完整显示 */
+    lv_obj_t *ml4a = lv_label_create(root);
+    lv_label_set_text(ml4a, "1M");
+    lv_obj_set_style_text_font(ml4a, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(ml4a, lv_color_hex(SC_RUN), 0);
+    s->m_lbl4a = ml4a;
+    lv_obj_t *ml4b = lv_label_create(root);
+    lv_label_set_text(ml4b, "Lv1.55V");
+    lv_obj_set_style_text_font(ml4b, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(ml4b, lv_color_hex(SC_WAVE2), 0);
+    s->m_lbl4b = ml4b;
 
     const char *btns[] = { "RUN", "AUTO", "80k", "V" };
     lv_event_cb_t cbs[] = { on_run_btn, on_trig_btn, on_rate_btn, on_v_btn };

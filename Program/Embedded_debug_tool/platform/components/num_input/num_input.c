@@ -18,6 +18,7 @@ typedef struct {
     char buf[NI_BUF_MAX + 1];
     int len;
     bool allow_decimal;
+    int decimal_places;   /* >0 = 小数模式：显示带小数，回调值 = 实际 ×10^dec */
     int min, max;
     num_input_cb_t on_done;
     void *ctx;
@@ -72,7 +73,15 @@ static void ni_key(lv_event_t *e)
     if (!k || !s_ni.modal) return;
 
     if (strcmp(k, "ok") == 0) {
-        int v = atoi(s_ni.buf);
+        /* 小数模式：strtof 解析并按小数位放大为整数；否则 atoi */
+        int v;
+        if (s_ni.decimal_places > 0) {
+            double dv = strtod(s_ni.buf, NULL);
+            for (int p = 0; p < s_ni.decimal_places; p++) dv *= 10.0;
+            v = (int)(dv + 0.5);
+        } else {
+            v = atoi(s_ni.buf);
+        }
         if (v < s_ni.min) v = s_ni.min;
         if (v > s_ni.max) v = s_ni.max;
         num_input_cb_t cb = s_ni.on_done;
@@ -114,13 +123,22 @@ static void ni_key(lv_event_t *e)
 }
 
 bool num_input_show(lv_obj_t *parent, int initial, int min, int max,
-                    bool allow_decimal, num_input_cb_t on_done, void *ctx)
+                    bool allow_decimal, int decimal_places,
+                    num_input_cb_t on_done, void *ctx)
 {
     if (!parent || s_ni.modal) return false;
 
-    snprintf(s_ni.buf, sizeof(s_ni.buf), "%d", initial);
+    /* 小数模式：initial 是实际值 ×10^dec 的整数，显示时带小数（155→"1.55"） */
+    if (decimal_places > 0) {
+        double d = (double)initial;
+        for (int p = 0; p < decimal_places; p++) d /= 10.0;
+        snprintf(s_ni.buf, sizeof(s_ni.buf), "%.*f", decimal_places, d);
+    } else {
+        snprintf(s_ni.buf, sizeof(s_ni.buf), "%d", initial);
+    }
     s_ni.len = (int)strlen(s_ni.buf);
     s_ni.allow_decimal = allow_decimal;
+    s_ni.decimal_places = decimal_places;
     s_ni.min = min;
     s_ni.max = max;
     s_ni.on_done = on_done;
