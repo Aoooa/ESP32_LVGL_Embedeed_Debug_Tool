@@ -1,6 +1,7 @@
 #include "app_dap.h"
 #include "drv_dap.h"
 #include "app_cardreader.h"
+#include "app_usb_uart.h"
 #include "app_wifi.h"
 #include "usbip_server.h"
 #include "tinyusb.h"
@@ -219,6 +220,12 @@ esp_err_t app_dap_enable(void)
         app_cardreader_get_state() != CARDREADER_ERROR) {
         ESP_LOGE(TAG, "card reader is using USB (%s), disable it first",
                  app_cardreader_state_str(app_cardreader_get_state()));
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    /* 与 USB-UART 桥接互斥（共用 USB PHY） */
+    if (app_usb_uart_get_state() == USB_UART_ON) {
+        ESP_LOGE(TAG, "USB-UART bridge is using USB, disable it first");
         return ESP_ERR_INVALID_STATE;
     }
 

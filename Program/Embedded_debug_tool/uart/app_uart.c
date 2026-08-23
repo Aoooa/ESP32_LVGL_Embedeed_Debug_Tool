@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "esp_log.h"
+#include "freertos/task.h"
 
 uart_bridge_t *g_bridges[2];
 QueueHandle_t g_bcast_queue;
@@ -79,6 +80,12 @@ void app_uart_fwd_task(void *arg)
     uint8_t buf[1024];
 
     while (1) {
+        /* USB-UART 桥接开启期间独占 UART1：暂停本转发（暂停时也不读，
+         * 防止与桥接任务分走同一串口的字节） */
+        if (br->paused) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
         int len = drv_uart_read(br->port, buf, sizeof(buf), 10);
         if (len <= 0) continue;
 

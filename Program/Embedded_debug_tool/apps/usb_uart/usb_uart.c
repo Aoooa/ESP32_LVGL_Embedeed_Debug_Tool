@@ -1,0 +1,414 @@
+/* usb_uart.c —— USB 虚拟串口（CDC-ACM）↔ UART1 + ISP 下载 APP（LVGL 9）
+ *
+ * 配色沿用 card_reader（深色卡片风格），与桌面主题一致。
+ * 状态轮询：服务状态来自 TinyUSB 任务/桥接任务，经 lv_timer 回到 LVGL
+ * 线程刷新（250ms）。
+ */
+
+#include "usb_uart.h"
+#include "app_usb_uart.h"
+#include "app_cardreader.h"
+#include "app_dap.h"
+#include "app_font.h"
+#include "num_input.h"
+#include "esp_log.h"
+#include <stdio.h>
+
+/* ── 配色（与 card_reader 一致） ── */
+#define UU_BG        lv_color_hex(0x111827)
+#define UU_CARD      lv_color_hex(0x1F2937)
+#define UU_TEXT      lv_color_hex(0xFFFFFF)
+#define UU_DIM       lv_color_hex(0x9CA3AF)
+#define UU_ACCENT    lv_color_hex(0x39C5BB)
+#define UU_ERR       lv_color_hex(0xEF4444)
+
+/* 波特率循环档位 */
+static const int s_bauds[] = { 115200, 57600, 9600 };
+#define BAUDS_N  (sizeof(s_bauds) / sizeof(s_bauds[0]))
+
+struct usb_uart_app {
+    lv_obj_t *root;
+    usb_uart_back_cb_t back_cb;
+    void *back_ctx;
+
+    /* 状态行 */
+    lv_obj_t *val_state;
+    lv_obj_t *val_pc;
+    lv_obj_t *val_hint;
+
+    /* 可编辑行按钮 */
+    lv_obj_t *btn_baud;
+    lv_obj_t *btn_parity;
+    lv_obj_t *btn_boot0;
+    lv_obj_t *btn_rst;
+
+    /* 底部按钮 */
+    lv_obj_t *btn_toggle;
+    lv_obj_t *lbl_toggle;
+
+    lv_timer_t *timer;
+
+    int num_opt;   /* 当前编辑的引脚（num_input 回调） */
+};
+
+static lv_font_t *uu_font(void)
+{
+    lv_font_t *f = app_font_get(16);
+    return f ? f : &lv_font_montserrat_14;
+}
+
+/* 行内编辑按钮的文本 label（第一个 child） */
+static lv_obj_t *btn_label(lv_obj_t *btn)
+{
+    return lv_obj_get_child(btn, 0);
+}
+
+/* ── 状态 → 界面 ── */
+
+static void uu_update(struct usb_uart_app *uu)
+{
+    usb_uart_state_t st = app_usb_uart_get_state();
+    cardreader_state_t cr = app_cardreader_get_state();
+    bool cr_busy = (cr == CARDREADER_EXPOSED || cr == CARDREADER_APP_OWNED);
+    bool dap_busy = (app_dap_get_state() == DAP_STATE_READY);
+    bool usb_conflict = cr_busy || dap_busy;
+
+    /* USB 状态 */
+    static const char *st_txt[] = {
+        [USB_UART_OFF] = "未启用",
+        [USB_UART_ON] = "运行中",
+        [USB_UART_ERROR] = "异常",
+    };
+    lv_label_set_text(uu->val_state, st_txt[st]);
+    lv_obj_set_style_text_color(uu->val_state,
+                                st == USB_UART_ON ? UU_ACCENT :
+                                st == USB_UART_ERROR ? UU_ERR : UU_DIM, 0);
+
+    /* PC 连接 */
+    bool pc_open = (st == USB_UART_ON) && app_usb_uart_pc_open();
+    lv_label_set_text(uu->val_pc,
+                      st == USB_UART_ON ? (pc_open ? "已打开 (COM)" : "已枚举 · 未打开")
+                                        : "未连接");
+    lv_obj_set_style_text_color(uu->val_pc, pc_open ? UU_ACCENT : UU_DIM, 0);
+
+    /* 可编辑行 */
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d", app_usb_uart_get_baud());
+    lv_label_set_text(btn_label(uu->btn_baud), buf);
+    lv_label_set_text(btn_label(uu->btn_parity),
+                      app_usb_uart_get_parity_even() ? "8E1" : "8N1");
+    int b0, rst;
+    app_usb_uart_get_isp_pins(&b0, &rst);
+    snprintf(buf, sizeof(buf), "IO%d", b0);
+    lv_label_set_text(btn_label(uu->btn_boot0), buf);
+    snprintf(buf, sizeof(buf), "IO%d", rst);
+    lv_label_set_text(btn_label(uu->btn_rst), buf);
+
+    /* 提示 */
+    const char *hint;
+    if (usb_conflict) {
+        hint = cr_busy
+            ? "读卡器(MSD)占用 USB，请先关闭再\n开启本功能。"
+            : "DAP(SWD)占用 USB，请先关闭再开\n启本功能。";
+    } else if (st == USB_UART_ON) {
+        hint = "桥接运行中：PC 打开串口后即可双向\n收发。UART1 已被独占，TCP/终端\n转发暂停。ISP 复位约 0.5s。";
+    } else if (st == USB_UART_ERROR) {
+        hint = "上次启动失败，请检查 USB 连接后\n重试。";
+    } else {
+        hint = "开启后 PC 枚举为 USB 串口，经\nUART1(IO2/IO4) 连目标。ISP 需接\nBOOT0/RST 线（下方引脚设置）。";
+    }
+    lv_label_set_text(uu->val_hint, hint);
+
+    /* 开启/关闭按钮 */
+    bool active = (st == USB_UART_ON);
+    lv_label_set_text(uu->lbl_toggle, active ? "关闭 USB 串口" : "开启 USB 串口");
+    if (!active && usb_conflict) {
+        lv_obj_add_state(uu->btn_toggle, LV_STATE_DISABLED);
+    } else {
+        lv_obj_remove_state(uu->btn_toggle, LV_STATE_DISABLED);
+    }
+
+    /* 波特率/校验按钮：仅 OFF 可改（服务层同样拒绝） */
+    if (st == USB_UART_OFF) {
+        lv_obj_remove_state(uu->btn_baud, LV_STATE_DISABLED);
+        lv_obj_remove_state(uu->btn_parity, LV_STATE_DISABLED);
+    } else {
+        lv_obj_add_state(uu->btn_baud, LV_STATE_DISABLED);
+        lv_obj_add_state(uu->btn_parity, LV_STATE_DISABLED);
+    }
+}
+
+/* ── 按钮回调 ── */
+
+static void uu_toggle_cb(lv_event_t *e)
+{
+    struct usb_uart_app *uu = lv_event_get_user_data(e);
+    if (!uu) return;
+    if (app_usb_uart_get_state() == USB_UART_ON) {
+        app_usb_uart_disable();
+    } else {
+        app_usb_uart_enable();
+    }
+    uu_update(uu);
+}
+
+static void uu_isp_cb(lv_event_t *e)
+{
+    struct usb_uart_app *uu = lv_event_get_user_data(e);
+    if (!uu) return;
+    ESP_LOGI("usb_uart", "ISP button pressed");
+    esp_err_t ret = app_usb_uart_enter_isp();
+    if (ret != ESP_OK) {
+        lv_label_set_text(uu->val_hint, "ISP 引脚配置无效，请检查\nBOOT0/RST 设置。");
+    }
+    uu_update(uu);
+}
+
+static void uu_baud_cb(lv_event_t *e)
+{
+    struct usb_uart_app *uu = lv_event_get_user_data(e);
+    if (!uu) return;
+    int cur = app_usb_uart_get_baud();
+    for (int i = 0; i < (int)BAUDS_N; i++) {
+        if (s_bauds[i] == cur) {
+            app_usb_uart_set_baud(s_bauds[(i + 1) % BAUDS_N]);
+            break;
+        }
+    }
+    uu_update(uu);
+}
+
+static void uu_parity_cb(lv_event_t *e)
+{
+    struct usb_uart_app *uu = lv_event_get_user_data(e);
+    if (!uu) return;
+    app_usb_uart_set_parity_even(!app_usb_uart_get_parity_even());
+    uu_update(uu);
+}
+
+/* 引脚编辑：num_input 确认回调（白名单 + 不相等由服务层校验） */
+static void uu_num_confirm(void *ctx, bool ok, int value)
+{
+    struct usb_uart_app *uu = ctx;
+    if (!ok) return;
+    int b0, rst;
+    app_usb_uart_get_isp_pins(&b0, &rst);
+    esp_err_t ret = (uu->num_opt == 0)
+        ? app_usb_uart_set_isp_pins(value, rst)
+        : app_usb_uart_set_isp_pins(b0, value);
+    if (ret != ESP_OK) {
+        lv_label_set_text(uu->val_hint, "无效引脚：需为板面空闲脚且与另一\n脚不同，请重新设置。");
+    }
+    uu_update(uu);
+}
+
+static void uu_pin_cb(lv_event_t *e)
+{
+    struct usb_uart_app *uu = lv_event_get_user_data(e);
+    if (!uu) return;
+    uu->num_opt = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target_obj(e));
+    int b0, rst;
+    app_usb_uart_get_isp_pins(&b0, &rst);
+    int initial = (uu->num_opt == 0) ? b0 : rst;
+    num_input_show(uu->root, initial, 5, 44, false, 0, uu_num_confirm, uu);
+}
+
+static void uu_timer_cb(lv_timer_t *t)
+{
+    uu_update(lv_timer_get_user_data(t));
+}
+
+/* ── 行构建 ── */
+
+/* 纯信息行：key / value 两行（同 card_reader） */
+static lv_obj_t *uu_row_text(lv_obj_t *parent, const char *key, lv_obj_t **val_out)
+{
+    lv_obj_t *row = lv_obj_create(parent);
+    lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(row, UU_CARD, 0);
+    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_radius(row, 6, 0);
+    lv_obj_set_style_pad_hor(row, 12, 0);
+    lv_obj_set_style_pad_ver(row, 4, 0);
+    lv_obj_set_style_pad_gap(row, 2, 0);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+    lv_obj_t *k = lv_label_create(row);
+    lv_label_set_text(k, key);
+    lv_obj_set_style_text_color(k, UU_DIM, 0);
+    lv_obj_set_style_text_font(k, uu_font(), 0);
+
+    lv_obj_t *v = lv_label_create(row);
+    lv_label_set_long_mode(v, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(v, lv_pct(100));
+    lv_obj_set_style_text_color(v, UU_ACCENT, 0);
+    lv_obj_set_style_text_font(v, uu_font(), 0);
+    if (val_out) *val_out = v;
+    return row;
+}
+
+/* 可编辑行：key 标签 + 全宽按钮（按钮文字 = 当前值） */
+static void uu_row_btn(lv_obj_t *parent, const char *key, lv_event_cb_t cb,
+                       void *ud, lv_obj_t **btn_out)
+{
+    lv_obj_t *row = lv_obj_create(parent);
+    lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_radius(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_set_style_pad_gap(row, 4, 0);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+    lv_obj_t *k = lv_label_create(row);
+    lv_label_set_text(k, key);
+    lv_obj_set_style_text_color(k, UU_DIM, 0);
+    lv_obj_set_style_text_font(k, uu_font(), 0);
+
+    lv_obj_t *b = lv_button_create(row);
+    lv_obj_set_size(b, lv_pct(100), 30);
+    lv_obj_set_style_bg_color(b, UU_CARD, 0);
+    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(b, UU_ACCENT, 0);
+    lv_obj_set_style_border_width(b, 1, 0);
+    lv_obj_set_style_radius(b, 6, 0);
+    lv_obj_set_style_text_color(b, UU_TEXT, 0);
+    lv_obj_set_style_text_font(b, uu_font(), 0);
+    lv_obj_set_style_bg_color(b, UU_DIM, LV_STATE_DISABLED);
+    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, LV_STATE_DISABLED);
+    lv_obj_set_style_text_color(b, UU_DIM, LV_STATE_DISABLED);
+    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, ud);
+    lv_obj_set_user_data(b, ud);
+
+    lv_obj_t *l = lv_label_create(b);
+    lv_obj_center(l);
+    if (btn_out) *btn_out = b;
+}
+
+/* ── 构建 ── */
+
+usb_uart_app_t *usb_uart_create(lv_obj_t *parent, usb_uart_back_cb_t back_cb, void *ctx)
+{
+    usb_uart_app_t *uu = lv_malloc(sizeof(usb_uart_app_t));
+    if (!uu) return NULL;
+    lv_memzero(uu, sizeof(*uu));
+    uu->back_cb = back_cb;
+    uu->back_ctx = ctx;
+
+    lv_obj_t *root = lv_obj_create(parent);
+    lv_obj_set_size(root, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(root, UU_BG, 0);
+    lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(root, 0, 0);
+    lv_obj_set_style_radius(root, 0, 0);
+    lv_obj_set_style_pad_all(root, 0, 0);
+    lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
+    uu->root = root;
+
+    /* 标题 */
+    lv_obj_t *title = lv_label_create(root);
+    lv_label_set_text(title, "USB UART + ISP");
+    lv_obj_set_pos(title, 10, 8);
+    lv_obj_set_style_text_color(title, UU_ACCENT, 0);
+    lv_obj_set_style_text_font(title, uu_font(), 0);
+
+    /* 信息区（flex column，可滚动） */
+    int sh = lv_display_get_vertical_resolution(lv_display_get_default());
+    lv_obj_t *info = lv_obj_create(root);
+    lv_obj_set_pos(info, 8, 36);
+    lv_obj_set_size(info, lv_pct(100) - 16, sh - 36 - 8 - 56);
+    lv_obj_set_style_bg_opa(info, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(info, 0, 0);
+    lv_obj_set_style_radius(info, 0, 0);
+    lv_obj_set_style_pad_all(info, 0, 0);
+    lv_obj_set_style_pad_gap(info, 6, 0);
+    lv_obj_set_flex_flow(info, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scroll_dir(info, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(info, LV_SCROLLBAR_MODE_OFF);
+
+    uu_row_text(info, "USB 状态", &uu->val_state);
+    uu_row_text(info, "PC 连接", &uu->val_pc);
+
+    uu_row_btn(info, "波特率", uu_baud_cb, uu, &uu->btn_baud);
+    uu_row_btn(info, "校验", uu_parity_cb, uu, &uu->btn_parity);
+    uu_row_btn(info, "BOOT0 引脚", uu_pin_cb, (void *)(intptr_t)0, &uu->btn_boot0);
+    uu_row_btn(info, "RST 引脚", uu_pin_cb, (void *)(intptr_t)1, &uu->btn_rst);
+
+    uu_row_text(info, "提示", &uu->val_hint);
+
+    /* 底部按钮：开启/关闭 + 进入 ISP */
+    lv_obj_t *btns = lv_obj_create(root);
+    lv_obj_set_size(btns, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_align(btns, LV_ALIGN_BOTTOM_MID, 0, -8);
+    lv_obj_set_style_bg_opa(btns, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(btns, 0, 0);
+    lv_obj_set_style_radius(btns, 0, 0);
+    lv_obj_set_style_pad_all(btns, 0, 8);
+    lv_obj_set_style_pad_column(btns, 10, 0);
+    lv_obj_set_flex_flow(btns, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(btns, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(btns, LV_OBJ_FLAG_SCROLLABLE);
+
+    uu->btn_toggle = lv_button_create(btns);
+    lv_obj_set_size(uu->btn_toggle, lv_pct(55), 36);
+    lv_obj_set_style_bg_color(uu->btn_toggle, UU_CARD, 0);
+    lv_obj_set_style_bg_opa(uu->btn_toggle, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(uu->btn_toggle, UU_ACCENT, 0);
+    lv_obj_set_style_border_width(uu->btn_toggle, 1, 0);
+    lv_obj_set_style_radius(uu->btn_toggle, 8, 0);
+    lv_obj_set_style_text_color(uu->btn_toggle, UU_TEXT, 0);
+    lv_obj_set_style_text_font(uu->btn_toggle, uu_font(), 0);
+    lv_obj_set_style_bg_color(uu->btn_toggle, UU_DIM, LV_STATE_DISABLED);
+    lv_obj_set_style_bg_opa(uu->btn_toggle, LV_OPA_COVER, LV_STATE_DISABLED);
+    lv_obj_add_event_cb(uu->btn_toggle, uu_toggle_cb, LV_EVENT_CLICKED, uu);
+    uu->lbl_toggle = lv_label_create(uu->btn_toggle);
+    lv_obj_center(uu->lbl_toggle);
+
+    lv_obj_t *btn_isp = lv_button_create(btns);
+    lv_obj_set_size(btn_isp, lv_pct(45), 36);
+    lv_obj_set_style_bg_color(btn_isp, UU_CARD, 0);
+    lv_obj_set_style_bg_opa(btn_isp, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(btn_isp, UU_ERR, 0);
+    lv_obj_set_style_border_width(btn_isp, 1, 0);
+    lv_obj_set_style_radius(btn_isp, 8, 0);
+    lv_obj_set_style_text_color(btn_isp, UU_ERR, 0);
+    lv_obj_set_style_text_font(btn_isp, uu_font(), 0);
+    lv_obj_add_event_cb(btn_isp, uu_isp_cb, LV_EVENT_CLICKED, uu);
+    lv_obj_t *isp_lbl = lv_label_create(btn_isp);
+    lv_label_set_text(isp_lbl, "进入 ISP 模式");
+    lv_obj_center(isp_lbl);
+
+    uu_update(uu);
+
+    uu->timer = lv_timer_create(uu_timer_cb, 250, uu);
+
+    return uu;
+}
+
+void usb_uart_destroy(usb_uart_app_t *uu)
+{
+    if (!uu) return;
+    /* 退出 APP 自动关闭桥接（恢复 UART1 转发/USJ 控制台） */
+    if (app_usb_uart_get_state() == USB_UART_ON) {
+        ESP_LOGI("usb_uart", "exit -> disable bridge");
+        app_usb_uart_disable();
+    }
+    if (uu->timer) lv_timer_delete(uu->timer);
+    if (uu->root) {
+        lv_obj_add_flag(uu->root, LV_OBJ_FLAG_HIDDEN);
+        lv_refr_now(NULL);
+        lv_obj_delete(uu->root);
+    }
+    lv_free(uu);
+}
+
+bool usb_uart_swipe_back(usb_uart_app_t *uu)
+{
+    (void)uu;
+    return true;
+}
