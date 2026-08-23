@@ -423,6 +423,7 @@ static void launcher_build_wheel(void)
 
 typedef struct {
     void *app;                    /* APP 实例（NULL=空槽） */
+    lv_obj_t *root;               /* APP 根对象（screen 顶层，拖动返回时平移） */
     const app_manifest_t *m;      /* 描述符 */
     launcher_result_cb_t result_cb;  /* 本 APP 关闭时通知启动方（可能 NULL） */
     void *result_ctx;
@@ -599,7 +600,10 @@ void launcher_app_launch_with_cb(launch_app_id_t id, const char *arg,
     s_launch_arg = NULL;
     if (lv_obj_get_child_count(scr) > old_child_cnt) {
         lv_obj_t *app_root = lv_obj_get_child(scr, (int32_t)old_child_cnt);
+        slot->root = app_root;
         launcher_play_enter_anim(app_root);
+    } else {
+        slot->root = NULL;
     }
     slot->m = m;
     slot->result_cb = on_result;   /* 本 APP 关闭时回传结果给启动方 */
@@ -654,6 +658,91 @@ void launcher_app_close(void *ctx)
 bool launcher_app_running(void)
 {
     return s_depth > 0;
+}
+
+/* ── 手机式滑动返回（拖动） ──
+ * 手势层贴边右滑 → 拖动回调（launcher 注册）：
+ *   · 拖动中：先问栈顶 back()——false=非全屏界面（键盘/对话框）内部已处理，
+ *     不进拖动；true=可拖动 → 平移当前 APP root 的 x 跟随手指（露出下层）。
+ *   · 松手：dx > 屏宽/3 → 动画滑出 + 完成后 destroy 弹栈；
+ *           否则回弹原位（取消返回）。
+ * 拖动期间 LVGL 正常渲染（仅平移 root，APP 功能不受影响）。 */
+#define SWIPE_BACK_RATIO 3   /* 滑出阈值 = 屏宽/3 */
+
+static lv_obj_t *s_drag_root;    /* 拖动中的 APP root（松手时验证未被销毁） */
+static bool s_drag_armed;        /* 拖动已获准（back() 判定通过，仅首帧判定一次） */
+
+static void launcher_drag_x_cb(void *var, int32_t v)
+{
+    lv_obj_set_x((lv_obj_t *)var, v);
+}
+
+static void launcher_drag_exit_done(lv_anim_t *a)
+{
+    (void)a;
+    s_drag_root = NULL;
+    s_drag_armed = false;
+    launcher_app_close(NULL);   /* 滑出完成 → 弹栈销毁 */
+}
+
+static void launcher_drag_animate(lv_obj_t *root, int to_x, int ms,
+                                  bool exit)
+{
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, root);
+    lv_anim_set_exec_cb(&a, launcher_drag_x_cb);
+    lv_anim_set_values(&a, lv_obj_get_x(root), to_x);
+    lv_anim_set_duration(&a, ms);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+    if (exit) lv_anim_set_completed_cb(&a, launcher_drag_exit_done);
+    lv_anim_start(&a);
+}
+
+static void launcher_on_drag(void *ctx, int dx, bool pressed)
+{
+    (void)ctx;
+    app_slot_t *top = stack_top();
+    if (!top || !top->root) return;
+    lv_display_t *disp = lv_display_get_default();
+    int sw = lv_display_get_horizontal_resolution(disp);
+
+    if (pressed) {
+        if (!s_drag_armed) {
+            /* 拖动首帧：判定一次是否可返回（非全屏界面如键盘/对话框由
+             * back() 处理返回 false → 整个手势取消，不进入拖动）。
+             * 不逐帧调用——file_browser 等 back() 有副作用（目录上跳/SD 枚举） */
+            s_drag_armed = true;
+            if (!top->m->back || !top->m->back(top->app)) {
+                s_drag_armed = false;
+                s_drag_root = NULL;
+                ESP_LOGI("launcher", "[DRAG] cancelled (non-fullscreen, back handled internally)");
+                return;
+            }
+            s_drag_root = top->root;   /* 记录拖动目标（松手时验证未被销毁） */
+        }
+        int x = dx;
+        if (x < 0) x = 0;
+        if (x > sw) x = sw;
+        if (s_drag_root) lv_obj_set_x(s_drag_root, x);
+    } else {
+        /* 松手：判定滑出或回弹。拖动目标已销毁（APP 自行关闭）→ 跳过动画 */
+        app_slot_t *cur_top = stack_top();
+        if (!cur_top || cur_top->root != s_drag_root || !s_drag_root) {
+            s_drag_root = NULL;
+            s_drag_armed = false;
+            return;
+        }
+        int cur = lv_obj_get_x(s_drag_root);
+        if (cur > sw / SWIPE_BACK_RATIO) {
+            launcher_drag_animate(s_drag_root, sw, 150, true);   /* 滑出 → 返回 */
+            ESP_LOGI("launcher", "[DRAG] release dx=%d -> exit", dx);
+        } else {
+            launcher_drag_animate(s_drag_root, 0, 150, false);   /* 回弹原位 */
+            ESP_LOGI("launcher", "[DRAG] release dx=%d -> cancel", dx);
+        }
+        s_drag_armed = false;
+    }
 }
 
 /* 返回事件（输入层右滑触发，ctx 未用）：
@@ -917,6 +1006,11 @@ lv_obj_t *launcher_create(lv_obj_t *parent)
     gesture_set_back_handler(launcher_app_swipe_back, NULL);
     gesture_set_right_handler(launcher_on_swipe_right, NULL);
     gesture_set_left_handler(launcher_on_swipe_left, NULL);
+
+    /* 手机式滑动返回：贴边右滑 → 拖动回调（平移当前 APP + 松手判定）。
+     * back 回调仍保留：拖动开始前用它判断是否可返回（键盘/对话框等
+     * 非全屏界面 back()==false，不进入拖动） */
+    gesture_set_drag_handler(launcher_on_drag, NULL);
 
     return root;
 }

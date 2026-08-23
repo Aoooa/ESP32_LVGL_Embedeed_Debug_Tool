@@ -31,7 +31,7 @@
 #include <stdint.h>
 
 #define SCOPE_CH_MAX        2
-#define SCOPE_FRAME_POINTS  2048    /* 显示窗口点数（预触发 25% + 触发后 75%） */
+#define SCOPE_FRAME_MAX     32768   /* 窗口点数上限（=SCOPE_RING_N，frame 容量） */
 #define SCOPE_RING_N        32768   /* 应用层环形缓冲（每通道，PSRAM）；1MHz 下覆盖 33ms 历史 */
 
 /* 触发模式 */
@@ -48,7 +48,8 @@ typedef enum {
 } scope_edge_t;
 
 typedef struct {
-    int sample_rate_hz;        /* 官方合法 611..83333 */
+    int sample_rate_hz;        /* 合法 1000..1000000（vendored 动态分频） */
+    int window_points;         /* 每屏窗口点数（≤SCOPE_FRAME_MAX；由 UI 按 采样率×时间/div 计算） */
     int io[2];                 /* ADC1 输入 GPIO（io[1]=-1 单通道） */
     scope_trig_mode_t trig_mode;
     scope_edge_t edge;
@@ -59,9 +60,9 @@ typedef struct {
     uint32_t frameno;          /* 帧号（UI 判重绘） */
     int sample_rate_hz;        /* 实际采样率 */
     int channels;              /* 1 或 2 */
-    int points;                /* 每通道点数（=SCOPE_FRAME_POINTS） */
+    int points;                /* 每通道点数（=cfg.window_points，≤SCOPE_FRAME_MAX） */
     bool running;              /* 采集进行中（SINGLE 触发后 false） */
-    uint16_t ch[2][SCOPE_FRAME_POINTS];  /* 窗口数据（0..4095 raw） */
+    uint16_t ch[2][SCOPE_FRAME_MAX];  /* 窗口数据（0..4095 raw，容量上限，实际用 points） */
     /* 主通道测量（ch[0]） */
     float freq_hz;             /* 频率（过零法） */
     float vpp, vmax, vmin;     /* 电压（esp_adc_cal 换算，V） */

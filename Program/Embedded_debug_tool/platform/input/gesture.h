@@ -34,6 +34,14 @@ void gesture_set_rotation(int deg);
 typedef void (*gesture_back_cb_t)(void *ctx);
 void gesture_set_back_handler(gesture_back_cb_t cb, void *ctx);
 
+/* 注册拖动返回回调（手机式滑动返回：边沿右滑后不立即触发，
+ * 持续上报位移让调用方跟随手指平移界面；松手上报最终状态）。
+ *   cb(ctx, dx, pressed) —— pressed=true 拖动中（dx=当前累计右移，≥0）；
+ *                            pressed=false 松手（dx=最终位移）。
+ * 回调在 LVGL 线程（read_cb 上下文）执行。NULL=关闭拖动模式（走立即返回）。 */
+typedef void (*gesture_drag_cb_t)(void *ctx, int dx, bool pressed);
+void gesture_set_drag_handler(gesture_drag_cb_t cb, void *ctx);
+
 /* 注册全局右滑事件回调（仅识别不触发功能；接口预留，NULL=不处理）。
  * 回调在 LVGL 线程（read_cb 上下文）执行。 */
 typedef void (*gesture_right_cb_t)(void *ctx);

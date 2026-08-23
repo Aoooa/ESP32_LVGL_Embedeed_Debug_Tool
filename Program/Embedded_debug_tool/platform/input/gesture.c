@@ -30,12 +30,15 @@ static gesture_right_cb_t s_right_cb;         /* 全局右滑事件回调（接�
 static void *s_right_ctx;
 static gesture_left_cb_t s_left_cb;           /* 全局左滑事件回调（接口预留，未注册） */
 static void *s_left_ctx;
+static gesture_drag_cb_t s_drag_cb;           /* 拖动返回回调（手机式滑动返回） */
+static void *s_drag_ctx;
 static bool s_global_swipe_en = true;         /* 全局右/左滑开关（贴边返回不受影响） */
 static bool s_swipe_tracking;                 /* 本次是否处于按下 */
 static lv_coord_t s_swipe_start_x, s_swipe_start_y;
 static lv_coord_t s_swipe_last_x, s_swipe_last_y;
 static bool s_swipe_candidate;                /* 已判定为返回手势候选（禁单击） */
 static bool s_swipe_triggered;                /* 已触发返回 */
+static bool s_drag_active;                    /* 正在拖动返回（跟随手指） */
 
 /* 防抖状态 */
 static bool s_touch_started;                  /* 物理层检测到按下（未确认） */
@@ -185,6 +188,7 @@ esp_err_t gesture_read_cb(esp_lcd_touch_handle_t tp,
             s_swipe_tracking = true;
             s_swipe_candidate = false;
             s_swipe_triggered = false;
+            s_drag_active = false;
             s_swipe_start_x = lx;
             s_swipe_start_y = ly;
         }
@@ -205,14 +209,21 @@ esp_err_t gesture_read_cb(esp_lcd_touch_handle_t tp,
             }
 
             if (s_swipe_start_x <= SWIPE_EDGE_X) {
-                /* 贴边右滑：dx≥20 → 立即返回（不等释放，Y 轴偏差不限）。
-                 * 触发后上报 RELEASED，让 LVGL 先释放按住再删 APP，
-                 * 避免按住中删对象导致整屏重绘闪烁 */
+                /* 贴边右滑：dx≥20 →
+                 *   有拖动回调 → 进入拖动模式（持续上报，界面跟随手指）
+                 *   无拖动回调 → 立即返回（原逻辑） */
                 if (dx >= SWIPE_MIN_DX) {
-                    s_swipe_triggered = true;
-                    ESP_LOGI(TAG, "[SWIPE] edge TRIGGER start_x=%d dx=%d -> back event",
-                             s_swipe_start_x, dx);
-                    fire_back_event();
+                    if (s_drag_cb) {
+                        s_swipe_triggered = true;
+                        s_drag_active = true;
+                        s_drag_cb(s_drag_ctx, dx, true);   /* 首帧即上报 */
+                        ESP_LOGI(TAG, "[SWIPE] edge drag START dx=%d", dx);
+                    } else {
+                        s_swipe_triggered = true;
+                        ESP_LOGI(TAG, "[SWIPE] edge TRIGGER start_x=%d dx=%d -> back event",
+                                 s_swipe_start_x, dx);
+                        fire_back_event();
+                    }
                 }
             } else if (s_global_swipe_en && dx >= SWIPE_GLOBAL_DX) {
                 /* 全局右滑（任意起点）：dx≥50 → 仅识别，发 right 事件（不触发返回） */
@@ -239,9 +250,20 @@ esp_err_t gesture_read_cb(esp_lcd_touch_handle_t tp,
                          s_swipe_start_x, dx);
                 fire_left_event();
             }
+        } else if (s_drag_active && s_drag_cb) {
+            /* 拖动中：持续上报位移（界面跟随手指） */
+            int dx = lx - s_swipe_start_x;
+            s_drag_cb(s_drag_ctx, dx, true);
         }
     } else if (s_swipe_tracking) {
         s_swipe_tracking = false;
+        if (s_drag_active && s_drag_cb) {
+            /* 松手：上报最终位移（调用方判定滑出/回弹） */
+            int dx = s_swipe_last_x - s_swipe_start_x;
+            s_drag_active = false;
+            s_drag_cb(s_drag_ctx, dx, false);
+            ESP_LOGI(TAG, "[SWIPE] edge drag RELEASE dx=%d", dx);
+        }
     }
 
     /* 已触发返回 → 本帧及后续帧上报 RELEASED（保证手指抬起前 LVGL 保持 RELEASED，
@@ -264,6 +286,13 @@ void gesture_set_back_handler(gesture_back_cb_t cb, void *ctx)
     s_back_cb = cb;
     s_back_ctx = ctx;
     ESP_LOGI(TAG, "back handler %s", cb ? "registered" : "cleared");
+}
+
+void gesture_set_drag_handler(gesture_drag_cb_t cb, void *ctx)
+{
+    s_drag_cb = cb;
+    s_drag_ctx = ctx;
+    ESP_LOGI(TAG, "drag handler %s", cb ? "registered" : "cleared");
 }
 
 void gesture_set_right_handler(gesture_right_cb_t cb, void *ctx)

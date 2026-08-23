@@ -21,8 +21,7 @@
 #define SCOPE_FRAME_BYTES  2048              /* conv_frame_size（每 DMA 帧 512 样本） */
 #define SCOPE_RAW_BUF_BYTES 2048             /* read 缓冲（1 个 DMA 帧；4B/样本） */
 #define SCOPE_READ_TIMEOUT 100               /* 拉帧阻塞超时 ms */
-#define SCOPE_PRE_TRIG     512               /* 预触发 25%（2048×25%） */
-#define SCOPE_POST_TRIG    (SCOPE_FRAME_POINTS - SCOPE_PRE_TRIG)
+#define SCOPE_PRE_TRIG_RATIO 4    /* 预触发 = 窗口的 1/4（25%），动态窗口下按比例 */
 
 /* 驱动状态（s_lock 保护；采集任务内 s_ring/s_wr 单写者无需锁） */
 static adc_continuous_handle_t s_handle;
@@ -134,22 +133,27 @@ static void scope_task(void *arg)
         }
 
         /* 帧更新：挂起触发等补满（预触发 25%），无触发 AUTO 滚动。
-         * 窗口长度一律按 CH1 样本数（s_wr[0]/s_written[0]）计算——
+         * 窗口长度（wp = s_cfg.window_points）按 CH1 样本数计算——
          * Dual 时两通道样本交替写入各自缓冲，共用写指针会导致窗口
          * 计数翻倍、取到错乱位置（波形竖线 bug 根因） */
+        int wp = s_cfg.window_points;
+        if (wp < 64) wp = 64;
+        if (wp > SCOPE_FRAME_MAX) wp = SCOPE_FRAME_MAX;
+        int pre = wp / SCOPE_PRE_TRIG_RATIO;      /* 25% 预触发 */
+        int post = wp - pre;                      /* 75% 触发后 */
         int start = -1;
         bool trig_frame = false;
         if (s_trig_wr >= 0) {
             uint32_t after = (s_wr[0] - 1 - (uint32_t)s_trig_wr + SCOPE_RING_N) % SCOPE_RING_N;
-            if (after >= SCOPE_POST_TRIG) {
-                start = (s_trig_wr - SCOPE_PRE_TRIG + SCOPE_RING_N) % SCOPE_RING_N;
+            if (after >= (uint32_t)post) {
+                start = (s_trig_wr - pre + SCOPE_RING_N) % SCOPE_RING_N;
                 trig_frame = true;
             } else {
                 continue;   /* 触发后未补满：等下一批（AUTO 也等，触发优先于滚动） */
             }
         } else if (s_cfg.trig_mode == SCOPE_TRIG_AUTO) {
-            if (s_written[0] < SCOPE_FRAME_POINTS) continue;
-            start = (int)((s_wr[0] - SCOPE_FRAME_POINTS + SCOPE_RING_N) % SCOPE_RING_N);
+            if (s_written[0] < (uint32_t)wp) continue;
+            start = (int)((s_wr[0] - (uint32_t)wp + SCOPE_RING_N) % SCOPE_RING_N);
         } else {
             continue;   /* NORM 无触发不更新 */
         }
@@ -158,16 +162,16 @@ static void scope_task(void *arg)
         int nch = (s_cfg.io[1] >= 0) ? 2 : 1;
         xSemaphoreTake(s_lock, portMAX_DELAY);
         for (int c = 0; c < nch; c++) {
-            for (int k = 0; k < SCOPE_FRAME_POINTS; k++) {
+            for (int k = 0; k < wp; k++) {
                 s_frame->ch[c][k] = s_ring[c][(start + k) % SCOPE_RING_N];
             }
         }
-        s_frame->points = SCOPE_FRAME_POINTS;
+        s_frame->points = wp;
         s_frame->channels = nch;
         /* 每通道采样率：Dual 下 MUX 分时减半（测量换算依据，否则偏大 2 倍） */
         s_frame->sample_rate_hz = s_cfg.sample_rate_hz / nch;
         s_frame->running = s_run;
-        scope_measure(s_frame->ch[0], SCOPE_FRAME_POINTS, s_frame);
+        scope_measure(s_frame->ch[0], wp, s_frame);
         s_frame->frameno++;
         xSemaphoreGive(s_lock);
 
@@ -290,7 +294,7 @@ esp_err_t drv_scope_init(void)
         s_cali = NULL;   /* 校准失败可继续（近似换算） */
     }
 
-    ESP_LOGI(S_TAG, "init ok (ring %d pts, frame %d pts)", SCOPE_RING_N, SCOPE_FRAME_POINTS);
+    ESP_LOGI(S_TAG, "init ok (ring %d pts, frame max %d pts)", SCOPE_RING_N, SCOPE_FRAME_MAX);
     return ESP_OK;
 
 err:

@@ -260,10 +260,8 @@ void app_display_start(void)
     };
     flow_view_set_lock(&fv_lock_cb);
 
-    if (esp_lv_adapter_lock(-1) == ESP_OK) {
-        build_ui();
-        esp_lv_adapter_unlock();
-    }
+    /* 桌面 UI 由 app_display_build_ui() 统一构建（上电先黑屏，等 main.c
+     * 全部初始化完成后一次刷新，避免闪烁）——此处不再 build_ui */
 
     /* 终端 APP 常驻任务（消费 UART 数据队列；UI 由 launcher 按需创建） */
     terminal_init();

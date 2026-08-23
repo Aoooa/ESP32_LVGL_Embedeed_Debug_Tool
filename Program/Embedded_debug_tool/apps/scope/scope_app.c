@@ -46,6 +46,13 @@
 static const char *const s_hzoom_strs[] = { "x1", "x2", "x4", "x8" };
 #define SC_HZOOM_N  (sizeof(s_hzoom_strs) / sizeof(s_hzoom_strs[0]))
 
+/* ── 时间/div 档位（每屏 10 格 = 10×tdiv 时长；窗口点数 = 采样率×时长） ──
+ * 值 = 微秒/div。范围 100µs..100ms：配合 1kHz..1MHz 采样率，
+ * 窗口点数 = fs×10×tdiv，≤SCOPE_FRAME_MAX(32768) 由 SPS 联动保证 */
+static const int s_tdiv_us[] = { 100, 200, 500, 1000, 2000, 5000,
+                                 10000, 20000, 50000, 100000 };
+#define SC_TDIV_N  (sizeof(s_tdiv_us) / sizeof(s_tdiv_us[0]))
+
 /* 0V 标签按钮：热区容器（大触摸面积）+ 视觉标签居中（视觉不变大） */
 #define Z0_HOT_W   44
 #define Z0_HOT_H   30
@@ -85,6 +92,7 @@ typedef struct {
     lv_obj_t *ch_btn, *ch_lbl;
     lv_obj_t *vr_btn, *vr_lbl;      /* 垂直范围档位键 */
     lv_obj_t *hz_btn, *hz_lbl;      /* 水平缩放键（窗口切片） */
+    lv_obj_t *t_btn, *t_lbl;        /* 时间/div 键（看多宽） */
     /* 波形 canvas */
     lv_obj_t *canvas;
     lv_color_t *canvas_buf;
@@ -98,6 +106,7 @@ typedef struct {
     scope_ch_mode_t ch_mode;
     int vr_idx;                      /* 垂直范围档位索引（0=满量程） */
     int hz_idx;                      /* 水平缩放索引（0=×1 全窗口） */
+    int t_idx;                       /* 时间/div 档位索引（0=100µs .. 9=100ms） */
     int ch_off[SCOPE_CH_MAX];        /* 每通道垂直偏移（像素，0 点移动） */
     lv_obj_t *z0_btn[SCOPE_CH_MAX];  /* 0V 标签按钮（热区容器，拖动移通道） */
     lv_obj_t *rst_btn;               /* RST 一键还原缩放按钮（有缩放才显示） */
@@ -285,11 +294,12 @@ static void scope_update_meas(const scope_frame_t *f)
     lv_label_set_text(s->m_lbl2, b2);
 
     /* 格子单位：垂直 V/div（8 格），水平 Time/div（10 格）。
-     * 用帧实际采样率（Dual 下驱动已按通道减半），否则时基差 2 倍 */
+     * 用帧实际采样率（Dual 下驱动已按通道减半）与实际窗口点数（动态） */
     int vfull = s_vranges[s->vr_idx];
     float vper = (float)vfull * 3.1f / 4095.0f / 8.0f;
     uint32_t rate = (f && f->sample_rate_hz) ? f->sample_rate_hz : s->cfg.sample_rate_hz;
-    float tper = (float)SCOPE_FRAME_POINTS / rate / 10.0f;
+    int pts = (f && f->points) ? f->points : s->cfg.window_points;
+    float tper = (float)pts / rate / 10.0f;
     char b3[48];
     if (vper >= 0.1f) {
         snprintf(b3, sizeof(b3), "%.2fV/div  ", vper);
@@ -318,6 +328,17 @@ static void scope_refresh_status(void)
                                 lv_color_hex(s->ch_mode == SC_CH_MODE_CH2 ? SC_WAVE2 : SC_WAVE1), 0);
     lv_label_set_text(s->vr_lbl, s_vrange_strs[s->vr_idx]);
     lv_label_set_text(s->hz_lbl, s_hzoom_strs[s->hz_idx]);
+    /* T 键：时间/div（<1000µs 显示 µs，否则 ms） */
+    {
+        int tu = s_tdiv_us[s->t_idx];
+        char tb[16];
+        if (tu < 1000) {
+            snprintf(tb, sizeof(tb), "%du", tu);
+        } else {
+            snprintf(tb, sizeof(tb), "%dm", tu / 1000);
+        }
+        lv_label_set_text(s->t_lbl, tb);
+    }
 
     /* 底栏首键 = RUN/STOP，文字色区分状态：RUN 绿 / STOP 红 */
     lv_label_set_text(s->lbl[0], s->running ? "STOP" : "RUN");
@@ -352,6 +373,57 @@ static void scope_refresh_status(void)
     } else {
         lv_obj_add_flag(s->rst_btn, LV_OBJ_FLAG_HIDDEN);
     }
+}
+
+/* ── 采样率 × 时间/div 联动（保证窗口点数在 [64, ring上限] 内） ──
+ * 窗口点数 = 采样率 × 10格 × tdiv。规则：
+ *   - win > SCOPE_FRAME_MAX（点数过多，ring 装不下）→ 自动降 SPS；
+ *   - win < 64（点数过少，T 档位失去意义）→ 自动升 SPS；
+ *   - 保证用户选的 T 有效（SPS 是跟随者），与真实示波器一致。
+ * 调用方改 SPS 或 t_idx 后调用，内部同步 cfg.window_points。
+ * 返回是否发生了 SPS 变更（调用方据此更新 UI 显示）。 */
+static bool scope_sync_rate_tdiv(void)
+{
+    scope_t *s = s_scope;
+    if (!s) return false;
+    int64_t tdiv_us = s_tdiv_us[s->t_idx];
+    int64_t win = (int64_t)s->cfg.sample_rate_hz * 10 * tdiv_us / 1000000;
+    bool changed = false;
+    /* 合法 SPS 档位（1k..1M），联动时在其间选择 */
+    static const int rates[] = { 1000, 2000, 5000, 10000, 20000, 50000,
+                                 100000, 200000, 500000, 1000000 };
+    enum { RATE_N = sizeof(rates)/sizeof(rates[0]) };
+
+    if (win > SCOPE_FRAME_MAX) {
+        /* 点数过多：降 SPS。win = fs×10×tdiv/1e6 ≤ 32768 → fs ≤ 32768×1e6/(10×tdiv) */
+        int64_t max_fs = (int64_t)SCOPE_FRAME_MAX * 1000000 / (10 * tdiv_us);
+        int new_fs = rates[0];
+        for (int i = 0; i < RATE_N; i++) {
+            if (rates[i] <= max_fs) new_fs = rates[i];
+        }
+        if (new_fs != s->cfg.sample_rate_hz) {
+            s->cfg.sample_rate_hz = new_fs;
+            changed = true;
+        }
+        win = (int64_t)s->cfg.sample_rate_hz * 10 * tdiv_us / 1000000;
+    }
+    if (win < 64) {
+        /* 点数过少：升 SPS。win ≥ 64 → fs ≥ 64×1e6/(10×tdiv) */
+        int64_t min_fs = 64LL * 1000000 / (10 * tdiv_us);
+        int new_fs = rates[RATE_N - 1];
+        for (int i = RATE_N - 1; i >= 0; i--) {
+            if (rates[i] >= min_fs) new_fs = rates[i];
+        }
+        if (new_fs != s->cfg.sample_rate_hz) {
+            s->cfg.sample_rate_hz = new_fs;
+            changed = true;
+        }
+        win = (int64_t)s->cfg.sample_rate_hz * 10 * tdiv_us / 1000000;
+    }
+    if (win < 64) win = 64;             /* 防御（理论上已满足） */
+    if (win > SCOPE_FRAME_MAX) win = SCOPE_FRAME_MAX;
+    s->cfg.window_points = (int)win;
+    return changed;
 }
 
 /* ── 重启采集（配置变化后，停旧启新） ── */
@@ -613,7 +685,13 @@ static void on_rate_done(void *ctx, bool ok, int value)
     scope_t *s = ctx;
     if (!s) return;
     if (ok) {
+        int requested = value;
         s->cfg.sample_rate_hz = value;
+        if (scope_sync_rate_tdiv()) {
+            /* 联动调整（T 档位下窗口超限/不足）：如实告知实际生效值 */
+            ESP_LOGI(S_TAG, "SPS %d -> %d (T=%dus/div window fit)",
+                     requested, s->cfg.sample_rate_hz, s_tdiv_us[s->t_idx]);
+        }
         scope_apply_cfg();
     }
 }
@@ -625,6 +703,21 @@ static void on_rate_btn(lv_event_t *e)
     if (!s) return;
     num_input_show(s->root, s->cfg.sample_rate_hz, SC_RATE_MIN, SC_RATE_MAX, false, 0,
                    on_rate_done, s);
+}
+
+/* T 键：循环时间/div 档位。档位变大（看更宽）时若窗口超限，联动自动降 SPS */
+static void on_t_btn(lv_event_t *e)
+{
+    (void)e;
+    scope_t *s = s_scope;
+    if (!s) return;
+    s->t_idx = (s->t_idx + 1) % SC_TDIV_N;
+    bool sps_changed = scope_sync_rate_tdiv();
+    scope_apply_cfg();
+    if (sps_changed) {
+        ESP_LOGI(S_TAG, "T=%dus/div -> SPS auto %d (window fit)", s_tdiv_us[s->t_idx],
+                 s->cfg.sample_rate_hz);
+    }
 }
 
 /* 触发电平：raw(0-4095) <-> 电压(0-3.1V) 换算。输入框用电压（直觉），
@@ -713,11 +806,13 @@ static void scope_relayout(void)
     lv_obj_set_size(s->root, sw, sh);
 
     lv_obj_set_pos(s->ch_btn, 8, 2);
-    lv_obj_set_size(s->ch_btn, 56, SC_TOP_H - 4);
-    lv_obj_set_pos(s->vr_btn, 68, 2);
-    lv_obj_set_size(s->vr_btn, 56, SC_TOP_H - 4);
-    lv_obj_set_pos(s->hz_btn, 128, 2);
-    lv_obj_set_size(s->hz_btn, 48, SC_TOP_H - 4);
+    lv_obj_set_size(s->ch_btn, 52, SC_TOP_H - 4);
+    lv_obj_set_pos(s->vr_btn, 64, 2);
+    lv_obj_set_size(s->vr_btn, 52, SC_TOP_H - 4);
+    lv_obj_set_pos(s->hz_btn, 120, 2);
+    lv_obj_set_size(s->hz_btn, 44, SC_TOP_H - 4);
+    lv_obj_set_pos(s->t_btn, 168, 2);
+    lv_obj_set_size(s->t_btn, 64, SC_TOP_H - 4);
 
     if (cw != s->canvas_w || chh != s->canvas_h) {
         if (s->canvas_buf) heap_caps_free(s->canvas_buf);
@@ -783,12 +878,14 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
     s->ch_mode = SC_CH_MODE_CH1;
     s->vr_idx = 0;
     s->hz_idx = 0;
-    s->cfg.sample_rate_hz = SC_RATE_DEF;   /* 默认最大值 80k */
+    s->t_idx = 1;   /* 默认 200µs/div（@1MHz → 窗口 2000 点） */
+    s->cfg.sample_rate_hz = SC_RATE_DEF;   /* 默认最大值 1M */
     s->cfg.io[0] = SC_IO_CH1;
     s->cfg.io[1] = -1;
     s->cfg.trig_mode = SCOPE_TRIG_AUTO;
     s->cfg.edge = SCOPE_EDGE_RISING;
     s->cfg.trigger_level = 2048;
+    s->cfg.window_points = 2000;
     s->running = false;
     s_scope = s;
 
@@ -816,6 +913,12 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
     lv_obj_add_event_cb(hz_btn, on_hz_btn, LV_EVENT_CLICKED, NULL);
     s->hz_btn = hz_btn;
     s->hz_lbl = lv_obj_get_child(hz_btn, 0);
+
+    /* 顶栏时间/div 键（T：看多宽；循环档位，超限自动降 SPS） */
+    lv_obj_t *t_btn = sc_make_btn(root, "200u");
+    lv_obj_add_event_cb(t_btn, on_t_btn, LV_EVENT_CLICKED, NULL);
+    s->t_btn = t_btn;
+    s->t_lbl = lv_obj_get_child(t_btn, 0);
 
     lv_obj_t *cv = lv_canvas_create(root);
     s->canvas = cv;

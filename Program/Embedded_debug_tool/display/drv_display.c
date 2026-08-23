@@ -9,6 +9,8 @@
 #include "esp_lcd_touch_cst816s.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <stdint.h>
 #include <string.h>
 
@@ -160,7 +162,8 @@ void drv_display_init(drv_display_t *disp)
     };
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c_v2(i2c_bus, &tp_io_cfg, &tp_io));
 
-    /* CST816S 触摸面板 */
+    /* CST816S 触摸面板：上电后 IC 未就绪可能 I2C 读 ID 失败（flash 后首次
+     * 复位偶发）。重试 3 次（每次 100ms），仍失败则按原逻辑 abort */
     esp_lcd_touch_config_t tp_cfg = {
         .x_max = DRV_LCD_V_RES,
         .y_max = DRV_LCD_H_RES,
@@ -172,6 +175,13 @@ void drv_display_init(drv_display_t *disp)
             .mirror_y = 0,
         },
     };
-    ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_cst816s(tp_io, &tp_cfg, &disp->touch));
+    esp_err_t terr = ESP_FAIL;
+    for (int i = 0; i < 3; i++) {
+        terr = esp_lcd_touch_new_i2c_cst816s(tp_io, &tp_cfg, &disp->touch);
+        if (terr == ESP_OK) break;
+        ESP_LOGW(TAG, "touch init retry %d/3 failed: %s", i + 1, esp_err_to_name(terr));
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    ESP_ERROR_CHECK(terr);
     ESP_LOGI(TAG, "Touch CST816S ready");
 }
