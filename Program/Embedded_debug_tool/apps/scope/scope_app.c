@@ -36,13 +36,13 @@
 /* ── 采样率：num_input 输入（vendored 1MHz 方案，官方上限已突破至 1M）。
  * 下限 1kHz：动态分频（adc_hal.c）下 1kHz 时 div_num=9 → interval=4000 合法；
  * 低于 1kHz 无实用场景（50Hz 需 ≥500Hz 采样，1kHz 已足够）。
- * 显示窗口固定 2048 点 → 横轴总时长 = 2048/采样率（时间轴缩放）。
- * 默认 1000000（1MHz；需更长时间窗时输入更小值）。 */
+ * 显示窗口点数 = 采样率×10×tdiv（时间/div 档位联动，见下），
+ * 范围 [64, SCOPE_FRAME_MAX]；默认 1MHz 时窗长由 tdiv 决定。 */
 #define SC_RATE_MIN   1000
 #define SC_RATE_MAX   1000000
 #define SC_RATE_DEF   1000000
 
-/* ── 水平缩放档位（窗口切片点数 = 2048 >> idx；触发点为中心） ── */
+/* ── 水平缩放档位（窗口切片点数 = 全窗口点数 >> idx；触发点为中心） ── */
 static const char *const s_hzoom_strs[] = { "x1", "x2", "x4", "x8" };
 #define SC_HZOOM_N  (sizeof(s_hzoom_strs) / sizeof(s_hzoom_strs[0]))
 
@@ -223,7 +223,7 @@ static void scope_draw(const scope_frame_t *f)
         }
 
         /* 右下角时间轴定位条（仅 H 放大后显示，x1 无平移意义时隐藏）：
-         * 横线=缩放前全窗口(2048 点)，滑块=当前缩放窗口，
+         * 横线=缩放前全窗口，滑块=当前缩放窗口，
          * 宽度 ∝ 显示点数/全窗口，位置 ∝ 切片起点/全窗口（拖动时实时移动） */
         if (s->hz_idx > 0) {
             int tb_y = chh - 3;
@@ -1005,7 +1005,7 @@ lv_obj_t *scope_create(lv_obj_t *parent, scope_back_cb_t back_cb, void *ctx)
     lv_obj_set_style_text_color(ml4b, lv_color_hex(SC_WAVE2), 0);
     s->m_lbl4b = ml4b;
 
-    const char *btns[] = { "RUN", "AUTO", "80k", "V" };
+    const char *btns[] = { "RUN", "AUTO", "1M", "V" };   /* SPS 按钮初始文本 = SC_RATE_DEF */
     lv_event_cb_t cbs[] = { on_run_btn, on_trig_btn, on_rate_btn, on_v_btn };
     for (int i = 0; i < 4; i++) {
         lv_obj_t *b = sc_make_btn(root, btns[i]);
