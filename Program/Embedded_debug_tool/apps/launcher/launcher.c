@@ -59,31 +59,31 @@ static const struct {
 };
 
 /* ── 主题色（赛博朋克：暗底 + 霓虹青边框 + 霓虹品红拨轮） ── */
-#define ACCENT_COLOR     0x00F0FF   /* 霓虹青：选定框边框固定色 */
-#define ACCENT_COLOR_HI  0x7DF9FF   /* 亮青（按下边框/当前行文字） */
+#define ACCENT_COLOR     0x00F0FF   /* 霓虹青：卡片边框固定色 */
+#define ACCENT_COLOR_HI  0x7DF9FF   /* 亮青（按下边框/内光晕/名称文字） */
 #define WHEEL_COLOR      0xFF00E5   /* 霓虹品红：调速拨轮（轨道/填充/圆钮） */
-#define THEME_DARK_BG    0x0A0A12
-#define THEME_DARK_CARD  0x12121F
+#define THEME_DARK_BG    0x000000   /* 纯黑背景（用户指定） */
+#define THEME_DARK_CARD  0x12121F   /* 卡片底色（不透明） */
 #define THEME_DARK_TEXT  0xE8E8F0
 #define THEME_LIGHT_BG   0xE8E8F0
 #define THEME_LIGHT_CARD 0xFFFFFF
 #define THEME_LIGHT_TEXT 0x1A1A2E
 
-/* ── 3 行列表选择器布局参数（3 行铺满屏幕） ── */
-#define SEL_LEFT_GAP     8     /* 行内容左缘距屏幕左边框 */
-#define SEL_RIGHT_GAP    10    /* 行内容右缘距拨轮左缘 */
-#define SEL_TOP_GAP      8     /* 顶部留边（行铺满剩余高度） */
-#define SEL_ROW_GAP      12    /* 行间距 */
-#define SEL_RADIUS       16    /* 行/选定框圆角 */
-#define SEL_ROW_BORDER   2     /* 行边框（Miku 绿） */
-#define SEL_FRAME_BORDER 6     /* 选定框边框（高亮橙，加粗） */
-#define SEL_ROW_COLOR    0x35E0C5   /* Miku 青绿：每行 APP 边框 */
-#define SEL_FRAME_COLOR  0xFF8C00   /* 高亮橙：选定框（选中态） */
-#define SEL_ICON_X       24    /* 图标左缘（行内） */
-#define SEL_NAME_X       64    /* 名字左缘（行内） */
-#define SEL_SWIPE_TH     40    /* 垂直滑动切换阈值（px 累计） */
-#define SEL_FLING_MS     90    /* 惯性连续切换间隔（ms/格） */
-#define SEL_FLING_MAX    3     /* 惯性最大格数（防止轻滑滑到底） */
+/* ── 卡片渲染模式开关 ──
+ * 1 = 整卡预烘焙位图（圆角+边框+图标+文字一次性画进 PSRAM，滚动帧零矢量渲染）
+ * 0 = 实时渲染（圆角/边框/图标/文字每帧重画；动态内容更灵活）
+ * 出问题翻转此宏即回到实时渲染，无需改其他代码 */
+#define LAUNCHER_CARDS_BAKED 1
+
+/* ── 布局参数 ── */
+#define CARD_LEFT_GAP    8    /* 滚筒左侧距屏幕左边框 */
+#define CARD_MAX_LINES   3    /* 每卡最多行数（卡片高度按此计算） */
+#define CARD_H_PAD       8    /* 卡片内上下留白 */
+#define CARD_W_PAD       12   /* 卡片内左右留白 */
+#define CARD_BORDER      4    /* 卡片边框厚度 */
+#define CARD_RADIUS      18   /* 卡片圆角倒角半径（圆弧形） */
+#define FONT_LINE_H      16   /* lv_font_montserrat_14 的 line_height */
+#define WHEEL_DRUM_GAP   10   /* 卡片右缘与拨轮左  缘的间距 */
 
 /* ── 调速拨轮参数（屏幕右侧垂直正中） ── */
 #define WHEEL_W          14    /* 拨轮视觉总宽 */
@@ -94,7 +94,7 @@ static const struct {
 #define WHEEL_SHELL_W    18    /* 胶囊外框宽（= 滑块宽 + 两侧边框余量） */
 #define WHEEL_SHELL_BORDER 2   /* 胶囊外框边框厚度 */
 #define WHEEL_TOUCH_PAD  8     /* 触摸热区外扩 */
-#define WHEEL_MAX_SWITCH 10.0f /* 圆钮推满时的自动切换速率（个/s） */
+#define WHEEL_MAX_SPEED  380.0f    /* 圆钮推满时的滚筒速度 px/s */
 #define WHEEL_DEAD_ZONE  0.1f  /* 中心死区（防误触） */
 #define WHEEL_TICK_MS    20    /* 速度驱动定时器周期 */
 #define WHEEL_RETURN_MS  160   /* 松手回中动画时长 */
@@ -102,37 +102,21 @@ static const struct {
 /* ── 单实例状态（启动器全屏唯一） ── */
 typedef struct {
     lv_obj_t *root;
-
-    /* 3 行列表选择器：当前行（选定框框住）+ 上下预览行。
-     * 每行 = 图标 + 名字（Miku 绿边框，无竖线） */
-    lv_obj_t *sel_rows[3];      /* 0=顶行 1=中行 2=底行，容器（Miku 绿边框） */
-    lv_obj_t *sel_icons[3];     /* 行内图标 */
-    lv_obj_t *sel_names[3];     /* 行内名字 */
-    lv_obj_t *sel_frame;        /* 选定框（高亮橙粗边框，独立对象做滑入动画） */
-    lv_obj_t *idx_lbl;          /* 右上角 "N/9" 指示 */
-    int cur_idx;                /* 当前选中 index */
-    int32_t frame_anim_val;     /* 选定框滑入动画变量 */
-
-    /* 垂直滑动切换（root 事件） */
-    lv_coord_t press_y0;        /* 按下起点 y */
-    lv_coord_t press_y_last;    /* 上一帧 y */
-    int32_t swipe_accum;        /* dy 累计（达到阈值切换一次并清零段） */
-    uint32_t press_last_tick;   /* 测速时间戳 */
-    bool press_moved;           /* 本次按下是否已切换过（单击判定） */
-    lv_timer_t *fling_timer;    /* 惯性连续切换定时器 */
-    int fling_dir;              /* 惯性方向：-1=上一个 +1=下一个，0=停止 */
-    int fling_count;            /* 惯性剩余格数（有限，防轻滑滑到底） */
-    int win_start;              /* 3 行窗口首行 index（内容滚动方向与手指一致） */
-    int frame_row;              /* 选定框所在行 0/1/2（每切 1 次向手指反向移 1 行，到边停） */
+    lv_obj_t *drum;
+    lv_obj_t *cards[APP_COUNT];   /* 预烘焙模式：透明容器；实时模式：圆角容器 */
+#if LAUNCHER_CARDS_BAKED
+    lv_obj_t *card_bgs[APP_COUNT];   /* 共享背景位图（烘焙后 set_src 刷新） */
+#endif
+    lv_obj_t *icon_imgs[APP_COUNT];   /* 静态霓虹图标位图（两种模式都在用） */
+    lv_obj_t *text_labels[APP_COUNT]; /* APP 名称标签（两种模式都在用） */
 
     /* 调速拨轮 */
     lv_obj_t *wheel;             /* 触摸热区容器（覆盖整个拨轮区域） */
     lv_obj_t *knob_shell;        /* 胶囊外框（粉色边框，内部透明） */
     lv_obj_t *knob;              /* 滑块（胶囊形：矩形 + 上下半圆） */
-    lv_timer_t *wheel_timer;     /* 按住期间驱动自动切换（空闲暂停） */
+    lv_timer_t *wheel_timer;     /* 按住期间驱动滚筒速度（空闲暂停） */
     bool wheel_pressed;
     uint32_t wheel_last_tick;
-    float wheel_accum;           /* 切换频率累积器 */
     float knob_pos;              /* -1..1（圆钮偏离中心，负=上推） */
     int32_t knob_anim_val;       /* 松手回中动画变量 */
 
@@ -143,7 +127,7 @@ typedef struct {
     lv_color_t theme_from;
 
     /* 几何（relayout 计算） */
-    int sel_w, sel_row_h, sel_gap, sel_rows_y[3];   /* 三行 y 坐标 */
+    int card_w, card_h, gap, unit, visible_count;
     int wheel_cx, wheel_cy, wheel_travel, wheel_w, wheel_h;   /* 拨轮几何 */
 } launcher_t;
 
@@ -157,19 +141,32 @@ static void launcher_compute_geom(void)
     int sw = lv_display_get_horizontal_resolution(disp);
     int sh = lv_display_get_vertical_resolution(disp);
 
-    /* 行内容宽：贴左，右缘贴近拨轮（留 SEL_RIGHT_GAP 间距） */
-    s_launcher.sel_w = sw - SEL_LEFT_GAP - SEL_RIGHT_GAP - WHEEL_W - WHEEL_RIGHT_GAP;
+    /* 卡片宽：贴左，右缘贴近拨轮（留 WHEEL_DRUM_GAP 间距） */
+    s_launcher.card_w = sw - CARD_LEFT_GAP - WHEEL_DRUM_GAP - WHEEL_W - WHEEL_RIGHT_GAP;
 
-    /* 三行铺满屏幕（正常列表语义）：顶部留边，行高 = 剩余高度均分。
-     * 选中项跟随其在列表中的自然位置（第一项在顶行、末项在底行） */
-    s_launcher.sel_gap = SEL_ROW_GAP;
-    int row_h = (sh - 2 * SEL_TOP_GAP - 2 * SEL_ROW_GAP) / 3;
-    if (row_h < 60) row_h = 60;
-    s_launcher.sel_row_h = row_h;
-    int y0 = SEL_TOP_GAP;
-    for (int i = 0; i < 3; i++) {
-        s_launcher.sel_rows_y[i] = y0 + i * (row_h + SEL_ROW_GAP);
+    /* 可见卡数：单数，默认 3；若 3 张满屏时卡高低于文字最小高度（3 行+留白）
+     * 则降为 1 张。卡片+间距同比例缩放，恰好铺满整个屏幕高度：
+     * 总高 = n×卡高 + (n+1)×间距 = 屏高（上下边距 = 间距，卡间 = 间距） */
+    int base_h = CARD_MAX_LINES * FONT_LINE_H + 2 * CARD_H_PAD;  /* 64 */
+    int base_gap = base_h / 4;                                   /* 16 */
+    int min_h = CARD_MAX_LINES * FONT_LINE_H + 2 * 4;            /* 文字下限 */
+
+    int n = 3;
+    for (;;) {
+        int denom = n * base_h + (n + 1) * base_gap;
+        int card_h = (sh * base_h + denom / 2) / denom;          /* 四舍五入 */
+        if (card_h >= min_h || n == 1) {
+            s_launcher.visible_count = n;
+            s_launcher.card_h = card_h;
+            break;
+        }
+        n -= 2;
     }
+    /* 剩余高度均分给所有间隙（卡间 n-1 + 上下 2 = n+1 个） */
+    s_launcher.gap = (sh - s_launcher.visible_count * s_launcher.card_h)
+                     / (s_launcher.visible_count + 1);
+    if (s_launcher.gap < 2) s_launcher.gap = 2;
+    s_launcher.unit = s_launcher.card_h + s_launcher.gap;
 
     /* 拨轮几何：右下角（右缘贴右，底部留 8px） */
     int wheel_h = sh / 3;
@@ -182,65 +179,9 @@ static void launcher_compute_geom(void)
                               + WHEEL_KNOB_W / 2);
 }
 
-/* ── 3 行切换选择器：核心切换 ──
- * dir=+1 下一个（index+1，内容向下）；dir=-1 上一个（index-1）。
- * 三行内容直接替换（无平移渲染），选定框从相邻方向滑入吸附到当前行。 */
-
-static void launcher_selector_refresh(void);   /* 前向：刷新 3 行窗口内容 */
-static void launcher_selector_frame_anim(int target_row, int dir);   /* 前向：框滑入动画 */
-
-static bool launcher_selector_move(int dir)
-{
-    /* 内容滚动方向与手指一致：上滑(dir>0 下一个) → 窗口下滚（露出下方 APP）；
-     * 选定框每切 1 次向手指反向移 1 行（上滑 → 框下移），到窗口边缘后停住 */
-    if (dir > 0) {
-        if (s_launcher.win_start >= APP_COUNT - 3) return false;   /* 到底 */
-        s_launcher.win_start++;
-        if (s_launcher.frame_row < 2) s_launcher.frame_row++;
-    } else {
-        if (s_launcher.win_start <= 0) return false;               /* 到顶 */
-        s_launcher.win_start--;
-        if (s_launcher.frame_row > 0) s_launcher.frame_row--;
-    }
-    s_launcher.cur_idx = s_launcher.win_start + s_launcher.frame_row;
-    ESP_LOGI("launcher", "[SEL] win=%d row=%d idx=%d/%d (%s)",
-             s_launcher.win_start, s_launcher.frame_row, s_launcher.cur_idx,
-             APP_COUNT, s_apps[s_launcher.cur_idx].name);
-    launcher_selector_refresh();   /* 3 行内容原地刷新 + 选定框定位 */
-    launcher_selector_frame_anim(s_launcher.frame_row, dir);   /* 框向反向滑入 */
-    return true;
-}
-
-/* 惯性连续切换（有限格数，防止轻滑一路滑到底） */
-static void launcher_fling_tick(lv_timer_t *t)
-{
-    (void)t;
-    if (s_launcher.fling_count <= 0) {
-        lv_timer_pause(s_launcher.fling_timer);
-        s_launcher.fling_dir = 0;
-        return;
-    }
-    if (launcher_selector_move(s_launcher.fling_dir)) {
-        s_launcher.fling_count--;
-    } else {
-        s_launcher.fling_count = 0;
-        lv_timer_pause(s_launcher.fling_timer);
-        s_launcher.fling_dir = 0;
-    }
-}
-
-static void launcher_fling_start(int dir, int count)
-{
-    /* 手指已落下时 timer 被 pause；重复启动无害（reset 重新计时，方向/格数覆盖） */
-    s_launcher.fling_dir = dir;
-    s_launcher.fling_count = count;
-    lv_timer_reset(s_launcher.fling_timer);
-    lv_timer_resume(s_launcher.fling_timer);
-}
-
 /* ── 调速拨轮 ──
- * 按住圆钮上下拖动：偏离中心越远自动切换速率越快（控制切换速度）；
- * 上推 → 选下一个，下拉 → 选上一个；松手圆钮弹回中心、切换停止。 */
+ * 按住圆钮上下拖动：偏离中心越远滚筒速度越快（控制速度，不控制位置）；
+ * 被推方向轨道如水银柱被实心绿填充；松手圆钮弹回中心、填充收缩、滚筒停止。 */
 
 static void launcher_wheel_apply(void)
 {
@@ -275,16 +216,9 @@ static void launcher_wheel_tick(lv_timer_t *t)
 
     float pos = s_launcher.knob_pos;
     if (fabsf(pos) < WHEEL_DEAD_ZONE) pos = 0;
-    /* 上推(pos<0) → 下一个；下拉(pos>0) → 上一个。速率 = |pos|×WHEEL_MAX_SWITCH */
-    s_launcher.wheel_accum += pos * WHEEL_MAX_SWITCH * dt;
-    while (s_launcher.wheel_accum >= 1.0f) {
-        s_launcher.wheel_accum -= 1.0f;
-        if (!launcher_selector_move(-1)) break;   /* 到底停止 */
-    }
-    while (s_launcher.wheel_accum <= -1.0f) {
-        s_launcher.wheel_accum += 1.0f;
-        if (!launcher_selector_move(1)) break;
-    }
+    /* 符号：往上推(pos<0) → 内容上移(scroll_y 增大)；往下拉 → 内容下移 */
+    int dy = -(int)(pos * WHEEL_MAX_SPEED * dt);
+    if (dy != 0) lv_obj_scroll_by_bounded(s_launcher.drum, 0, dy, LV_ANIM_OFF);
 }
 
 static void on_wheel_event(lv_event_t *e)
@@ -328,6 +262,65 @@ static void on_wheel_event(lv_event_t *e)
     }
 }
 
+#if LAUNCHER_CARDS_BAKED
+/* ── 卡片背景预烘焙 ──
+ * 圆角+边框+底色一次性画进 PSRAM 位图（RGB565 不透明），8 张卡共享同一张，
+ * 滚动帧只贴这一张背景图 + 实时画图标/文字（小面积）——省掉每帧重绘 8 个
+ * 圆角矩形的成本，又比整卡烘焙省内存（1 张 vs 8 张）且文字/图标仍可动态改。
+ * 尺寸或主题变化时重新烘焙（旋转/切主题低频）。 */
+static lv_image_dsc_t s_card_bg_dsc;
+static void *s_card_bg_buf;
+static int s_bg_w, s_bg_h;
+static bool s_bg_dark;
+
+static void launcher_bake_card_bg(void)
+{
+    int w = s_launcher.card_w, h = s_launcher.card_h;
+    bool dark = s_launcher.dark;
+    if (w <= 0 || h <= 0) return;
+    if (s_card_bg_buf && s_bg_w == w && s_bg_h == h && s_bg_dark == dark) return;
+
+    size_t bytes = (size_t)w * h * 2;
+    void *buf = heap_caps_aligned_alloc(64, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) {
+        ESP_LOGE("launcher", "card bg alloc %dx%d failed", w, h);
+        return;
+    }
+
+    lv_obj_t *cv = lv_canvas_create(lv_layer_sys());
+    lv_canvas_set_buffer(cv, buf, w, h, LV_COLOR_FORMAT_RGB565);
+    lv_canvas_fill_bg(cv, dark ? lv_color_hex(THEME_DARK_CARD) : lv_color_hex(THEME_LIGHT_CARD),
+                      LV_OPA_COVER);
+
+    lv_layer_t layer;
+    lv_canvas_init_layer(cv, &layer);
+    lv_draw_rect_dsc_t dsc;
+    lv_draw_rect_dsc_init(&dsc);
+    dsc.radius = CARD_RADIUS;
+    dsc.border_width = CARD_BORDER;
+    dsc.border_color = lv_color_hex(ACCENT_COLOR);
+    dsc.bg_opa = LV_OPA_TRANSP;
+    lv_area_t a = { 0, 0, w - 1, h - 1 };
+    lv_draw_rect(&layer, &dsc, &a);
+    lv_canvas_finish_layer(cv, &layer);
+    lv_obj_delete(cv);
+
+    if (s_card_bg_buf) heap_caps_free(s_card_bg_buf);
+    s_card_bg_buf = buf;
+    s_bg_w = w;
+    s_bg_h = h;
+    s_bg_dark = dark;
+    memset(&s_card_bg_dsc, 0, sizeof(s_card_bg_dsc));
+    s_card_bg_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+    s_card_bg_dsc.header.cf = LV_COLOR_FORMAT_RGB565;
+    s_card_bg_dsc.header.w = w;
+    s_card_bg_dsc.header.h = h;
+    s_card_bg_dsc.header.stride = w * 2;
+    s_card_bg_dsc.data_size = bytes;
+    s_card_bg_dsc.data = buf;
+}
+#endif /* LAUNCHER_CARDS_BAKED */
+
 /* ── 主题 ── */
 
 static void launcher_theme_exec(void *var, int32_t v)
@@ -342,8 +335,16 @@ static void launcher_theme_exec(void *var, int32_t v)
 
 static void launcher_apply_text_theme(void)
 {
-    /* 主题变化 → 刷新三行内容（当前行/预览行配色在 refresh 内按主题设置） */
-    launcher_selector_refresh();
+    lv_color_t c = s_launcher.dark ? lv_color_hex(THEME_DARK_TEXT) : lv_color_hex(THEME_LIGHT_TEXT);
+#if !LAUNCHER_CARDS_BAKED
+    lv_color_t bc = s_launcher.dark ? lv_color_hex(THEME_DARK_CARD) : lv_color_hex(THEME_LIGHT_CARD);
+#endif
+    for (int i = 0; i < APP_COUNT; i++) {
+        lv_obj_set_style_text_color(s_launcher.text_labels[i], c, 0);
+#if !LAUNCHER_CARDS_BAKED
+        lv_obj_set_style_bg_color(s_launcher.cards[i], bc, 0);
+#endif
+    }
 }
 
 void launcher_set_theme(lv_obj_t *obj, bool dark)
@@ -362,6 +363,9 @@ void launcher_set_theme(lv_obj_t *obj, bool dark)
     lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
     lv_anim_start(&a);
 
+#if LAUNCHER_CARDS_BAKED
+    launcher_bake_card_bg();   /* 卡片底色换主题 → 重新烘焙背景位图 */
+#endif
     launcher_apply_text_theme();
 }
 
@@ -844,217 +848,80 @@ void launcher_event_debug(int evt)
     top->m->debug_event(top->app, evt);
 }
 
-/* ── 3 行切换选择器：刷新 / 选定框动画 / 构建 / 滑动事件 ── */
-
-static void launcher_frame_anim_exec(void *var, int32_t v)
+/* 卡片点击：可启动卡 → 启动 APP；占位卡无操作 */
+static void on_card_event(lv_event_t *e)
 {
-    (void)var;
-    lv_obj_set_y(s_launcher.sel_frame, v);
-}
-
-/* 选定框滑入动画：滑到 target_row 行（0=顶 1=中 2=底）。
- * dir>0（框下移，上滑触发）从上方相邻行滑入；dir<0（框上移）从下方滑入 */
-static void launcher_selector_frame_anim(int target_row, int dir)
-{
-    int y_target = s_launcher.sel_rows_y[target_row];
-    int from_row = target_row - dir;   /* 起点 = 旧位置（相邻行） */
-    if (from_row < 0) from_row = 0;
-    if (from_row > 2) from_row = 2;
-    int y_from = s_launcher.sel_rows_y[from_row];
-    lv_obj_set_y(s_launcher.sel_frame, y_from);
-    lv_anim_delete(&s_launcher.frame_anim_val, launcher_frame_anim_exec);
-    lv_anim_t a;
-    lv_anim_init(&a);
-    lv_anim_set_var(&a, &s_launcher.frame_anim_val);
-    lv_anim_set_exec_cb(&a, launcher_frame_anim_exec);
-    lv_anim_set_values(&a, y_from, y_target);
-    lv_anim_set_duration(&a, 100);
-    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
-    lv_anim_start(&a);
-}
-
-/* 刷新 3 行窗口内容（win_start..win_start+2）原地替换 + 选定框定位。
- * 所有行颜色/字号一致（无放大、无暗化），行边框为固定 Miku 绿样式 */
-static void launcher_selector_refresh(void)
-{
-    int start = s_launcher.win_start;
-    bool dark = s_launcher.dark;
-    lv_color_t name_c = lv_color_hex(dark ? THEME_DARK_TEXT : THEME_LIGHT_TEXT);
-
-    for (int i = 0; i < 3; i++) {
-        int idx = start + i;
-        if (idx < 0 || idx >= APP_COUNT) {   /* 防御：窗口始终界内 */
-            lv_obj_add_flag(s_launcher.sel_rows[i], LV_OBJ_FLAG_HIDDEN);
-            continue;
-        }
-        lv_obj_remove_flag(s_launcher.sel_rows[i], LV_OBJ_FLAG_HIDDEN);
-        lv_image_set_src(s_launcher.sel_icons[i], s_app_icons[idx]);
-        lv_label_set_text(s_launcher.sel_names[i], s_apps[idx].name);
-        lv_obj_set_style_text_font(s_launcher.sel_names[i], &lv_font_montserrat_16, 0);
-        lv_obj_set_style_text_color(s_launcher.sel_names[i], name_c, 0);
-        lv_obj_set_style_opa(s_launcher.sel_icons[i], LV_OPA_COVER, 0);
-    }
-
-    char buf[16];
-    snprintf(buf, sizeof(buf), "%d/%d", s_launcher.cur_idx + 1, APP_COUNT);
-    lv_label_set_text(s_launcher.idx_lbl, buf);
-
-    /* 选定框定位到 frame_row 行（无动画直接设；切换动画由 frame_anim 驱动） */
-    lv_obj_set_pos(s_launcher.sel_frame, SEL_LEFT_GAP,
-                   s_launcher.sel_rows_y[s_launcher.frame_row]);
-}
-
-/* 根事件：垂直滑动切换 + 单击启动。
- * 拨轮区域有自己的事件（不冒泡到 root），不冲突。 */
-static void on_sel_swipe_event(lv_event_t *e)
-{
-    switch (lv_event_get_code(e)) {
-    case LV_EVENT_PRESSED: {
-        lv_point_t p;
-        lv_indev_get_point(lv_indev_active(), &p);
-        s_launcher.press_y0 = p.y;
-        s_launcher.press_y_last = p.y;
-        s_launcher.swipe_accum = 0;
-        s_launcher.press_moved = false;
-        s_launcher.press_last_tick = lv_tick_get();
-        /* 手指落下打断惯性切换 */
-        s_launcher.fling_dir = 0;
-        lv_timer_pause(s_launcher.fling_timer);
-        break;
-    }
-    case LV_EVENT_PRESSING: {
-        lv_point_t p;
-        lv_indev_get_point(lv_indev_active(), &p);
-        lv_coord_t dy = p.y - s_launcher.press_y_last;
-        s_launcher.press_y_last = p.y;
-        s_launcher.swipe_accum += dy;
-        /* 下滑(dy>0) → 上一个（选中框向顶）；上滑 → 下一个。达阈值立即切换，余量保留 */
-        while (s_launcher.swipe_accum >= SEL_SWIPE_TH) {
-            s_launcher.swipe_accum -= SEL_SWIPE_TH;
-            if (launcher_selector_move(-1)) {
-                s_launcher.press_moved = true;
-            } else {
-                s_launcher.swipe_accum = 0;
-                break;
-            }
-        }
-        while (s_launcher.swipe_accum <= -SEL_SWIPE_TH) {
-            s_launcher.swipe_accum += SEL_SWIPE_TH;
-            if (launcher_selector_move(1)) {
-                s_launcher.press_moved = true;
-            } else {
-                s_launcher.swipe_accum = 0;
-                break;
-            }
-        }
-        break;
-    }
-    case LV_EVENT_RELEASED:
-    case LV_EVENT_INDEV_RESET: {
-        if (s_launcher.press_moved) {
-            /* 松手惯性：按滑动位移折算有限格数（每 2×阈值一格，最多 SEL_FLING_MAX），
-             * 防止轻滑一路滑到底 */
-            lv_coord_t total = s_launcher.press_y_last - s_launcher.press_y0;
-            int dir = (total > 0) ? -1 : 1;   /* 下滑=上一个；上滑=下一个 */
-            int n = (abs((int)total) - SEL_SWIPE_TH) / (SEL_SWIPE_TH * 2);
-            if (n > SEL_FLING_MAX) n = SEL_FLING_MAX;
-            if (n > 0) launcher_fling_start(dir, n);
-        }
-        break;
-    }
-    case LV_EVENT_CLICKED: {
-        if (s_launcher.press_moved) break;   /* 滑动过不算点击 */
-        /* 由点击坐标判定所在行（0/1/2） */
-        lv_point_t p;
-        lv_indev_get_point(lv_indev_active(), &p);
-        int row = -1;
-        for (int i = 0; i < 3; i++) {
-            if (p.y >= s_launcher.sel_rows_y[i] &&
-                p.y < s_launcher.sel_rows_y[i] + s_launcher.sel_row_h) {
-                row = i;
-                break;
-            }
-        }
-        if (row < 0) break;
-        if (row != s_launcher.frame_row) {
-            /* 选定框不在点击行：第一击只移动框到该 APP（框滑入），不启动；
-             * 再次单击（框已在）才启动 */
-            int old_row = s_launcher.frame_row;
-            s_launcher.frame_row = row;
-            s_launcher.cur_idx = s_launcher.win_start + row;
-            ESP_LOGI("launcher", "[SEL] click -> frame to row %d (idx %d)",
-                     row, s_launcher.cur_idx);
-            launcher_selector_refresh();
-            launcher_selector_frame_anim(row, (row > old_row) ? 1 : -1);
-            break;
-        }
-        /* 框已在点击行 → 启动选中 APP */
-        if (s_apps[s_launcher.cur_idx].type == APP_TYPE_LAUNCH) {
-            ESP_LOGI("launcher", "[SEL] click -> launch %s",
-                     s_apps[s_launcher.cur_idx].name);
-            launcher_app_launch(s_apps[s_launcher.cur_idx].id, NULL);
-        }
-        break;
-    }
-    default:
-        break;
+    lv_obj_t *card = lv_event_get_target_obj(e);
+    int i = (int)(intptr_t)lv_obj_get_user_data(card);
+    if (i < 0 || i >= APP_COUNT) return;
+    if (s_apps[i].type == APP_TYPE_LAUNCH) {
+        launcher_app_launch(s_apps[i].id, NULL);
     }
 }
 
-/* 构建 3 行选择器：行 = Miku 绿边框容器（图标 + 名字，无竖线） + 选定框 + 索引指示 */
-static void launcher_build_selector(void)
+static void launcher_build_cards(void)
 {
-    lv_obj_t *root = s_launcher.root;
-
-    for (int i = 0; i < 3; i++) {
-        lv_obj_t *row = lv_obj_create(root);
-        lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC
+    for (int i = 0; i < APP_COUNT; i++) {
+#if LAUNCHER_CARDS_BAKED
+        /* 卡片 = 透明容器 + 共享背景位图（圆角+边框，见 launcher_bake_card_bg）
+         * + 实时图标/文字。滚动帧只贴 1 张 RGB565 背景图（快速拷贝），
+         * 图标/文字小面积实时画 */
+        lv_obj_t *card = lv_obj_create(s_launcher.drum);
+        lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC
                            | LV_OBJ_FLAG_SCROLL_MOMENTUM);
-        lv_obj_add_flag(row, LV_OBJ_FLAG_EVENT_BUBBLE);
-        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_color(row, lv_color_hex(SEL_ROW_COLOR), 0);   /* Miku 绿 */
-        lv_obj_set_style_border_width(row, SEL_ROW_BORDER, 0);
-        lv_obj_set_style_radius(row, SEL_RADIUS, 0);
-        lv_obj_set_style_pad_all(row, 0, 0);
-        s_launcher.sel_rows[i] = row;
+        lv_obj_add_flag(card, LV_OBJ_FLAG_EVENT_BUBBLE);
+        lv_obj_set_style_bg_opa(card, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(card, 0, 0);
+        lv_obj_set_style_radius(card, 0, 0);
+        lv_obj_set_style_pad_all(card, 0, 0);
+#else
+        /* 实时渲染模式（LAUNCHER_CARDS_BAKED=0）：圆角容器 + 图标 + 文字每帧重画 */
+        lv_obj_t *card = lv_obj_create(s_launcher.drum);
+        lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC
+                           | LV_OBJ_FLAG_SCROLL_MOMENTUM);
+        lv_obj_add_flag(card, LV_OBJ_FLAG_EVENT_BUBBLE);
+        lv_obj_set_style_bg_color(card, lv_color_hex(THEME_DARK_CARD), 0);
+        lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_color(card, lv_color_hex(ACCENT_COLOR), 0);
+        lv_obj_set_style_border_width(card, CARD_BORDER, 0);
+        lv_obj_set_style_radius(card, CARD_RADIUS, 0);
+        lv_obj_set_style_pad_all(card, 0, 0);
+        lv_obj_set_style_border_color(card, lv_color_hex(ACCENT_COLOR_HI), LV_STATE_PRESSED);
+#endif
+        /* 按下效果：整体轻微缩小（约 97.7%，长宽各缩约 3px）。transform_scale
+         * 256=100%；勿用 transform_width/height（只改绘制边界，不缩内容） */
+        lv_obj_set_style_transform_pivot_x(card, lv_pct(50), 0);
+        lv_obj_set_style_transform_pivot_y(card, lv_pct(50), 0);
+        lv_obj_set_style_transform_scale(card, 250, LV_STATE_PRESSED);
+        /* 卡片点击 → 启动对应 APP（占位卡无操作） */
+        lv_obj_set_user_data(card, (void *)(intptr_t)i);
+        lv_obj_add_event_cb(card, on_card_event, LV_EVENT_CLICKED, NULL);
+        s_launcher.cards[i] = card;
 
-        lv_obj_t *icon = lv_image_create(row);
+#if LAUNCHER_CARDS_BAKED
+        /* 共享背景位图（首个子对象，位于图标/文字之下） */
+        lv_obj_t *bg = lv_image_create(card);
+        lv_obj_add_flag(bg, LV_OBJ_FLAG_EVENT_BUBBLE);
+        lv_obj_set_pos(bg, 0, 0);
+        s_launcher.card_bgs[i] = bg;
+#endif
+
+        /* 卡片内容：静态霓虹图标位图 + APP 名称（relayout 固定定位：图标左对齐竖线） */
+        lv_obj_t *icon = lv_image_create(card);
+        lv_image_set_src(icon, s_app_icons[i]);
         lv_obj_add_flag(icon, LV_OBJ_FLAG_EVENT_BUBBLE);
-        s_launcher.sel_icons[i] = icon;
+        s_launcher.icon_imgs[i] = icon;
 
-        lv_obj_t *name = lv_label_create(row);
-        lv_obj_add_flag(name, LV_OBJ_FLAG_EVENT_BUBBLE);
-        lv_obj_set_style_bg_opa(name, LV_OPA_TRANSP, 0);
-        s_launcher.sel_names[i] = name;
+        lv_obj_t *lbl = lv_label_create(card);
+        lv_label_set_text(lbl, s_apps[i].name);
+        lv_obj_add_flag(lbl, LV_OBJ_FLAG_EVENT_BUBBLE);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_28, 0);
+        lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_bg_opa(lbl, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_text_color(lbl, lv_color_hex(ACCENT_COLOR_HI), LV_STATE_PRESSED);
+        s_launcher.text_labels[i] = lbl;
     }
-
-    /* 选定框：高亮橙粗边框 + 圆角，透明底（独立对象做滑入动画） */
-    lv_obj_t *frame = lv_obj_create(root);
-    lv_obj_remove_flag(frame, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC
-                       | LV_OBJ_FLAG_SCROLL_MOMENTUM | LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_bg_opa(frame, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_color(frame, lv_color_hex(SEL_FRAME_COLOR), 0);   /* 高亮橙 */
-    lv_obj_set_style_border_width(frame, SEL_FRAME_BORDER, 0);
-    lv_obj_set_style_radius(frame, SEL_RADIUS, 0);
-    s_launcher.sel_frame = frame;
-
-    /* 索引指示（右上角） */
-    lv_obj_t *il = lv_label_create(root);
-    lv_obj_set_style_text_font(il, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(il, lv_color_hex(0x4A5568), 0);
-    lv_obj_align(il, LV_ALIGN_TOP_RIGHT, -10, 8);
-    s_launcher.idx_lbl = il;
-
-    /* 惯性切换定时器 */
-    s_launcher.fling_timer = lv_timer_create(launcher_fling_tick, SEL_FLING_MS, NULL);
-    lv_timer_pause(s_launcher.fling_timer);
-
-    /* 根事件：垂直滑动切换 + 单击启动（LVGL 9 事件 filter 精确，逐个注册） */
-    lv_obj_add_event_cb(root, on_sel_swipe_event, LV_EVENT_PRESSED, NULL);
-    lv_obj_add_event_cb(root, on_sel_swipe_event, LV_EVENT_PRESSING, NULL);
-    lv_obj_add_event_cb(root, on_sel_swipe_event, LV_EVENT_RELEASED, NULL);
-    lv_obj_add_event_cb(root, on_sel_swipe_event, LV_EVENT_INDEV_RESET, NULL);
-    lv_obj_add_event_cb(root, on_sel_swipe_event, LV_EVENT_CLICKED, NULL);
+    launcher_apply_text_theme();
 }
 
 static void launcher_relayout_core(void)
@@ -1068,17 +935,33 @@ static void launcher_relayout_core(void)
     /* root 跟随逻辑分辨率（旋转后必须同步） */
     lv_obj_set_size(s_launcher.root, sw, sh);
 
-    /* 三行选择器：行容器（图标 + 名字）+ 选定框 */
-    for (int i = 0; i < 3; i++) {
-        lv_obj_set_pos(s_launcher.sel_rows[i], SEL_LEFT_GAP, s_launcher.sel_rows_y[i]);
-        lv_obj_set_size(s_launcher.sel_rows[i], s_launcher.sel_w, s_launcher.sel_row_h);
-        lv_obj_align(s_launcher.sel_icons[i], LV_ALIGN_LEFT_MID, SEL_ICON_X, 0);
-        lv_obj_align(s_launcher.sel_names[i], LV_ALIGN_LEFT_MID, SEL_NAME_X, 0);
-    }
-    lv_obj_set_pos(s_launcher.sel_frame, SEL_LEFT_GAP, s_launcher.sel_rows_y[1]);
-    lv_obj_set_size(s_launcher.sel_frame, s_launcher.sel_w, s_launcher.sel_row_h);
+    /* 滚筒容器：宽 = 卡宽，贴左边框（左侧仅留 CARD_LEFT_GAP，不居中）。
+     * 视口 = 全屏高；内容总高（卡+间距）恰好 = 屏高 → 初始显示单数张整卡，
+     * 卡 0 顶 = 间距、卡 n-1 底 = 屏高 - 间距，间距均分铺满全高 */
+    int drum_x = CARD_LEFT_GAP;
+    lv_obj_set_size(s_launcher.drum, s_launcher.card_w, sh);
+    lv_obj_set_pos(s_launcher.drum, drum_x, 0);
+    lv_obj_set_style_pad_top(s_launcher.drum, s_launcher.gap, 0);
+    lv_obj_set_style_pad_bottom(s_launcher.drum, s_launcher.gap, 0);
 
-    launcher_selector_refresh();   /* 内容/索引/边界同步（含旋转后重排） */
+    /* 卡片布局：y_i = i × unit，首卡顶 = 内容顶（pad_top 之下），左缘对齐。
+     * 内容：霓虹图标贴左（x=8，所有卡片同一竖线），名称挨着图标右侧 */
+#if LAUNCHER_CARDS_BAKED
+    launcher_bake_card_bg();   /* 尺寸/主题变化时重烘焙共享背景位图 */
+#endif
+    for (int i = 0; i < APP_COUNT; i++) {
+        lv_obj_set_size(s_launcher.cards[i], s_launcher.card_w, s_launcher.card_h);
+        lv_obj_set_pos(s_launcher.cards[i], 0, i * s_launcher.unit);
+#if LAUNCHER_CARDS_BAKED
+        lv_image_set_src(s_launcher.card_bgs[i], &s_card_bg_dsc);   /* 烘焙后刷新引用 */
+#endif
+        lv_obj_align(s_launcher.icon_imgs[i], LV_ALIGN_LEFT_MID, 8, 0);
+        lv_obj_align(s_launcher.text_labels[i], LV_ALIGN_LEFT_MID, 58, 0);
+    }
+
+    /* 保持当前滚动位置（clamp 到新滚动域） */
+    int cur = lv_obj_get_scroll_y(s_launcher.drum);
+    lv_obj_scroll_to_y(s_launcher.drum, cur, LV_ANIM_OFF);
 
     /* 拨轮定位（右缘垂直正中） */
     int wx = s_launcher.wheel_cx - s_launcher.wheel_w / 2;
@@ -1113,11 +996,18 @@ lv_obj_t *launcher_create(lv_obj_t *parent)
                     lv_display_get_vertical_resolution(lv_display_get_default()));
     s_launcher.root = root;
 
-    /* 3 行列表选择器（窗口铺满屏幕，内容原地刷新 + 选定框跟随移动）+ 右侧调速拨轮 */
-    s_launcher.cur_idx = 0;
-    s_launcher.win_start = 0;
-    s_launcher.frame_row = 0;
-    launcher_build_selector();
+    /* 滚筒容器：原生滚动（跟手 1:1 + 松手惯性滑行 + 边界弹性回弹）。
+     * 保留 LV_OBJ_FLAG_SCROLL_ELASTIC：按住拖过边界减速弹性跟手（diff/4），
+     * 松手惯性撞边后由 LVGL 回弹动画拉回（用户要求） */
+    lv_obj_t *drum = lv_obj_create(root);
+    lv_obj_set_scroll_dir(drum, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(drum, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_style_bg_opa(drum, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(drum, 0, 0);
+    lv_obj_set_style_pad_all(drum, 0, 0);
+    s_launcher.drum = drum;
+
+    launcher_build_cards();
     launcher_build_wheel();
     launcher_relayout_core();
 
