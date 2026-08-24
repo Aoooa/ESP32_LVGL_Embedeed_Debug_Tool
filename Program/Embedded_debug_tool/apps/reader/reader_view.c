@@ -180,6 +180,7 @@ static void rv_progress_timer(lv_timer_t *t)
         if (!reader_is_indexing(rv->reader)) {
             rv->indexing = false;
             lv_obj_add_flag(rv->index_lbl, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(rv->wheel, LV_OBJ_FLAG_HIDDEN);   /* 索引完成显示调速器 */
             flow_view_go_to(rv->view, 0);
             rv_update_progress(rv);
         }
@@ -252,15 +253,20 @@ static void rv_topdrop_cb(void *ctx)
     }
 }
 
-/* 右侧调速器 → 滚动 txt（speed_wheel 系统组件；pos -1..1，按位移滚动 flow_view） */
+/* 右侧调速器 → 滚动 txt（speed_wheel 系统组件；上推 pos<0 内容上移=看更前行，
+ * 下拉 pos>0 看后行；用 flow_view 按行号平滑滚动） */
 static void rv_speed_cb(void *ctx, float pos)
 {
     reader_view_t *rv = ctx;
     if (!rv || !rv->active || rv->indexing) return;
-    /* 上推(pos<0) → 内容上移（scroll 增大）；下拉 → 下移。粗略按 60px/满程 换算 */
-    int dy = -(int)(pos * 60.0f);
-    if (dy == 0) return;
-    lv_obj_scroll_by_bounded(rv->view, 0, dy, LV_ANIM_OFF);
+    int top = flow_view_get_view_top(rv->view);
+    int max = flow_view_get_max_top(rv->view);
+    int steps = (int)(pos * 3.0f);          /* |pos|=1 → 每回调 3 行（可调手感） */
+    if (steps == 0) return;
+    int nt = top + steps;                   /* 下拉(pos>0) top 增大=向后翻；上推减小=向前 */
+    if (nt < 0) nt = 0;
+    if (nt > max) nt = max;
+    flow_view_go_to(rv->view, nt);
 }
 
 /* ── 打开/关闭 ── */
@@ -298,6 +304,7 @@ bool reader_view_open(reader_view_t *rv, const char *path)
     }
     rv->line_w = lw;
     rv->indexing = true;
+    lv_obj_add_flag(rv->wheel, LV_OBJ_FLAG_HIDDEN);   /* 索引中不显示调速器 */
     const flow_view_line_provider_t prov = { reader_count, reader_line };
     flow_view_set_line_provider(rv->view, &prov, rv->reader);
 

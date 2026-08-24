@@ -390,3 +390,16 @@ bool gesture_is_pressed(void)
 {
     return s_swipe_tracking;
 }
+
+void gesture_consume_current(void)
+{
+    /* 终止本次手势：取消拖动，标记已触发（此后至松手不再触发任何返回/拖动）。
+     * 供调用方实现"一步一动作"——如阅读器状态栏显示时右滑只隐藏栏。 */
+    if (s_drag_active && s_drag_cb) {
+        int dx = s_swipe_last_x - s_swipe_start_x;
+        s_drag_active = false;
+        s_drag_cb(s_drag_ctx, dx, false);   /* 上报松手状，让 launcher 复位资源 */
+    }
+    s_swipe_triggered = true;
+    ESP_LOGI(TAG, "[SWIPE] gesture consumed (current)");
+}

@@ -623,7 +623,8 @@ static void launcher_on_drag(void *ctx, int dx, bool pressed)
             if (!top->m->back || !top->m->back(top->app)) {
                 s_drag_armed = false;
                 s_drag_root = NULL;
-                ESP_LOGI("launcher", "[DRAG] cancelled (non-fullscreen, back handled internally)");
+                ESP_LOGI("launcher", "[DRAG] cancelled (back handled internally)");
+                gesture_consume_current();   /* 终止本次拖动，一步一动作：不进入返回 */
                 return;
             }
             s_drag_root = top->root;   /* 记录拖动目标（松手时验证未被销毁） */

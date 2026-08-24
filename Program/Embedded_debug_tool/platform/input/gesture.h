@@ -56,6 +56,11 @@ void gesture_set_left_handler(gesture_left_cb_t cb, void *ctx);
  * 贴边右滑返回不受影响）。用于 H 放大平移等需要独占水平拖动的场景。 */
 void gesture_set_global_swipe(bool en);
 
+/* 消费当前手势：调用方（如 launcher 在 back 回调中判定 APP 已拦截，
+ * 如"状态栏显示时右滑只隐藏栏"）调用后，本次手势立即终止（不再拖动、
+ * 不再触发返回），直到松手。用于"一步一动作"的返回拦截语义。 */
+void gesture_consume_current(void);
+
 /* ── 边缘垂直/方向手势（全局，APP 订阅响应；仅识别广播，APP 决定处理） ── */
 
 /* 上边缘下滑（起点在顶部 EDGE 区，向下滑 ≥ 阈值）→ fired */
