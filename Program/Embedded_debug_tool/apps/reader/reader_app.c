@@ -396,7 +396,12 @@ void reader_app_refresh(reader_app_t *app)
  * direct 模式→弹栈回 file_browser；书架模式→关阅读层回书架）。 */
 bool reader_app_swipe_back(reader_app_t *app)
 {
-    (void)app;
+    if (!app) return true;
+    /* 阅读页打开时：右滑返回手势先问阅读器——状态栏显示中则隐藏栏并拦截
+     * （返回 false，取消拖动）；栏已隐藏则放行（返回 true，进入跟随右滑返回） */
+    if (app->rv && reader_view_active(app->rv)) {
+        return !reader_view_handle_back(app->rv);
+    }
     return true;
 }
 

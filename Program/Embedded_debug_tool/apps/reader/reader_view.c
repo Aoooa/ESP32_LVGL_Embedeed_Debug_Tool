@@ -5,11 +5,14 @@
 #include "flow_view.h"
 #include "app_font.h"
 #include "reader.h"
+#include "gesture.h"
+#include "speed_wheel.h"
 #include "misc/lv_timer_private.h"
 #include "core/lv_obj_private.h"
 #include "esp_log.h"
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 static const char *TAG = "reader_view";
 
@@ -38,6 +41,7 @@ struct reader_view {
     lv_obj_t *bar;
     lv_timer_t *progress_timer;
     lv_obj_t *index_lbl;
+    lv_obj_t *wheel;           /* 右侧调速器（系统组件 speed_wheel） */
 
     reader_view_back_cb_t back_cb;
     void *back_ctx;
@@ -230,8 +234,33 @@ static void rv_tap_event(void *user_data, lv_point_t pos)
         pos.y < rv_screen_h() / 3 || pos.y > rv_screen_h() * 2 / 3) {
         return;
     }
-    rv->ui_hidden = !rv->ui_hidden;
-    rv_chrome_anim(rv, !rv->ui_hidden);
+    /* 点击中间 → 退出/收起状态栏（若栏未显示则无操作） */
+    if (!rv->ui_hidden) {
+        rv->ui_hidden = true;
+        rv_chrome_anim(rv, false);
+    }
+}
+
+/* 上边缘下滑 → 显示状态栏（全局手势，系统层识别、阅读器订阅） */
+static void rv_topdrop_cb(void *ctx)
+{
+    reader_view_t *rv = ctx;
+    if (!rv || !rv->active) return;
+    if (rv->ui_hidden) {
+        rv->ui_hidden = false;
+        rv_chrome_anim(rv, true);
+    }
+}
+
+/* 右侧调速器 → 滚动 txt（speed_wheel 系统组件；pos -1..1，按位移滚动 flow_view） */
+static void rv_speed_cb(void *ctx, float pos)
+{
+    reader_view_t *rv = ctx;
+    if (!rv || !rv->active || rv->indexing) return;
+    /* 上推(pos<0) → 内容上移（scroll 增大）；下拉 → 下移。粗略按 60px/满程 换算 */
+    int dy = -(int)(pos * 60.0f);
+    if (dy == 0) return;
+    lv_obj_scroll_by_bounded(rv->view, 0, dy, LV_ANIM_OFF);
 }
 
 /* ── 打开/关闭 ── */
@@ -300,6 +329,19 @@ bool reader_view_active(const reader_view_t *rv)
     return rv && rv->active;
 }
 
+bool reader_view_handle_back(reader_view_t *rv)
+{
+    if (!rv || !rv->active) return false;
+    if (!rv->ui_hidden) {
+        /* 状态栏显示中：右滑返回手势 → 先隐藏栏并拦截（不进入返回拖动） */
+        rv->ui_hidden = true;
+        rv_chrome_anim(rv, false);
+        ESP_LOGI(TAG, "back-gesture: chrome shown -> hide, consumed");
+        return true;
+    }
+    return false;   /* 栏已隐藏 → 放行，正常跟随右滑返回上一级 */
+}
+
 void reader_view_set_back_cb(reader_view_t *rv, reader_view_back_cb_t cb, void *ctx)
 {
     if (!rv) return;
@@ -310,6 +352,7 @@ void reader_view_set_back_cb(reader_view_t *rv, reader_view_back_cb_t cb, void *
 void reader_view_destroy(reader_view_t *rv)
 {
     if (!rv) return;
+    gesture_set_topdrop_handler(NULL, NULL);   /* 注销上边缘下滑订阅 */
     if (rv->reader) reader_view_close(rv);
     if (rv->progress_timer) lv_timer_delete(rv->progress_timer);
     if (rv->root) lv_obj_delete(rv->root);
@@ -412,6 +455,13 @@ reader_view_t *reader_view_create(lv_obj_t *parent)
     lv_obj_set_style_text_color(rv->index_lbl, RV_TEXT, 0);
     lv_obj_set_style_text_font(rv->index_lbl, rv_ui_font(), 0);
     lv_obj_add_flag(rv->index_lbl, LV_OBJ_FLAG_HIDDEN);
+
+    /* 右侧调速器（系统组件）：悬浮右缘中间，上下拖动滚动 txt */
+    rv->wheel = speed_wheel_create(root, 100, rv_speed_cb, rv);
+    lv_obj_set_pos(rv->wheel, rv_screen_w() - 36 - 6, (rv_screen_h() - 100) / 2);
+
+    /* 订阅上边缘下滑（显示状态栏）：全局手势，本阅读器响应 */
+    gesture_set_topdrop_handler(rv_topdrop_cb, rv);
 
     return rv;
 }
