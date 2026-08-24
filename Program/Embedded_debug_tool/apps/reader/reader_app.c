@@ -398,21 +398,25 @@ bool reader_app_swipe_back(reader_app_t *app)
 {
     if (!app) return true;
     /* 阅读页打开时：右滑返回手势先问阅读器——状态栏显示中则隐藏栏并拦截
-     * （返回 false，取消拖动）；栏已隐藏则按入口决定返回目标 */
+     * （返回 false，取消拖动）；栏已隐藏则放行进入跟手拖动。
+     * 书架模式：拖动由 drag_root 指定为阅读覆盖层（露出书架而非桌面），
+     * 滑出后再由 drag_exit 关阅读层回书架 */
     if (app->rv && reader_view_active(app->rv)) {
         if (reader_view_handle_back(app->rv)) return false;   /* 栏显示→隐藏栏，拦截 */
-        /* 栏已隐藏：
-         *   书架模式 → 直接关闭阅读层回书架（拦截 launcher 的 root 拖动，
-         *             否则拖动整个 reader root 会先露出下层桌面而非书架）
-         *   direct 模式 → 放行，进入跟随右滑返回上一级（file_browser） */
-        if (!app->direct_mode) {
-            ESP_LOGI("reader_app", "[SWIPE] shelf-mode reader -> close to shelf");
-            reader_view_close(app->rv);
-            return false;
-        }
-        return true;
+        return true;   /* 栏已隐藏 → 放行跟手拖动（目标见 drag_root） */
     }
     return true;
+}
+
+/* 返回拖动时要平移的对象：书架模式阅读页 → 阅读覆盖层（露出下方书架，
+ * 不闪桌面）；其余返回 NULL 用默认整 root。仅在被拖动（栏已隐藏）时被查询，
+ * 故栏显示状态不影响此判定 */
+lv_obj_t *reader_app_drag_root(reader_app_t *app)
+{
+    if (app && app->rv && reader_view_active(app->rv) && !app->direct_mode) {
+        return reader_view_get_root(app->rv);
+    }
+    return NULL;
 }
 
 /* 拖动返回滑出动画完成（launcher 回调）：root 已滑到屏外。

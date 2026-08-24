@@ -343,6 +343,7 @@ const app_manifest_t app_manifests[LAUNCH_APP_COUNT] = {
         .refresh = (void (*)(void *))reader_app_refresh,
         .debug_event = (void (*)(void *, int))reader_app_debug_event,
         .entered = (void (*)(void *))reader_app_entered,
+        .drag_root = (lv_obj_t *(*)(void *))reader_app_drag_root,
         .drag_exit = (void (*)(void *))reader_app_drag_exit,
     },
     [LAUNCH_APP_UART] = {
@@ -567,7 +568,8 @@ bool launcher_app_running(void)
  * 拖动期间 LVGL 正常渲染（仅平移 root，APP 功能不受影响）。 */
 #define SWIPE_BACK_RATIO 3   /* 滑出阈值 = 屏宽/3 */
 
-static lv_obj_t *s_drag_root;    /* 拖动中的 APP root（松手时验证未被销毁） */
+static lv_obj_t *s_drag_root;    /* 拖动中的目标对象（root 或其子覆盖层；松手时验证） */
+static lv_obj_t *s_drag_owner;   /* 拖动目标的宿主 = APP root（松手时用它判断 APP 是否仍存活） */
 static bool s_drag_armed;        /* 拖动已获准（back() 判定通过，仅首帧判定一次） */
 
 static void launcher_drag_x_cb(void *var, int32_t v)
@@ -584,6 +586,7 @@ static void launcher_drag_exit_done(lv_anim_t *a)
     app_slot_t *top = stack_top();
     const app_manifest_t *m = top ? top->m : NULL;
     s_drag_root = NULL;
+    s_drag_owner = NULL;
     s_drag_armed = false;
     if (m && m->drag_exit) {
         m->drag_exit(top->app);
@@ -623,11 +626,16 @@ static void launcher_on_drag(void *ctx, int dx, bool pressed)
             if (!top->m->back || !top->m->back(top->app)) {
                 s_drag_armed = false;
                 s_drag_root = NULL;
+                s_drag_owner = NULL;
                 ESP_LOGI("launcher", "[DRAG] cancelled (back handled internally)");
                 gesture_consume_current();   /* 终止本次拖动，一步一动作：不进入返回 */
                 return;
             }
-            s_drag_root = top->root;   /* 记录拖动目标（松手时验证未被销毁） */
+            /* 拖动目标：默认整 root；APP 提供 drag_root → 用它（如书架模式拖
+             * 阅读覆盖层露出书架）。须为 root 子对象，松手用 root 存活校验 */
+            s_drag_owner = top->root;
+            s_drag_root = top->m->drag_root ? top->m->drag_root(top->app) : top->root;
+            if (!s_drag_root) s_drag_root = s_drag_owner;
         }
         int x = dx;
         if (x < 0) x = 0;
@@ -636,8 +644,9 @@ static void launcher_on_drag(void *ctx, int dx, bool pressed)
     } else {
         /* 松手：判定滑出或回弹。拖动目标已销毁（APP 自行关闭）→ 跳过动画 */
         app_slot_t *cur_top = stack_top();
-        if (!cur_top || cur_top->root != s_drag_root || !s_drag_root) {
+        if (!cur_top || !s_drag_root || cur_top->root != s_drag_owner) {
             s_drag_root = NULL;
+            s_drag_owner = NULL;
             s_drag_armed = false;
             return;
         }

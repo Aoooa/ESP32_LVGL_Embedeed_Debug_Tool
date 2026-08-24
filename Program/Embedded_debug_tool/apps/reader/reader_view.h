@@ -32,6 +32,9 @@ void reader_view_close(reader_view_t *rv);
 /* 当前是否处于阅读状态 */
 bool reader_view_active(const reader_view_t *rv);
 
+/* 覆盖层根对象（书架模式右滑返回时被拖动平移的对象，露出下方书架） */
+lv_obj_t *reader_view_get_root(const reader_view_t *rv);
+
 /* 返回手势处理钩子（launcher 右滑返回首帧调用）：
  *   true=已消费（状态栏显示中 → 隐藏栏并拦截，不进入返回拖动）；
  *   false=未消费（栏已隐藏 → 放行，正常触发跟随右滑返回上一级） */

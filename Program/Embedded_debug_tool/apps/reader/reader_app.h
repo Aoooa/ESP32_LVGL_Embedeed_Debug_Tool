@@ -33,6 +33,10 @@ void reader_app_destroy(reader_app_t *app);
 /* 右滑返回（launcher 分发）：全屏 UI 一律允许跟手拖动（返回 true） */
 bool reader_app_swipe_back(reader_app_t *app);
 
+/* 返回拖动时要平移的对象（launcher 分发）：书架模式阅读页 → 阅读覆盖层
+ * （露出书架不闪桌面）；其余 NULL = 默认拖整 root */
+lv_obj_t *reader_app_drag_root(reader_app_t *app);
+
 /* 拖动返回滑出动画完成（launcher 分发）：按入口决定返回目标
  * （direct 弹栈 / 书架关阅读层复位） */
 void reader_app_drag_exit(reader_app_t *app);

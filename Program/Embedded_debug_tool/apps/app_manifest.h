@@ -32,6 +32,10 @@ typedef struct app_manifest {
     void (*refresh)(void *app);
     void (*debug_event)(void *app, int evt);
     void (*entered)(void *app);   /* 可选：进入动画完成时调用（APP 启动重业务时延迟到此处） */
+    /* 可选：返回拖动返回时要平移的对象。NULL（默认）= 拖整 root（露出下层来源）。
+     * 书架模式阅读页需拖"阅读覆盖层"而非整 root，露出下方书架而不闪桌面。
+     * 该对象须仍是 root 的子对象（松手时 launcher 用 root 存活校验它）。 */
+    lv_obj_t *(*drag_root)(void *app);
     void (*drag_exit)(void *app); /* 可选：拖动返回滑出动画完成时调用（NULL=默认弹栈销毁）。
                                    * 全屏 APP 需"滑出后不销毁、自行收尾"（如书架模式阅读页
                                    * 关闭覆盖层回书架）时实现；内部调用 launcher_app_close 即默认销毁 */

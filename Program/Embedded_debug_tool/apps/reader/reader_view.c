@@ -5,6 +5,7 @@
 #include "flow_view.h"
 #include "app_font.h"
 #include "reader.h"
+#include "reader_favcache.h"
 #include "gesture.h"
 #include "speed_wheel.h"
 #include "misc/lv_timer_private.h"
@@ -42,6 +43,13 @@ struct reader_view {
     lv_timer_t *progress_timer;
     lv_obj_t *index_lbl;
     lv_obj_t *wheel;           /* 右侧调速器（系统组件 speed_wheel） */
+
+    /* 收藏 */
+    lv_obj_t *star_btn;        /* ⭐ 收藏当前行 */
+    lv_obj_t *star_lbl;
+    lv_obj_t *list_btn;        /* 📋 收藏列表 */
+    char path[160];            /* 当前 txt 路径 */
+    reader_fav_list_t fav;     /* 收藏列表（内存） */
 
     reader_view_back_cb_t back_cb;
     void *back_ctx;
@@ -285,6 +293,7 @@ bool reader_view_open(reader_view_t *rv, const char *path)
     rv->active = true;
     rv->ui_hidden = false;
 
+    lv_obj_set_x(rv->root, 0);   /* 清除上次拖动滑出/回弹残留的 x 偏移 */
     lv_obj_clear_flag(rv->root, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(rv->title, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(rv->bar, LV_OBJ_FLAG_HIDDEN);
@@ -340,6 +349,11 @@ void reader_view_close(reader_view_t *rv)
 bool reader_view_active(const reader_view_t *rv)
 {
     return rv && rv->active;
+}
+
+lv_obj_t *reader_view_get_root(const reader_view_t *rv)
+{
+    return rv ? rv->root : NULL;
 }
 
 bool reader_view_handle_back(reader_view_t *rv)
