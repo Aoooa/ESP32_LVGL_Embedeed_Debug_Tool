@@ -32,6 +32,9 @@ typedef struct app_manifest {
     void (*refresh)(void *app);
     void (*debug_event)(void *app, int evt);
     void (*entered)(void *app);   /* 可选：进入动画完成时调用（APP 启动重业务时延迟到此处） */
+    void (*drag_exit)(void *app); /* 可选：拖动返回滑出动画完成时调用（NULL=默认弹栈销毁）。
+                                   * 全屏 APP 需"滑出后不销毁、自行收尾"（如书架模式阅读页
+                                   * 关闭覆盖层回书架）时实现；内部调用 launcher_app_close 即默认销毁 */
 } app_manifest_t;
 
 /* 全部 APP 描述符表（索引 = launch_app_id_t） */

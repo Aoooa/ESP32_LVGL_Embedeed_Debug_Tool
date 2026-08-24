@@ -46,6 +46,8 @@ struct reader_app {
     reader_view_t *rv;
     lv_timer_t *no_sd_timer;   /* 无 SD 自动返回定时器 */
     bool direct_mode;          /* 直接打开模式（arg 带路径）：右滑关阅读页直接回来源 */
+    char *direct_arg;          /* launch arg 副本（create 时保存；launcher 的 s_launch_arg
+                                * 在 create 返回后即清空，entered 延迟读取需用此副本） */
 
     ra_entry_t *entries;
     int entry_count;
@@ -269,6 +271,13 @@ reader_app_t *reader_app_create(lv_obj_t *parent, reader_app_back_cb_t back_cb, 
     app->back_cb = back_cb;
     app->back_ctx = ctx;
     app->pending_idx = -1;
+    /* create 期间 s_launch_arg 仍有效（launcher 在 launch() 返回后清空），
+     * 立即保存副本供 entered（动画完成后）使用 */
+    const char *arg = launcher_app_get_arg();
+    if (arg && *arg) {
+        app->direct_arg = strdup(arg);
+        app->direct_mode = true;
+    }
 
     lv_obj_t *root = lv_obj_create(parent);
     lv_obj_set_size(root, lv_pct(100), lv_pct(100));
@@ -338,9 +347,9 @@ void reader_app_entered(reader_app_t *app)
 {
     if (!app) return;
 
-    const char *arg = launcher_app_get_arg();
+    /* arg 副本在 create 时已保存（launcher 的 s_launch_arg 此时已清空） */
+    const char *arg = app->direct_arg;
     if (arg && *arg) {
-        app->direct_mode = true;
         ESP_LOGI("reader_app", "direct-open mode: %s", arg);
         /* 强制布局：flow_view 视口宽度依赖父对象已布局尺寸 */
         lv_obj_update_layout(app->root);
@@ -367,6 +376,7 @@ void reader_app_destroy(reader_app_t *app)
     if (app->rv) reader_view_destroy(app->rv);
     if (app->entries) heap_caps_free(app->entries);
     if (app->dirq) heap_caps_free(app->dirq);
+    free(app->direct_arg);
     /* 闪屏修复：先隐藏 + 立即刷新一帧（露出来源），再删除全屏对象 */
     if (app->root) {
         lv_obj_add_flag(app->root, LV_OBJ_FLAG_HIDDEN);
@@ -381,21 +391,32 @@ void reader_app_refresh(reader_app_t *app)
     if (app) ra_scan(app);
 }
 
-/* 右滑返回（launcher 分发）：
- * 直接打开模式（file_browser 跳转）：阅读页打开 → 直接返回 true（弹栈回来源浏览器）
- * 书架模式：阅读页打开 → 关闭阅读器留书架（false）；书架页 → true（回来源/桌面） */
+/* 右滑返回（launcher 分发）：全屏 UI 一律允许跟手拖动（返回 true）。
+ * 滑出后的行为由 reader_app_drag_exit 决定（返回目标按入口/栈确定：
+ * direct 模式→弹栈回 file_browser；书架模式→关阅读层回书架）。 */
 bool reader_app_swipe_back(reader_app_t *app)
 {
-    if (!app) return true;
-    if (app->rv && reader_view_active(app->rv)) {
-        if (app->direct_mode) {
-            ESP_LOGI("reader_app", "[SWIPE] direct-mode reader -> close app (back to source)");
-            return true;   /* launcher 弹栈销毁本 APP，回 file_browser */
-        }
-        reader_view_close(app->rv);
-        return false;
-    }
+    (void)app;
     return true;
+}
+
+/* 拖动返回滑出动画完成（launcher 回调）：root 已滑到屏外。
+ * 返回目标由入口决定（用户约定：上一级按栈确定，书架与文件浏览器都能打开 txt）：
+ *   direct 模式（file_browser 跳转）→ 弹栈销毁本 APP，回 file_browser
+ *   书架模式阅读页打开          → 关闭阅读层，root 复位回书架（APP 保留）
+ *   书架页（无阅读层）          → 弹栈销毁，回来源/桌面 */
+void reader_app_drag_exit(reader_app_t *app)
+{
+    if (!app) return;
+    if (app->rv && reader_view_active(app->rv) && !app->direct_mode) {
+        ESP_LOGI("reader_app", "[DRAG-EXIT] shelf-mode reader -> back to shelf");
+        reader_view_close(app->rv);
+        lv_obj_set_x(app->root, 0);   /* 滑出动画把 root 推到屏外，复位回书架 */
+        lv_obj_update_layout(app->root);
+        return;
+    }
+    ESP_LOGI("reader_app", "[DRAG-EXIT] close app (back to stack source)");
+    launcher_app_close(NULL);
 }
 
 /* 调试事件（测试模块用）：打印内部状态，验证回调链路 */

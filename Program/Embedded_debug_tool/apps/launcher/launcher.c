@@ -459,6 +459,7 @@ const app_manifest_t app_manifests[LAUNCH_APP_COUNT] = {
         .refresh = (void (*)(void *))reader_app_refresh,
         .debug_event = (void (*)(void *, int))reader_app_debug_event,
         .entered = (void (*)(void *))reader_app_entered,
+        .drag_exit = (void (*)(void *))reader_app_drag_exit,
     },
     [LAUNCH_APP_UART] = {
         .id = LAUNCH_APP_UART,
@@ -693,9 +694,18 @@ static void launcher_drag_x_cb(void *var, int32_t v)
 static void launcher_drag_exit_done(lv_anim_t *a)
 {
     (void)a;
+    /* 先取栈顶 manifest（launcher_app_close 弹栈后 m 失效）：
+     * 有 drag_exit 回调 → APP 自行决定滑出后行为（如关覆盖层回书架）；
+     * 无 → 默认弹栈销毁 */
+    app_slot_t *top = stack_top();
+    const app_manifest_t *m = top ? top->m : NULL;
     s_drag_root = NULL;
     s_drag_armed = false;
-    launcher_app_close(NULL);   /* 滑出完成 → 弹栈销毁 */
+    if (m && m->drag_exit) {
+        m->drag_exit(top->app);
+    } else {
+        launcher_app_close(NULL);
+    }
 }
 
 static void launcher_drag_animate(lv_obj_t *root, int to_x, int ms,
