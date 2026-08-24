@@ -23,7 +23,7 @@ static const char *TAG = "reader_view";
 #define RV_BG          lv_color_hex(0xFFFFFF)
 #define RV_TEXT        lv_color_hex(0x111111)
 #define RV_BTN_BORDER  lv_color_hex(0xD1D5DB)
-#define RV_BAR_H       80     /* 底部白色扩展区高（按钮行 + 进度条，与栏同显隐） */
+#define RV_BAR_H       84     /* 底部设置栏总高（上部进度条区 + 下部白色按钮区，整体滑入/滑出） */
 #define RV_BAR_BOTTOM  6
 #define RV_TITLE_H     28
 #define RV_LINES       17     /* 英文 12px 全屏行数；中文按行高动态重算 */
@@ -32,8 +32,9 @@ static const char *TAG = "reader_view";
 #define RV_PROG_INDIC  lv_color_hex(0x6B7280)
 #define RV_PROG_KNOB   lv_color_hex(0x374151)
 
-/* 底部扩展区按钮 + 收藏 + 自动滚动 */
-#define RV_BTN_ROW_H   40     /* 按钮行高（扩展区上半部） */
+/* 底部设置栏内部布局（进度条在上、白色按钮区在下） */
+#define RV_PROG_TOP    8      /* 进度条距栏顶（白色按钮区之上，露出阅读区） */
+#define RV_BTN_PANEL_H 40     /* 白色按钮区高（贴栏底 = 屏幕底） */
 #define RV_BTN_W       46
 #define RV_BTN_H       32
 #define RV_BTN_GAP     8
@@ -126,7 +127,6 @@ static void rv_position_bubble(reader_view_t *rv)
 {
     if (!rv->prog || !rv->bubble) return;
     int sw = lv_obj_get_width(rv->prog);
-    int sh = lv_obj_get_height(rv->prog);
     int bw = lv_obj_get_width(rv->bubble);
     int sx = lv_obj_get_x(rv->prog);
     int max = rv->prog_max > 0 ? rv->prog_max : 1;
@@ -135,7 +135,9 @@ static void rv_position_bubble(reader_view_t *rv)
     int x = sx + pct * sw / 100 - bw / 2;
     if (x < sx) x = sx;
     if (x > sx + sw - bw) x = sx + sw - bw;
-    lv_obj_align(rv->bubble, LV_ALIGN_TOP_LEFT, x, RV_BAR_H - sh - lv_obj_get_height(rv->bubble) - 4);
+    /* 气泡在进度条上方（进度条位于栏上部 → 气泡可能越出栏顶，OVERFLOW_VISIBLE 渲染） */
+    int py = lv_obj_get_y(rv->prog);
+    lv_obj_align(rv->bubble, LV_ALIGN_TOP_LEFT, x, py - lv_obj_get_height(rv->bubble) - 4);
 }
 
 static void rv_prog_draw(lv_event_t *e)
@@ -504,6 +506,22 @@ static void rv_fav_dlg_build(reader_view_t *rv)
     lv_obj_set_style_text_color(rv->fav_head, RV_TEXT, 0);
     lv_obj_set_style_text_font(rv->fav_head, rv_ui_font(), 0);
     lv_label_set_text(rv->fav_head, "Favorites");
+
+    /* 关闭按钮（右上角） */
+    lv_obj_t *cx = lv_button_create(panel);
+    lv_obj_set_size(cx, 40, 26);
+    lv_obj_align(cx, LV_ALIGN_TOP_RIGHT, -4, 1);
+    lv_obj_set_style_bg_color(cx, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_border_color(cx, RV_BTN_BORDER, 0);
+    lv_obj_set_style_border_width(cx, 1, 0);
+    lv_obj_set_style_radius(cx, 6, 0);
+    lv_obj_set_style_pad_all(cx, 0, 0);
+    lv_obj_t *xl = lv_label_create(cx);
+    lv_obj_center(xl);
+    lv_label_set_text(xl, "×");
+    lv_obj_set_style_text_font(xl, rv_ui_font(), 0);
+    lv_obj_set_style_text_color(xl, RV_TEXT, 0);
+    lv_obj_add_event_cb(cx, rv_fav_dlg_dismiss_evt, LV_EVENT_CLICKED, rv);
 
     lv_obj_t *rows = lv_obj_create(panel);
     lv_obj_set_pos(rows, 6, 32);
@@ -885,6 +903,7 @@ reader_view_t *reader_view_create(lv_obj_t *parent)
     /* 收藏星标（左上）：☆ 未收藏 / ★ 黄 已收藏当前行 */
     rv->star_btn = lv_button_create(rv->title);
     lv_obj_set_size(rv->star_btn, 36, RV_TITLE_H);
+    lv_obj_set_ext_click_area(rv->star_btn, 10);   /* 顶栏小按钮加大热区，防轻触漂移丢点击 */
     lv_obj_set_style_bg_opa(rv->star_btn, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(rv->star_btn, 0, 0);
     lv_obj_set_style_radius(rv->star_btn, 0, 0);
@@ -907,6 +926,7 @@ reader_view_t *reader_view_create(lv_obj_t *parent)
     /* 收藏列表（右上） */
     rv->list_btn = lv_button_create(rv->title);
     lv_obj_set_size(rv->list_btn, 42, RV_TITLE_H);
+    lv_obj_set_ext_click_area(rv->list_btn, 10);
     lv_obj_set_style_bg_opa(rv->list_btn, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(rv->list_btn, 0, 0);
     lv_obj_set_style_radius(rv->list_btn, 0, 0);
@@ -918,22 +938,17 @@ reader_view_t *reader_view_create(lv_obj_t *parent)
     lv_label_set_text(fav_lbl, "Fav");
     lv_obj_add_event_cb(rv->list_btn, rv_list_evt, LV_EVENT_CLICKED, rv);
 
-    /* 底部白色扩展区：按钮行 + 进度条 + 气泡（OVERFLOW_VISIBLE 防裁剪）。 */
-    /* 栏显隐动画整体滑入/滑出（与 title 同步，见 rv_chrome_anim） */
+    /* 底部设置栏：透明容器 + 上部进度条/气泡 + 下部白色按钮区（OVERFLOW_VISIBLE
+     * 防气泡越界裁剪）。整体随栏显隐动画滑入/滑出（见 rv_chrome_anim） */
     rv->bar = lv_obj_create(root);
     lv_obj_set_size(rv->bar, lv_pct(100), RV_BAR_H);
     lv_obj_set_pos(rv->bar, 0, rv_screen_h() - RV_BAR_H - RV_BAR_BOTTOM);
     lv_obj_add_flag(rv->bar, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
-    lv_obj_set_style_bg_color(rv->bar, RV_BG, 0);        /* 白色扩展区 */
-    lv_obj_set_style_bg_opa(rv->bar, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(rv->bar, RV_BTN_BORDER, 0);
-    lv_obj_set_style_border_width(rv->bar, 1, 0);
-    lv_obj_set_style_border_side(rv->bar, LV_BORDER_SIDE_TOP, 0);
+    lv_obj_set_style_bg_opa(rv->bar, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(rv->bar, 0, 0);
     lv_obj_set_style_radius(rv->bar, 0, 0);
     lv_obj_set_style_pad_all(rv->bar, 0, 0);
-    lv_obj_set_style_pad_gap(rv->bar, 0, 0);
-    lv_obj_set_flex_flow(rv->bar, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(rv->bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(rv->bar, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(rv->bar, LV_OBJ_FLAG_HIDDEN);
 
     rv->bubble = lv_label_create(rv->bar);
@@ -951,7 +966,7 @@ reader_view_t *reader_view_create(lv_obj_t *parent)
     rv->prog = lv_obj_create(rv->bar);
     lv_obj_set_size(rv->prog, lv_pct(88), 12);
     lv_obj_add_flag(rv->prog, LV_OBJ_FLAG_IGNORE_LAYOUT);
-    lv_obj_align(rv->prog, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_align(rv->prog, LV_ALIGN_TOP_MID, 0, RV_PROG_TOP);
     lv_obj_set_style_opa(rv->prog, LV_OPA_60, 0);
     lv_obj_set_style_bg_opa(rv->prog, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(rv->prog, 0, 0);
@@ -961,25 +976,30 @@ reader_view_t *reader_view_create(lv_obj_t *parent)
     lv_obj_add_event_cb(rv->prog, rv_prog_draw, LV_EVENT_DRAW_MAIN, rv);
     lv_obj_add_event_cb(rv->prog, rv_prog_event, LV_EVENT_ALL, rv);
 
-    /* 底部扩展区按钮行（在进度条上方，随栏一起滑入/滑出） */
-    lv_obj_t *row = lv_obj_create(rv->bar);
-    lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_size(row, lv_pct(100), RV_BTN_ROW_H);
-    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(row, 0, 0);
-    lv_obj_set_style_pad_all(row, 0, 0);
-    lv_obj_set_style_pad_gap(row, RV_BTN_GAP, 0);
-    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    /* 白色按钮区（位于进度条下方，贴屏幕底；随栏一起滑入/滑出） */
+    lv_obj_t *panel = lv_obj_create(rv->bar);
+    lv_obj_remove_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_pos(panel, 0, RV_BAR_H - RV_BTN_PANEL_H);
+    lv_obj_set_size(panel, lv_pct(100), RV_BTN_PANEL_H);
+    lv_obj_set_style_bg_color(panel, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_opa(panel, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(panel, RV_BTN_BORDER, 0);
+    lv_obj_set_style_border_width(panel, 1, 0);
+    lv_obj_set_style_border_side(panel, LV_BORDER_SIDE_TOP, 0);
+    lv_obj_set_style_radius(panel, 8, 0);
+    lv_obj_set_style_pad_all(panel, 0, 0);
+    lv_obj_set_style_pad_gap(panel, RV_BTN_GAP, 0);
+    lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(panel, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    rv->go_btn = rv_bar_btn(row, "Go", rv_go_evt, rv);          /* 🔍 搜索跳行 */
-    rv->spacing_m_btn = rv_bar_btn(row, "-", rv_spacing_evt, rv);
+    rv->go_btn = rv_bar_btn(panel, "Go", rv_go_evt, rv);          /* 🔍 搜索跳行 */
+    rv->spacing_m_btn = rv_bar_btn(panel, "-", rv_spacing_evt, rv);
     lv_obj_set_user_data(rv->spacing_m_btn, (void *)(intptr_t)(-RV_SPACING_STEP));
-    rv->spacing_p_btn = rv_bar_btn(row, "+", rv_spacing_evt, rv);
+    rv->spacing_p_btn = rv_bar_btn(panel, "+", rv_spacing_evt, rv);
     lv_obj_set_user_data(rv->spacing_p_btn, (void *)(intptr_t)(RV_SPACING_STEP));
 
     /* 自动滚动：绿 Auto →（点击）慢速下滚 → 红 Stop →（点击停止） */
-    rv->auto_btn = lv_button_create(row);
+    rv->auto_btn = lv_button_create(panel);
     lv_obj_set_size(rv->auto_btn, RV_BTN_W, RV_BTN_H);
     lv_obj_set_style_bg_color(rv->auto_btn, lv_color_hex(RV_AUTO_GREEN), 0);
     lv_obj_set_style_border_width(rv->auto_btn, 0, 0);

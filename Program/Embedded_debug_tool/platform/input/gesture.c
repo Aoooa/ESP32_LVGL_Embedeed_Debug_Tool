@@ -235,21 +235,19 @@ esp_err_t gesture_read_cb(esp_lcd_touch_handle_t tp,
         if (!s_swipe_triggered) {
             int dx = lx - s_swipe_start_x;
 
-            /* 贴边候选：右移 >10px 即禁单击 → 官方 lv_indev_wait_release：
-             * 释放时 LVGL 走 PRESS_LOST 分支，act_obj=NULL，CLICKED 不派发 */
-            if (s_swipe_start_x <= SWIPE_EDGE_X && dx > SWIPE_CANDIDATE_DX) {
-                if (!s_swipe_candidate) {
-                    s_swipe_candidate = true;
-                    lv_indev_wait_release(lv_indev_active());
-                    ESP_LOGI(TAG, "[SWIPE] edge CANDIDATE dx=%d -> wait_release (suppress click)", dx);
-                }
-            }
-
             if (s_swipe_start_x <= SWIPE_EDGE_X) {
                 /* 贴边右滑：dx≥20 →
                  *   有拖动回调 → 进入拖动模式（持续上报，界面跟随手指）
-                 *   无拖动回调 → 立即返回（原逻辑） */
+                 *   无拖动回调 → 立即返回（原逻辑）
+                 * 触发点（dx≥20）才 wait_release 禁单击：轻触/微移（10~20px）
+                 * 保留 CLICKED，否则顶栏小按钮（收藏⭐等，起点在左缘带内）
+                 * 手指轻微漂移就被吞掉点击 */
                 if (dx >= SWIPE_MIN_DX) {
+                    if (!s_swipe_candidate) {
+                        s_swipe_candidate = true;
+                        lv_indev_wait_release(lv_indev_active());
+                        ESP_LOGI(TAG, "[SWIPE] edge TRIGGER dx=%d -> wait_release (suppress click)", dx);
+                    }
                     if (s_drag_cb) {
                         s_swipe_triggered = true;
                         s_drag_active = true;

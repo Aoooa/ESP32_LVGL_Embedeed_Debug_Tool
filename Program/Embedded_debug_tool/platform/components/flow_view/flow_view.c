@@ -630,7 +630,8 @@ void flow_view_set_line_spacing(lv_obj_t *obj, int spacing)
     v->line_spacing = spacing;
     int new_row = fv_row_h(v);
     if (new_row < 8) new_row = 8;                /* 行高下限 */
-    int new_lines = view_h / new_row;
+    /* 向上取整：画布绝不矮于原视口高，防止行距调大时阅读区底部"缩一块" */
+    int new_lines = (view_h + new_row - 1) / new_row;
     if (new_lines < 1) new_lines = 1;
     int w = lv_obj_get_width(lv_obj_get_parent(obj));
     int h = new_lines * new_row;
