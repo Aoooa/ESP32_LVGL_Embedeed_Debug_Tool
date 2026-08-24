@@ -260,8 +260,10 @@ static void rv_speed_cb(void *ctx, float pos)
 {
     reader_view_t *rv = ctx;
     if (!rv || !rv->active || rv->indexing) return;
-    float f = pos * pos * pos;                /* 三次方：pos=0.3→0.027, 0.6→0.216, 1→1 */
-    rv->speed_acc += f * 0.4f;                /* 满程每回调 ~0.4 行，累积成整行 */
+    /* 低端线性 + 高端次方：起步即有可见响应（不虚位）但慢，拉远平滑加速。
+     * f = 0.35·pos + 0.65·pos³：pos=0.2→0.075, 0.3→0.122, 0.6→0.35, 1→1 */
+    float f = pos * (0.35f + 0.65f * pos * pos);
+    rv->speed_acc += f * 0.35f;               /* 基线调低，整体慢一拍 */
     int delta = (int)rv->speed_acc;
     if (delta == 0) return;
     rv->speed_acc -= (float)delta;
