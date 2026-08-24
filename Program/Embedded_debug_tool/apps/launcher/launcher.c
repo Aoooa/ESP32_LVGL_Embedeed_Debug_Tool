@@ -69,16 +69,18 @@ static const struct {
 #define THEME_LIGHT_CARD 0xFFFFFF
 #define THEME_LIGHT_TEXT 0x1A1A2E
 
-/* ── 3 行列表选择器布局参数（3 行铺满屏幕，正常列表语义） ── */
+/* ── 3 行列表选择器布局参数（3 行铺满屏幕） ── */
 #define SEL_LEFT_GAP     8     /* 行内容左缘距屏幕左边框 */
 #define SEL_RIGHT_GAP    10    /* 行内容右缘距拨轮左缘 */
 #define SEL_TOP_GAP      8     /* 顶部留边（行铺满剩余高度） */
 #define SEL_ROW_GAP      12    /* 行间距 */
-#define SEL_BORDER       4     /* 选定框边框厚度 */
-#define SEL_RADIUS       16    /* 选定框圆角 */
-#define SEL_ICON_X       20    /* 图标左缘（行内） */
-#define SEL_DIVIDER_X    66    /* 图标/名字分隔竖线 x（行内） */
-#define SEL_NAME_X       80    /* 名字左缘（行内） */
+#define SEL_RADIUS       16    /* 行/选定框圆角 */
+#define SEL_ROW_BORDER   2     /* 行边框（Miku 绿） */
+#define SEL_FRAME_BORDER 6     /* 选定框边框（高亮橙，加粗） */
+#define SEL_ROW_COLOR    0x35E0C5   /* Miku 青绿：每行 APP 边框 */
+#define SEL_FRAME_COLOR  0xFF8C00   /* 高亮橙：选定框（选中态） */
+#define SEL_ICON_X       24    /* 图标左缘（行内） */
+#define SEL_NAME_X       64    /* 名字左缘（行内） */
 #define SEL_SWIPE_TH     40    /* 垂直滑动切换阈值（px 累计） */
 #define SEL_FLING_MS     90    /* 惯性连续切换间隔（ms/格） */
 #define SEL_FLING_MAX    3     /* 惯性最大格数（防止轻滑滑到底） */
@@ -101,13 +103,12 @@ static const struct {
 typedef struct {
     lv_obj_t *root;
 
-    /* 3 行切换选择器：当前行（选定框框住）+ 上下预览行。
-     * 每行 = 图标 | 竖线 | 名字（无卡片边框） */
-    lv_obj_t *sel_rows[3];      /* 0=预览(上) 1=当前 2=预览(下)，容器（透明） */
+    /* 3 行列表选择器：当前行（选定框框住）+ 上下预览行。
+     * 每行 = 图标 + 名字（Miku 绿边框，无竖线） */
+    lv_obj_t *sel_rows[3];      /* 0=顶行 1=中行 2=底行，容器（Miku 绿边框） */
     lv_obj_t *sel_icons[3];     /* 行内图标 */
-    lv_obj_t *sel_divs[3];      /* 行内分隔竖线 */
     lv_obj_t *sel_names[3];     /* 行内名字 */
-    lv_obj_t *sel_frame;        /* 选定框（霓虹边框，独立对象做滑入动画） */
+    lv_obj_t *sel_frame;        /* 选定框（高亮橙粗边框，独立对象做滑入动画） */
     lv_obj_t *idx_lbl;          /* 右上角 "N/9" 指示 */
     int cur_idx;                /* 当前选中 index */
     int32_t frame_anim_val;     /* 选定框滑入动画变量 */
@@ -873,7 +874,7 @@ static void launcher_selector_frame_anim(int target_row, int dir)
 }
 
 /* 刷新 3 行窗口内容（win_start..win_start+2）原地替换 + 选定框定位。
- * 颜色全部一致（选中行仅字号加大），无变暗预览行 */
+ * 所有行颜色/字号一致（无放大、无暗化），行边框为固定 Miku 绿样式 */
 static void launcher_selector_refresh(void)
 {
     int start = s_launcher.win_start;
@@ -889,16 +890,9 @@ static void launcher_selector_refresh(void)
         lv_obj_remove_flag(s_launcher.sel_rows[i], LV_OBJ_FLAG_HIDDEN);
         lv_image_set_src(s_launcher.sel_icons[i], s_app_icons[idx]);
         lv_label_set_text(s_launcher.sel_names[i], s_apps[idx].name);
-
-        /* 颜色一致（不暗化）；选中行字号加大 */
-        if (idx == s_launcher.cur_idx) {
-            lv_obj_set_style_text_font(s_launcher.sel_names[i], &lv_font_montserrat_28, 0);
-        } else {
-            lv_obj_set_style_text_font(s_launcher.sel_names[i], &lv_font_montserrat_14, 0);
-        }
+        lv_obj_set_style_text_font(s_launcher.sel_names[i], &lv_font_montserrat_16, 0);
         lv_obj_set_style_text_color(s_launcher.sel_names[i], name_c, 0);
         lv_obj_set_style_opa(s_launcher.sel_icons[i], LV_OPA_COVER, 0);
-        lv_obj_set_style_opa(s_launcher.sel_divs[i], LV_OPA_COVER, 0);
     }
 
     char buf[16];
@@ -969,13 +963,36 @@ static void on_sel_swipe_event(lv_event_t *e)
         break;
     }
     case LV_EVENT_CLICKED: {
-        if (!s_launcher.press_moved) {
-            /* 单击（无滑动）→ 启动当前选中 APP */
-            if (s_apps[s_launcher.cur_idx].type == APP_TYPE_LAUNCH) {
-                ESP_LOGI("launcher", "[SEL] click -> launch %s",
-                         s_apps[s_launcher.cur_idx].name);
-                launcher_app_launch(s_apps[s_launcher.cur_idx].id, NULL);
+        if (s_launcher.press_moved) break;   /* 滑动过不算点击 */
+        /* 由点击坐标判定所在行（0/1/2） */
+        lv_point_t p;
+        lv_indev_get_point(lv_indev_active(), &p);
+        int row = -1;
+        for (int i = 0; i < 3; i++) {
+            if (p.y >= s_launcher.sel_rows_y[i] &&
+                p.y < s_launcher.sel_rows_y[i] + s_launcher.sel_row_h) {
+                row = i;
+                break;
             }
+        }
+        if (row < 0) break;
+        if (row != s_launcher.frame_row) {
+            /* 选定框不在点击行：第一击只移动框到该 APP（框滑入），不启动；
+             * 再次单击（框已在）才启动 */
+            int old_row = s_launcher.frame_row;
+            s_launcher.frame_row = row;
+            s_launcher.cur_idx = s_launcher.win_start + row;
+            ESP_LOGI("launcher", "[SEL] click -> frame to row %d (idx %d)",
+                     row, s_launcher.cur_idx);
+            launcher_selector_refresh();
+            launcher_selector_frame_anim(row, (row > old_row) ? 1 : -1);
+            break;
+        }
+        /* 框已在点击行 → 启动选中 APP */
+        if (s_apps[s_launcher.cur_idx].type == APP_TYPE_LAUNCH) {
+            ESP_LOGI("launcher", "[SEL] click -> launch %s",
+                     s_apps[s_launcher.cur_idx].name);
+            launcher_app_launch(s_apps[s_launcher.cur_idx].id, NULL);
         }
         break;
     }
@@ -984,7 +1001,7 @@ static void on_sel_swipe_event(lv_event_t *e)
     }
 }
 
-/* 构建 3 行选择器：行 = 图标 | 竖线 | 名字（无卡片边框） + 选定框 + 索引指示 */
+/* 构建 3 行选择器：行 = Miku 绿边框容器（图标 + 名字，无竖线） + 选定框 + 索引指示 */
 static void launcher_build_selector(void)
 {
     lv_obj_t *root = s_launcher.root;
@@ -995,8 +1012,9 @@ static void launcher_build_selector(void)
                            | LV_OBJ_FLAG_SCROLL_MOMENTUM);
         lv_obj_add_flag(row, LV_OBJ_FLAG_EVENT_BUBBLE);
         lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(row, 0, 0);
-        lv_obj_set_style_radius(row, 0, 0);
+        lv_obj_set_style_border_color(row, lv_color_hex(SEL_ROW_COLOR), 0);   /* Miku 绿 */
+        lv_obj_set_style_border_width(row, SEL_ROW_BORDER, 0);
+        lv_obj_set_style_radius(row, SEL_RADIUS, 0);
         lv_obj_set_style_pad_all(row, 0, 0);
         s_launcher.sel_rows[i] = row;
 
@@ -1004,28 +1022,19 @@ static void launcher_build_selector(void)
         lv_obj_add_flag(icon, LV_OBJ_FLAG_EVENT_BUBBLE);
         s_launcher.sel_icons[i] = icon;
 
-        lv_obj_t *div = lv_obj_create(row);
-        lv_obj_remove_flag(div, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_set_style_bg_color(div, lv_color_hex(ACCENT_COLOR_HI), 0);
-        lv_obj_set_style_bg_opa(div, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(div, 0, 0);
-        lv_obj_set_style_radius(div, 1, 0);
-        lv_obj_set_size(div, 2, 40);   /* 高度 relayout 时按行高调整 */
-        s_launcher.sel_divs[i] = div;
-
         lv_obj_t *name = lv_label_create(row);
         lv_obj_add_flag(name, LV_OBJ_FLAG_EVENT_BUBBLE);
         lv_obj_set_style_bg_opa(name, LV_OPA_TRANSP, 0);
         s_launcher.sel_names[i] = name;
     }
 
-    /* 选定框：霓虹青边框 + 圆角，透明底（独立对象做滑入动画） */
+    /* 选定框：高亮橙粗边框 + 圆角，透明底（独立对象做滑入动画） */
     lv_obj_t *frame = lv_obj_create(root);
     lv_obj_remove_flag(frame, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC
                        | LV_OBJ_FLAG_SCROLL_MOMENTUM | LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_bg_opa(frame, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_color(frame, lv_color_hex(ACCENT_COLOR), 0);
-    lv_obj_set_style_border_width(frame, SEL_BORDER, 0);
+    lv_obj_set_style_border_color(frame, lv_color_hex(SEL_FRAME_COLOR), 0);   /* 高亮橙 */
+    lv_obj_set_style_border_width(frame, SEL_FRAME_BORDER, 0);
     lv_obj_set_style_radius(frame, SEL_RADIUS, 0);
     s_launcher.sel_frame = frame;
 
@@ -1059,14 +1068,12 @@ static void launcher_relayout_core(void)
     /* root 跟随逻辑分辨率（旋转后必须同步） */
     lv_obj_set_size(s_launcher.root, sw, sh);
 
-    /* 三行选择器：行容器（图标 | 竖线 | 名字）+ 选定框 */
+    /* 三行选择器：行容器（图标 + 名字）+ 选定框 */
     for (int i = 0; i < 3; i++) {
         lv_obj_set_pos(s_launcher.sel_rows[i], SEL_LEFT_GAP, s_launcher.sel_rows_y[i]);
         lv_obj_set_size(s_launcher.sel_rows[i], s_launcher.sel_w, s_launcher.sel_row_h);
         lv_obj_align(s_launcher.sel_icons[i], LV_ALIGN_LEFT_MID, SEL_ICON_X, 0);
-        lv_obj_align(s_launcher.sel_divs[i], LV_ALIGN_LEFT_MID, SEL_DIVIDER_X, 0);
         lv_obj_align(s_launcher.sel_names[i], LV_ALIGN_LEFT_MID, SEL_NAME_X, 0);
-        lv_obj_set_size(s_launcher.sel_divs[i], 2, s_launcher.sel_row_h - 24);
     }
     lv_obj_set_pos(s_launcher.sel_frame, SEL_LEFT_GAP, s_launcher.sel_rows_y[1]);
     lv_obj_set_size(s_launcher.sel_frame, s_launcher.sel_w, s_launcher.sel_row_h);
