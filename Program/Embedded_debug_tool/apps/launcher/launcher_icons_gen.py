@@ -130,13 +130,30 @@ def build_rings():
 RINGS = build_rings()
 
 def apply_glow(cv, shape_mask, main_color):
-    """显式径向辉光：每个主体像素向外扩散 GLOW_R 圈，alpha 距离衰减（模糊感）"""
+    """外部径向辉光：只向主体外扩散（目标在主体内部则跳过），
+    保证图标主体清晰不糊，光晕呈"灯管照射四周"效果"""
     pts = [(x, y) for y in range(H) for x in range(W) if shape_mask[y][x] > 0.5]
     for (mx, my) in pts:
         for (a, cells) in RINGS:
             for (dx, dy) in cells:
-                blend(cv, mx + dx, my + dy,
+                tx, ty = mx + dx, my + dy
+                if not (0 <= tx < W and 0 <= ty < H):
+                    continue
+                if shape_mask[ty][tx] > 0.5:
+                    continue   # 不画进主体内部
+                blend(cv, tx, ty,
                       (main_color[0], main_color[1], main_color[2], a))
+
+def apply_inner_rim(cv, shape_mask, white=60):
+    """主体边缘内侧 1px 加低 alpha 白辉：表面"发光"感但清晰不糊"""
+    for y in range(H):
+        for x in range(W):
+            if not shape_mask[y][x] > 0.5:
+                continue
+            edge = any(not (0 <= yy < H and 0 <= xx < W) or shape_mask[yy][xx] <= 0.5
+                       for yy, xx in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)))
+            if edge:
+                blend(cv, x, y, (255, 255, 255, white))
 
 def finish(cv, shape_mask, main):
     apply_glow(cv, shape_mask, main)
@@ -144,6 +161,7 @@ def finish(cv, shape_mask, main):
         for x in range(W):
             if shape_mask[y][x] > 0.5:
                 setpx(cv, x, y, (main[0], main[1], main[2], 255))
+    apply_inner_rim(cv, shape_mask)
 
 def mark(cv, mask, x0, y0, x1, y1):
     for y in range(max(0, y0), min(H, y1 + 1)):
