@@ -958,9 +958,9 @@ static void launcher_relayout_core(void)
 #if LAUNCHER_CARDS_BAKED
         lv_image_set_src(s_launcher.card_bgs[i], &s_card_bg_dsc);   /* 烘焙后刷新引用 */
 #endif
-        /* 60x60 图标居中上方 + APP 名下方居中（简洁清晰，避免与图标挤一行） */
-        lv_obj_align(s_launcher.icon_imgs[i], LV_ALIGN_TOP_MID, 0, 6);
-        lv_obj_align(s_launcher.text_labels[i], LV_ALIGN_BOTTOM_MID, 0, -4);
+        /* 图标在左、名字在右（保持原卡片布局；60px 图标左缘贴边，名字右移） */
+        lv_obj_align(s_launcher.icon_imgs[i], LV_ALIGN_LEFT_MID, 6, 0);
+        lv_obj_align(s_launcher.text_labels[i], LV_ALIGN_LEFT_MID, 70, 0);
     }
 
     /* 保持当前滚动位置（clamp 到新滚动域） */
