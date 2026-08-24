@@ -58,7 +58,7 @@ static void sw_on_event(lv_event_t *e)
     switch (lv_event_get_code(e)) {
     case LV_EVENT_PRESSED: {
         w->pressed = true;
-        lv_anim_delete(&w->anim_val, sw_anim_exec);
+        lv_anim_delete(w, sw_anim_exec);   /* var 须为 sw_t*（与 set_var 一致） */
         break;
     }
     case LV_EVENT_PRESSING: {
@@ -81,7 +81,7 @@ static void sw_on_event(lv_event_t *e)
         if (w->cb) w->cb(w->ctx, 0.0f);   /* 归零停止 */
         lv_anim_t a;
         lv_anim_init(&a);
-        lv_anim_set_var(&a, &w->anim_val);
+        lv_anim_set_var(&a, w);           /* 动画 var = sw_t*（exec 内解引用） */
         lv_anim_set_exec_cb(&a, sw_anim_exec);
         lv_anim_set_values(&a, w->anim_val, 0);
         lv_anim_set_duration(&a, SW_RETURN_MS);
