@@ -918,8 +918,8 @@ static void launcher_build_cards(void)
         lv_obj_t *lbl = lv_label_create(card);
         lv_label_set_text(lbl, s_apps[i].name);
         lv_obj_add_flag(lbl, LV_OBJ_FLAG_EVENT_BUBBLE);
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_16, 0);
-        lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_24, 0);
+        lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_RIGHT, 0);
         lv_obj_set_style_bg_opa(lbl, LV_OPA_TRANSP, 0);
         lv_obj_set_style_text_color(lbl, lv_color_hex(ACCENT_COLOR_HI), LV_STATE_PRESSED);
         s_launcher.text_labels[i] = lbl;
@@ -958,9 +958,11 @@ static void launcher_relayout_core(void)
 #if LAUNCHER_CARDS_BAKED
         lv_image_set_src(s_launcher.card_bgs[i], &s_card_bg_dsc);   /* 烘焙后刷新引用 */
 #endif
-        /* 图标在左、名字在右（保持原卡片布局；60px 图标左缘贴边，名字右移） */
+        /* 图标在左、名字在右（名字 24 号，右对齐贴卡片边缘，宽度 = 卡宽-图标区） */
         lv_obj_align(s_launcher.icon_imgs[i], LV_ALIGN_LEFT_MID, 6, 0);
-        lv_obj_align(s_launcher.text_labels[i], LV_ALIGN_LEFT_MID, 70, 0);
+        lv_obj_set_width(s_launcher.text_labels[i],
+                         s_launcher.card_w - 72);   /* 名字区：x=72 起，右贴卡片右缘 */
+        lv_obj_align(s_launcher.text_labels[i], LV_ALIGN_LEFT_MID, 72, 0);
     }
 
     /* 保持当前滚动位置（clamp 到新滚动域） */
