@@ -25,6 +25,7 @@ idf_component_register(
         "${MODULE_DIR}/apps/reader/reader_index.c"
         "${MODULE_DIR}/apps/reader/reader.c"
         "${MODULE_DIR}/apps/reader/reader_view.c"
+        "${MODULE_DIR}/apps/reader/reader_sdcache.c"
         "${MODULE_DIR}/apps/reader/reader_app.c"
         "${MODULE_DIR}/apps/terminal/terminal.c"
         "${MODULE_DIR}/apps/net_console/net_console.c"

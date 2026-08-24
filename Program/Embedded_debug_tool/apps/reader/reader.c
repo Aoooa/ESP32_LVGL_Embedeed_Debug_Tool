@@ -3,6 +3,7 @@
 #include "reader.h"
 #include "flow_model.h"
 #include "reader_index.h"
+#include "reader_sdcache.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_lv_adapter.h"
@@ -111,6 +112,12 @@ static void reader_index_task(void *arg)
         /* 收尾（EOF 语义，与文件大小无关）：补尾行 + 哨兵锚点 */
         reader_index_finish(&r->index);
         r->total_lines = reader_index_total_lines(&r->index);
+        /* 落到 SD 隐藏目录缓存（下次打开读回秒开） */
+        if (esp_lv_adapter_lock(-1) == ESP_OK) {
+            reader_sdcache_save(r->path, r->line_width, r->file_size,
+                                r->index.blocks, r->index.count, r->total_lines);
+            esp_lv_adapter_unlock();
+        }
         r->index_done = true;
     }
     xSemaphoreGive(r->done_sem);
@@ -258,6 +265,27 @@ reader_t *reader_open(const char *path, int line_width, const lv_font_t *font)
         reader_free_resources(r);
         heap_caps_free(r);
         return NULL;
+    }
+
+    /* 尝试读回 SD 索引缓存（秒开）；命中则跳过全文件扫描建索引 */
+    {
+        uint32_t ccount = 0, ctl = 0;
+        uint32_t cap = (uint32_t)(r->file_size / READER_INDEX_BLOCK) + 2;
+        bool hit = false;
+        if (esp_lv_adapter_lock(-1) == ESP_OK) {
+            hit = reader_sdcache_load(r->path, line_width, r->file_size,
+                                      r->blocks, cap, &ccount, &ctl);
+            esp_lv_adapter_unlock();
+        }
+        if (hit) {
+            r->index.count = ccount;
+            r->index.total_lines = ctl;
+            r->total_lines = ctl;
+            r->index_done = true;
+            xSemaphoreGive(r->done_sem);   /* is_indexing 立即返回 false */
+            ESP_LOGI(TAG, "open: index from SD cache (%u blocks, %u lines)", ccount, ctl);
+            return r;
+        }
     }
 
     if (xTaskCreateWithCaps(reader_index_task, "rdr_idx", 4096, r, 3, NULL,
