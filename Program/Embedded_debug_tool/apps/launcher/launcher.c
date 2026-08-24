@@ -29,6 +29,9 @@ extern const lv_image_dsc_t launcher_icon_terminal;
 extern const lv_image_dsc_t launcher_icon_serialip;
 extern const lv_image_dsc_t launcher_icon_cardr;
 extern const lv_image_dsc_t launcher_icon_dap;
+extern const lv_image_dsc_t launcher_icon_wave;
+extern const lv_image_dsc_t launcher_icon_scope;
+extern const lv_image_dsc_t launcher_icon_usb2ttl;
 
 static const lv_image_dsc_t *const s_app_icons[APP_COUNT] = {
     &launcher_icon_files,      /* Files */
@@ -37,9 +40,9 @@ static const lv_image_dsc_t *const s_app_icons[APP_COUNT] = {
     &launcher_icon_serialip,   /* SerialIP */
     &launcher_icon_cardr,      /* CardR */
     &launcher_icon_dap,        /* DAPLink */
-    &launcher_icon_terminal,   /* WaveGen（复用图标，后续可换） */
-    &launcher_icon_serialip,   /* Scope（复用图标，后续可换） */
-    &launcher_icon_serialip,   /* USB2TTL（复用图标，后续可换） */
+    &launcher_icon_wave,       /* WaveGen */
+    &launcher_icon_scope,      /* Scope */
+    &launcher_icon_usb2ttl,    /* USB2TTL */
 };
 
 static const struct {
