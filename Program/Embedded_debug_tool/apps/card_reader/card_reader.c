@@ -6,8 +6,8 @@
 #include "esp_log.h"
 
 /* 配色（深色，与 net_console 一致） */
-#define CR_BG          lv_color_hex(0x111827)
-#define CR_CARD        lv_color_hex(0x1F2937)
+#define CR_BG          lv_color_hex(0x000000)
+#define CR_CARD        lv_color_hex(0x000000)
 #define CR_TEXT        lv_color_hex(0xFFFFFF)
 #define CR_DIM         lv_color_hex(0x9CA3AF)
 #define CR_ACCENT      lv_color_hex(0x39C5BB)

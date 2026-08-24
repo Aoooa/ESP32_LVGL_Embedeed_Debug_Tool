@@ -15,9 +15,9 @@
 #include <stdio.h>
 
 /* ── 配色：Miku 青绿霓虹（桌面主题 #39C5BB 的亮化主色） ── */
-#define DL_BG        lv_color_hex(0x0A0E14)   /* 深黑蓝底 */
-#define DL_PANEL     lv_color_hex(0x121A26)   /* 面板 */
-#define DL_EDGE      lv_color_hex(0x1E2A3A)   /* 面板边框 */
+#define DL_BG        lv_color_hex(0x000000)   /* 深黑蓝底 */
+#define DL_PANEL     lv_color_hex(0x000000)   /* 面板 */
+#define DL_EDGE      lv_color_hex(0x000000)   /* 面板边框 */
 #define DL_TEXT      lv_color_hex(0xE8F0F8)
 #define DL_DIM       lv_color_hex(0x5A7085)
 #define DL_MIKU      lv_color_hex(0x35E0C5)   /* 霓虹青绿（USB 激活） */

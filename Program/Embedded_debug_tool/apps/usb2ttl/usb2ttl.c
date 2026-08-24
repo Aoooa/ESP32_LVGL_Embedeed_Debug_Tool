@@ -15,8 +15,8 @@
 #include <stdio.h>
 
 /* ── 配色（与 card_reader 一致） ── */
-#define UU_BG        lv_color_hex(0x111827)
-#define UU_CARD      lv_color_hex(0x1F2937)
+#define UU_BG        lv_color_hex(0x000000)
+#define UU_CARD      lv_color_hex(0x000000)
 #define UU_TEXT      lv_color_hex(0xFFFFFF)
 #define UU_DIM       lv_color_hex(0x9CA3AF)
 #define UU_ACCENT    lv_color_hex(0x39C5BB)

@@ -14,8 +14,8 @@
 #define S_TAG "scope"
 
 /* ── 配色（深色 + Miku 绿，与 wave_gen 一致风格） ── */
-#define SC_BG            0x0A0A12
-#define SC_BAR_BORDER    0x1F2A36
+#define SC_BG            0x000000
+#define SC_BAR_BORDER    0x000000
 #define SC_WAVE1         0x39C5BB   /* CH1 波形绿 */
 #define SC_WAVE2         0xFFB86C   /* CH2 波形橙 */
 #define SC_GRID          0x2C2C36   /* 网格浅灰（更淡） */

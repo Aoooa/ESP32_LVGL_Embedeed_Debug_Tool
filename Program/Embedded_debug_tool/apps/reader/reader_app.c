@@ -25,8 +25,8 @@
 #define RA_SCAN_DEPTH   1        /* 根目录 + 一级子目录 */
 
 /* 配色（与 file_browser 深色一致） */
-#define RA_BG           lv_color_hex(0x111827)
-#define RA_ROW          lv_color_hex(0x1F2937)
+#define RA_BG           lv_color_hex(0x000000)
+#define RA_ROW          lv_color_hex(0x000000)
 #define RA_ROW_PRESSED  lv_color_hex(0x374151)
 #define RA_TEXT         lv_color_hex(0xFFFFFF)
 #define RA_EMPTY        lv_color_hex(0x9CA3AF)

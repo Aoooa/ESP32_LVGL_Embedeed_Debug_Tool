@@ -51,14 +51,14 @@ typedef struct {
 } fb_row_data_t;
 
 /* 配色（深色底：文件夹�?/ 文件白） */
-#define FB_BG_COLOR       lv_color_hex(0x111827)
-#define FB_ROW_COLOR      lv_color_hex(0x1F2937)
+#define FB_BG_COLOR       lv_color_hex(0x000000)
+#define FB_ROW_COLOR      lv_color_hex(0x000000)
 #define FB_ROW_PRESSED    lv_color_hex(0x374151)
 #define FB_PATH_COLOR     lv_color_hex(0xFFFFFF)
 #define FB_DIR_COLOR      lv_color_hex(0xFBBF24)   /* 文件夹黄�?*/
 #define FB_FILE_COLOR     lv_color_hex(0xFFFFFF)   /* 文件白色 */
 #define FB_EMPTY_COLOR    lv_color_hex(0x9CA3AF)
-#define FB_BTN_BG         lv_color_hex(0x1F2937)
+#define FB_BTN_BG         lv_color_hex(0x000000)
 #define FB_BTN_TEXT       lv_color_hex(0xE5E7EB)
 #define FB_BTN_BORDER     lv_color_hex(0x374151)
 

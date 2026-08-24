@@ -8,8 +8,8 @@
 #include <stdlib.h>
 
 /* 配色（深色，与书架一致） */
-#define NC_BG          lv_color_hex(0x111827)
-#define NC_CARD        lv_color_hex(0x1F2937)
+#define NC_BG          lv_color_hex(0x000000)
+#define NC_CARD        lv_color_hex(0x000000)
 #define NC_TEXT        lv_color_hex(0xFFFFFF)
 #define NC_DIM         lv_color_hex(0x9CA3AF)
 #define NC_ACCENT      lv_color_hex(0x39C5BB)

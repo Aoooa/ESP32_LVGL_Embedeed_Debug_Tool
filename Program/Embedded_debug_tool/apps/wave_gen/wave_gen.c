@@ -20,10 +20,10 @@
 #define WG_TAG "wave_gen"
 
 /* 配色（Miku 绿·冷峻科技风） */
-#define WG_BG          0x0A0E14
-#define WG_PANEL       0x121A24
-#define WG_CARD        0x0E141C
-#define WG_BORDER      0x1F2A36
+#define WG_BG          0x000000
+#define WG_PANEL       0x000000
+#define WG_CARD        0x000000
+#define WG_BORDER      0x000000
 #define WG_TEXT        0xE6F0EE
 #define WG_DIM         0x94A3B8
 #define WG_GREEN       0x39C5BB

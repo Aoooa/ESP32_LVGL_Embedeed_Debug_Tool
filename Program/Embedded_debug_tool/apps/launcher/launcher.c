@@ -63,7 +63,7 @@ static const struct {
 #define ACCENT_COLOR_HI  0x7DF9FF   /* 亮青（按下边框/内光晕/名称文字） */
 #define WHEEL_COLOR      0xFF00E5   /* 霓虹品红：调速拨轮（轨道/填充/圆钮） */
 #define THEME_DARK_BG    0x000000   /* 纯黑背景（用户指定） */
-#define THEME_DARK_CARD  0x12121F   /* 卡片底色（不透明） */
+#define THEME_DARK_CARD  0x000000   /* 卡片底色（纯黑） */
 #define THEME_DARK_TEXT  0xE8E8F0
 #define THEME_LIGHT_BG   0xE8E8F0
 #define THEME_LIGHT_CARD 0xFFFFFF
