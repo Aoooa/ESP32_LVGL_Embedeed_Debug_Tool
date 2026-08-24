@@ -10,8 +10,8 @@ W = H = 40
 OUT_C = os.path.join(os.path.dirname(__file__), "launcher_icons.c")
 OUT_PNG = os.path.join(os.path.dirname(__file__), "..", "..", "build", "icons_preview.png")
 
-GLOW_R = 9          # 光晕半径（px），主体外 9px 辉光带
-GLOW_PEAK = 150     # 近层光晕峰值 alpha
+GLOW_R = 3          # 光晕半径（px）：紧贴主体边缘一层（霓虹灯管感，勿宽）
+GLOW_PEAK = 120     # 近层光晕峰值 alpha
 
 def hexc(h):
     return ((h >> 16) & 0xFF, (h >> 8) & 0xFF, h & 0xFF, 255)
@@ -122,7 +122,7 @@ def build_rings():
             for dx in range(-d, d + 1):
                 if round(math.hypot(dx, dy)) == d:
                     cells.append((dx, dy))
-        a = int(GLOW_PEAK * ((1.0 - d / (GLOW_R + 1.0)) ** 1.6))
+        a = int(GLOW_PEAK * ((1.0 - d / (GLOW_R + 1.0)) ** 2.5))
         if a > 0:
             rings.append((a, cells))
     return rings
