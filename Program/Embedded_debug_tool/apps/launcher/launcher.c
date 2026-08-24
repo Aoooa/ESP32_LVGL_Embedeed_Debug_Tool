@@ -121,7 +121,8 @@ typedef struct {
     lv_timer_t *fling_timer;    /* 惯性连续切换定时器 */
     int fling_dir;              /* 惯性方向：-1=上一个 +1=下一个，0=停止 */
     int fling_count;            /* 惯性剩余格数（有限，防轻滑滑到底） */
-    int win_start;              /* 3 行窗口首行 index（正常列表语义） */
+    int win_start;              /* 3 行窗口首行 index（内容滚动方向与手指一致） */
+    int frame_row;              /* 选定框所在行 0/1/2（每切 1 次向手指反向移 1 行，到边停） */
 
     /* 调速拨轮 */
     lv_obj_t *wheel;             /* 触摸热区容器（覆盖整个拨轮区域） */
@@ -189,21 +190,23 @@ static void launcher_selector_frame_anim(int target_row, int dir);   /* 前向�
 
 static bool launcher_selector_move(int dir)
 {
-    int cur = s_launcher.cur_idx;
+    /* 内容滚动方向与手指一致：上滑(dir>0 下一个) → 窗口下滚（露出下方 APP）；
+     * 选定框每切 1 次向手指反向移 1 行（上滑 → 框下移），到窗口边缘后停住 */
     if (dir > 0) {
-        if (cur >= APP_COUNT - 1) return false;   /* 到底 */
-        cur++;
-        if (cur > s_launcher.win_start + 2) s_launcher.win_start++;   /* 窗口下滚一格 */
+        if (s_launcher.win_start >= APP_COUNT - 3) return false;   /* 到底 */
+        s_launcher.win_start++;
+        if (s_launcher.frame_row < 2) s_launcher.frame_row++;
     } else {
-        if (cur <= 0) return false;               /* 到顶 */
-        cur--;
-        if (cur < s_launcher.win_start) s_launcher.win_start--;       /* 窗口上滚一格 */
+        if (s_launcher.win_start <= 0) return false;               /* 到顶 */
+        s_launcher.win_start--;
+        if (s_launcher.frame_row > 0) s_launcher.frame_row--;
     }
-    s_launcher.cur_idx = cur;
-    ESP_LOGI("launcher", "[SEL] idx=%d/%d (%s)", cur, APP_COUNT, s_apps[cur].name);
-    launcher_selector_refresh();   /* 窗口滚动时 3 行内容替换 + 高亮框定位 */
-    /* 框滑入到选中行（正常列表语义：选中行可位于顶/中/底行） */
-    launcher_selector_frame_anim(cur - s_launcher.win_start, dir);
+    s_launcher.cur_idx = s_launcher.win_start + s_launcher.frame_row;
+    ESP_LOGI("launcher", "[SEL] win=%d row=%d idx=%d/%d (%s)",
+             s_launcher.win_start, s_launcher.frame_row, s_launcher.cur_idx,
+             APP_COUNT, s_apps[s_launcher.cur_idx].name);
+    launcher_selector_refresh();   /* 3 行内容原地刷新 + 选定框定位 */
+    launcher_selector_frame_anim(s_launcher.frame_row, dir);   /* 框向反向滑入 */
     return true;
 }
 
@@ -849,11 +852,11 @@ static void launcher_frame_anim_exec(void *var, int32_t v)
 }
 
 /* 选定框滑入动画：滑到 target_row 行（0=顶 1=中 2=底）。
- * dir>0（下一个，上滑触发）内容来自下方 → 框从下方相邻行滑入；dir<0 反之 */
+ * dir>0（框下移，上滑触发）从上方相邻行滑入；dir<0（框上移）从下方滑入 */
 static void launcher_selector_frame_anim(int target_row, int dir)
 {
     int y_target = s_launcher.sel_rows_y[target_row];
-    int from_row = target_row + ((dir > 0) ? 1 : -1);
+    int from_row = target_row - dir;   /* 起点 = 旧位置（相邻行） */
     if (from_row < 0) from_row = 0;
     if (from_row > 2) from_row = 2;
     int y_from = s_launcher.sel_rows_y[from_row];
@@ -869,14 +872,13 @@ static void launcher_selector_frame_anim(int target_row, int dir)
     lv_anim_start(&a);
 }
 
-/* 刷新 3 行窗口内容（win_start..win_start+2）+ 高亮行定位。
- * 正常列表语义：选中项（cur）位于窗口中的自然位置，第一项在顶行、末项在底行 */
+/* 刷新 3 行窗口内容（win_start..win_start+2）原地替换 + 选定框定位。
+ * 颜色全部一致（选中行仅字号加大），无变暗预览行 */
 static void launcher_selector_refresh(void)
 {
     int start = s_launcher.win_start;
     bool dark = s_launcher.dark;
-    lv_color_t cur_c = lv_color_hex(dark ? THEME_DARK_TEXT : THEME_LIGHT_TEXT);
-    lv_color_t prev_c = lv_color_hex(dark ? 0x4A5568 : 0x9CA3AF);
+    lv_color_t name_c = lv_color_hex(dark ? THEME_DARK_TEXT : THEME_LIGHT_TEXT);
 
     for (int i = 0; i < 3; i++) {
         int idx = start + i;
@@ -888,28 +890,24 @@ static void launcher_selector_refresh(void)
         lv_image_set_src(s_launcher.sel_icons[i], s_app_icons[idx]);
         lv_label_set_text(s_launcher.sel_names[i], s_apps[idx].name);
 
+        /* 颜色一致（不暗化）；选中行字号加大 */
         if (idx == s_launcher.cur_idx) {
-            /* 选中行：大字亮色，图标/竖线全亮 */
             lv_obj_set_style_text_font(s_launcher.sel_names[i], &lv_font_montserrat_28, 0);
-            lv_obj_set_style_text_color(s_launcher.sel_names[i], cur_c, 0);
-            lv_obj_set_style_opa(s_launcher.sel_icons[i], LV_OPA_COVER, 0);
-            lv_obj_set_style_opa(s_launcher.sel_divs[i], LV_OPA_COVER, 0);
         } else {
-            /* 非选中行：小字灰色半透明 */
             lv_obj_set_style_text_font(s_launcher.sel_names[i], &lv_font_montserrat_14, 0);
-            lv_obj_set_style_text_color(s_launcher.sel_names[i], prev_c, 0);
-            lv_obj_set_style_opa(s_launcher.sel_icons[i], LV_OPA_40, 0);
-            lv_obj_set_style_opa(s_launcher.sel_divs[i], LV_OPA_50, 0);
         }
+        lv_obj_set_style_text_color(s_launcher.sel_names[i], name_c, 0);
+        lv_obj_set_style_opa(s_launcher.sel_icons[i], LV_OPA_COVER, 0);
+        lv_obj_set_style_opa(s_launcher.sel_divs[i], LV_OPA_COVER, 0);
     }
 
     char buf[16];
     snprintf(buf, sizeof(buf), "%d/%d", s_launcher.cur_idx + 1, APP_COUNT);
     lv_label_set_text(s_launcher.idx_lbl, buf);
 
-    /* 高亮框定位到选中行（无动画直接设；切换动画由 frame_anim 驱动） */
+    /* 选定框定位到 frame_row 行（无动画直接设；切换动画由 frame_anim 驱动） */
     lv_obj_set_pos(s_launcher.sel_frame, SEL_LEFT_GAP,
-                   s_launcher.sel_rows_y[s_launcher.cur_idx - start]);
+                   s_launcher.sel_rows_y[s_launcher.frame_row]);
 }
 
 /* 根事件：垂直滑动切换 + 单击启动。
@@ -1108,9 +1106,10 @@ lv_obj_t *launcher_create(lv_obj_t *parent)
                     lv_display_get_vertical_resolution(lv_display_get_default()));
     s_launcher.root = root;
 
-    /* 3 行列表选择器（窗口铺满屏幕，正常列表语义）+ 右侧调速拨轮 */
+    /* 3 行列表选择器（窗口铺满屏幕，内容原地刷新 + 选定框跟随移动）+ 右侧调速拨轮 */
     s_launcher.cur_idx = 0;
     s_launcher.win_start = 0;
+    s_launcher.frame_row = 0;
     launcher_build_selector();
     launcher_build_wheel();
     launcher_relayout_core();
