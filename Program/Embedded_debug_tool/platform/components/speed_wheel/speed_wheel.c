@@ -64,11 +64,9 @@ static void sw_on_event(lv_event_t *e)
     case LV_EVENT_PRESSING: {
         lv_point_t p;
         lv_indev_get_point(lv_indev_active(), &p);
-        /* p 相对屏幕；换算到组件内 */
+        /* 全局坐标 → 组件内坐标（须减组件自身及父链 y 偏移，组件不在 (0,0) 时也准） */
         lv_obj_t *par = lv_obj_get_parent(w->root);
-        lv_coord_t px = p.x - lv_obj_get_x(par);
-        lv_coord_t py = p.y - lv_obj_get_y(par);
-        (void)px;
+        lv_coord_t py = p.y - lv_obj_get_y(w->root) - lv_obj_get_y(par);
         float pos = (float)(py - w->cy) / w->travel;
         if (pos > 1.0f) pos = 1.0f;
         if (pos < -1.0f) pos = -1.0f;
@@ -124,11 +122,12 @@ lv_obj_t *speed_wheel_create(lv_obj_t *parent, int h_px,
     lv_obj_add_event_cb(root, sw_on_event, LV_EVENT_INDEV_RESET, NULL);
     w->root = root;
 
-    /* 胶囊外框（半透明灰边框） */
+    /* 胶囊外框（半透明灰：半透明底 + 半透明边框） */
     lv_obj_t *shell = lv_obj_create(root);
     lv_obj_remove_flag(shell, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC
                        | LV_OBJ_FLAG_SCROLL_MOMENTUM | LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_bg_opa(shell, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_color(shell, lv_color_hex(SW_FRAME_COLOR), 0);
+    lv_obj_set_style_bg_opa(shell, LV_OPA_20, 0);      /* 半透明灰底 */
     lv_obj_set_style_border_color(shell, lv_color_hex(SW_FRAME_COLOR), 0);
     lv_obj_set_style_border_opa(shell, LV_OPA_50, 0);   /* 半透明灰边框 */
     lv_obj_set_style_border_width(shell, SW_SHELL_B, 0);

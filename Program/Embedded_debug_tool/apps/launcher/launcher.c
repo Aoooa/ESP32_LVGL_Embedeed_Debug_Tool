@@ -155,8 +155,8 @@ static void launcher_compute_geom(void)
     if (s_launcher.gap < 2) s_launcher.gap = 2;
     s_launcher.unit = s_launcher.card_h + s_launcher.gap;
 
-    /* 调速器高度（悬浮右边缘中间，小尺寸） */
-    s_launcher.wheel_h = sh / 3;
+    /* 调速器长度（用户指定 80px，悬浮右边缘中间） */
+    s_launcher.wheel_h = 80;
 }
 
 /* ── 调速器（系统组件 speed_wheel）→ 驱动滚筒滚动 ──
@@ -859,7 +859,7 @@ static void launcher_relayout_core(void)
     /* 调速器（系统组件）悬浮右边缘中间：右缘贴边 6px，垂直居中 */
     int sw_ = lv_display_get_horizontal_resolution(lv_display_get_default());
     int sh_ = lv_display_get_vertical_resolution(lv_display_get_default());
-    s_launcher.wheel_h = sh_ / 3;
+    s_launcher.wheel_h = 80;
     lv_obj_set_size(s_launcher.wheel, 36, s_launcher.wheel_h);
     lv_obj_set_pos(s_launcher.wheel, sw_ - 36 - 6, (sh_ - s_launcher.wheel_h) / 2);
 }
