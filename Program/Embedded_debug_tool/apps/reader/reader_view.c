@@ -51,6 +51,7 @@ struct reader_view {
     reader_t *reader;          /* 数据层（NULL=未打开） */
     bool indexing;
     int line_w;                /* 打开时的折行像素宽 */
+    float speed_acc;           /* 调速器速度累积器（行数，取整翻页） */
 };
 
 static int rv_screen_w(void)
@@ -253,17 +254,20 @@ static void rv_topdrop_cb(void *ctx)
     }
 }
 
-/* 右侧调速器 → 滚动 txt（speed_wheel 系统组件；上推 pos<0 内容上移=看更前行，
- * 下拉 pos>0 看后行；用 flow_view 按行号平滑滚动） */
+/* 右侧调速器 → 滚动 txt：速度 = pos³（符号保持，近中心极慢、越远越快）。
+ * 累积器把连续回调的小步进聚成整数行才翻页，避免快速滑动一次跳太多。 */
 static void rv_speed_cb(void *ctx, float pos)
 {
     reader_view_t *rv = ctx;
     if (!rv || !rv->active || rv->indexing) return;
+    float f = pos * pos * pos;                /* 三次方：pos=0.3→0.027, 0.6→0.216, 1→1 */
+    rv->speed_acc += f * 0.4f;                /* 满程每回调 ~0.4 行，累积成整行 */
+    int delta = (int)rv->speed_acc;
+    if (delta == 0) return;
+    rv->speed_acc -= (float)delta;
     int top = flow_view_get_view_top(rv->view);
     int max = flow_view_get_max_top(rv->view);
-    int steps = (int)(pos * 3.0f);          /* |pos|=1 → 每回调 3 行（可调手感） */
-    if (steps == 0) return;
-    int nt = top + steps;                   /* 下拉(pos>0) top 增大=向后翻；上推减小=向前 */
+    int nt = top + delta;                     /* 下拉(pos>0)向后翻；上推向前 */
     if (nt < 0) nt = 0;
     if (nt > max) nt = max;
     flow_view_go_to(rv->view, nt);
