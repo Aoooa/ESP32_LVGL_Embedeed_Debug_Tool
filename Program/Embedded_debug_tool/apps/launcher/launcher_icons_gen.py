@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """launcher_icons_gen.py —— 生成桌面霓虹图标位图 launcher_icons.c + 预览 PNG
-风格：赛博朋克霓虹灯。大块几何、低细节，主体居中缩小（四周留光晕空间），
-主体外带明显径向模糊辉光（霓虹灯管感）。输出 LVGL ARGB8888 40x40。"""
+风格：赛博朋克霓虹灯。60x60，大块几何、粗线条、极简清晰；主体居中，
+四周留光晕空间；光晕仅贴主体边缘一层（灯管感，不糊主体）。
+输出 LVGL ARGB8888 位图（字节序 B,G,R,A）60x60。"""
 
 import math, struct, zlib, os
 
-W = H = 40
+W = H = 60
 OUT_C = os.path.join(os.path.dirname(__file__), "launcher_icons.c")
 OUT_PNG = os.path.join(os.path.dirname(__file__), "..", "..", "build", "icons_preview.png")
 
-GLOW_R = 3          # 光晕半径（px）：紧贴主体边缘一层（霓虹灯管感，勿宽）
-GLOW_PEAK = 120     # 近层光晕峰值 alpha
+GLOW_R = 4          # 光晕半径（px）：紧贴主体边缘一层
+GLOW_PEAK = 130     # 近层光晕峰值 alpha
 
 def hexc(h):
     return ((h >> 16) & 0xFF, (h >> 8) & 0xFF, h & 0xFF, 255)
@@ -93,7 +94,7 @@ def poly_line(cv, pts, w, c):
     for i in range(len(pts) - 1):
         draw_line(cv, pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], w, c)
 
-def arc(cv, cx, cy, r, a0, a1, w, c, steps=40):
+def arc(cv, cx, cy, r, a0, a1, w, c, steps=48):
     pts = []
     for i in range(steps + 1):
         a = math.radians(a0 + (a1 - a0) * i / steps)
@@ -113,7 +114,7 @@ def sin_wave(cv, x0, x1, base_y, amp, period, w, c, phase=0.0):
         pts.append((x, y))
     poly_line(cv, pts, w, c)
 
-# 预计算径向辉光环：每圈 (alpha, offsets)
+# 预计算径向辉光环
 def build_rings():
     rings = []
     for d in range(1, GLOW_R + 1):
@@ -130,8 +131,7 @@ def build_rings():
 RINGS = build_rings()
 
 def apply_glow(cv, shape_mask, main_color):
-    """外部径向辉光：只向主体外扩散（目标在主体内部则跳过），
-    保证图标主体清晰不糊，光晕呈"灯管照射四周"效果"""
+    """外部径向辉光：只向主体外扩散（不画进主体内部），贴边一层"""
     pts = [(x, y) for y in range(H) for x in range(W) if shape_mask[y][x] > 0.5]
     for (mx, my) in pts:
         for (a, cells) in RINGS:
@@ -140,12 +140,11 @@ def apply_glow(cv, shape_mask, main_color):
                 if not (0 <= tx < W and 0 <= ty < H):
                     continue
                 if shape_mask[ty][tx] > 0.5:
-                    continue   # 不画进主体内部
+                    continue
                 blend(cv, tx, ty,
                       (main_color[0], main_color[1], main_color[2], a))
 
-def apply_inner_rim(cv, shape_mask, white=60):
-    """主体边缘内侧 1px 加低 alpha 白辉：表面"发光"感但清晰不糊"""
+def apply_inner_rim(cv, shape_mask, white=55):
     for y in range(H):
         for x in range(W):
             if not shape_mask[y][x] > 0.5:
@@ -169,97 +168,97 @@ def mark(cv, mask, x0, y0, x1, y1):
             if cv[y][x][3]:
                 mask[y][x] = 1.0
 
-# ============ 9 个图标（主体居中，四周留光晕空间） ============
+# ============ 9 个图标（60x60，主体居中，极简清晰） ============
 
 def icon_files():
     """文件夹：标签 + 主体 + 中缝（青 + 白）"""
     main = hexc(0x00F0FF); white = hexc(0xFFFFFF)
     cv = new_canvas(); mask = [[0.0] * W for _ in range(H)]
-    fill_rect(cv, 9, 10, 19, 15, white)                # 标签
-    round_rect_fill(cv, 9, 15, 31, 32, 3, white)       # 主体
-    mark(cv, mask, 9, 10, 31, 32)
+    fill_rect(cv, 13, 13, 31, 21, white)                # 标签
+    round_rect_fill(cv, 13, 21, 47, 49, 5, white)       # 主体
+    mark(cv, mask, 13, 13, 47, 49)
     finish(cv, mask, main)
-    for x in range(13, 28):
-        setpx(cv, x, 23, main)                         # 中缝（主色）
+    for x in range(20, 41):
+        setpx(cv, x, 35, main)                          # 中缝
     return cv
 
 def icon_reader():
     """打开的书：两页 + 脊线 + 单行文字（粉 + 紫）"""
     main = hexc(0xFF5FA2); sub = hexc(0xB14CFF); white = hexc(0xFFFFFF)
     cv = new_canvas(); mask = [[0.0] * W for _ in range(H)]
-    for y in range(11, 31):
-        for x in range(10, 19):
+    for y in range(15, 48):
+        for x in range(14, 29):
             setpx(cv, x, y, white); mask[y][x] = 1.0
-        for x in range(21, 30):
+        for x in range(31, 46):
             setpx(cv, x, y, white); mask[y][x] = 1.0
-    for y in range(10, 32):
-        setpx(cv, 20, y, white); mask[y][20] = 1.0
+    for y in range(14, 49):
+        setpx(cv, 30, y, white); mask[y][30] = 1.0
     finish(cv, mask, main)
-    for x in range(13, 17):
-        setpx(cv, x, 19, sub)
-    for x in range(23, 27):
-        setpx(cv, x, 19, sub)
+    for x in range(17, 26):
+        setpx(cv, x, 28, sub)
+    for x in range(34, 43):
+        setpx(cv, x, 28, sub)
     return cv
 
 def icon_terminal():
     """终端窗口 + 粗 >_ 提示符（绿 + 白）"""
     main = hexc(0x39FF88); white = hexc(0xFFFFFF)
     cv = new_canvas(); mask = [[0.0] * W for _ in range(H)]
-    round_rect_fill(cv, 8, 11, 32, 30, 4, white)
-    mark(cv, mask, 8, 11, 32, 30)
+    round_rect_fill(cv, 11, 15, 49, 47, 6, white)
+    mark(cv, mask, 11, 15, 49, 47)
     finish(cv, mask, main)
-    poly_line(cv, [(13, 18), (18, 21), (13, 24)], 3, white)
-    draw_line(cv, 22, 24, 29, 24, 3, white)
+    poly_line(cv, [(20, 26), (29, 31), (20, 36)], 5, white)
+    draw_line(cv, 35, 36, 45, 36, 5, white)
     return cv
 
 def icon_serialip():
     """串口接头 + 信号弧（品红 + 橙）"""
     main = hexc(0xFF00E5); sub = hexc(0xFF8C00); white = hexc(0xFFFFFF)
     cv = new_canvas(); mask = [[0.0] * W for _ in range(H)]
-    poly_fill(cv, [(13, 20), (27, 20), (25, 33), (15, 33)], white)
-    mark(cv, mask, 13, 20, 27, 33)
+    poly_fill(cv, [(18, 28), (42, 28), (39, 49), (21, 49)], white)
+    mark(cv, mask, 18, 28, 42, 49)
     finish(cv, mask, main)
-    fill_circle(cv, 17, 25, 2, white)
-    fill_circle(cv, 23, 25, 2, white)
-    arc(cv, 20, 20, 8, 180, 360, 3, sub)
-    arc(cv, 20, 20, 13, 180, 360, 3, sub)
+    fill_circle(cv, 25, 36, 3, white)
+    fill_circle(cv, 35, 36, 3, white)
+    arc(cv, 30, 28, 11, 180, 360, 4, sub)
+    arc(cv, 30, 28, 17, 180, 360, 4, sub)
     return cv
 
 def icon_cardr():
     """U 盘：USB 头 + 卡体（金 + 品红）"""
     main = hexc(0xFFD700); sub = hexc(0xFF00E5); white = hexc(0xFFFFFF)
     cv = new_canvas(); mask = [[0.0] * W for _ in range(H)]
-    round_rect_fill(cv, 13, 14, 29, 32, 3, white)      # 卡体
-    round_rect_fill(cv, 16, 8, 26, 15, 2, white)       # USB 头
-    mark(cv, mask, 13, 8, 29, 32)
+    round_rect_fill(cv, 19, 20, 43, 49, 4, white)       # 卡体
+    round_rect_fill(cv, 23, 9, 39, 22, 3, white)        # USB 头
+    mark(cv, mask, 19, 9, 43, 49)
     finish(cv, mask, main)
-    for y in range(10, 15):
-        setpx(cv, 19, y, sub)
-        setpx(cv, 23, y, sub)
+    for y in range(12, 21):
+        setpx(cv, 28, y, sub)
+        setpx(cv, 34, y, sub)
     return cv
 
 def icon_daplink():
     """芯片 + 粗闪电（红 + 黄）"""
     main = hexc(0xFF2A5C); sub = hexc(0xFFE94D); white = hexc(0xFFFFFF)
     cv = new_canvas(); mask = [[0.0] * W for _ in range(H)]
-    round_rect_fill(cv, 12, 14, 30, 32, 3, white)      # 芯片体
-    for y in (18, 23, 28):
-        draw_line(cv, 8, y, 12, y, 3, white)
-        draw_line(cv, 30, y, 34, y, 3, white)
-    for x in (15, 20, 25):
-        draw_line(cv, x, 11, x, 14, 3, white)
-        draw_line(cv, x, 32, x, 35, 3, white)
-    mark(cv, mask, 8, 11, 34, 35)
+    round_rect_fill(cv, 17, 20, 43, 47, 4, white)       # 芯片体
+    for y in (25, 31, 37, 43):
+        draw_line(cv, 11, y, 17, y, 4, white)
+        draw_line(cv, 43, y, 49, y, 4, white)
+    for x in (22, 29, 36):
+        draw_line(cv, x, 15, x, 20, 4, white)
+        draw_line(cv, x, 47, x, 52, 4, white)
+    mark(cv, mask, 11, 15, 49, 52)
     finish(cv, mask, main)
-    poly_line(cv, [(21, 16), (17, 23), (21, 23), (18, 30)], 3, sub)
+    poly_line(cv, [(31, 22), (24, 33), (30, 33), (26, 45)], 5, sub)
     return cv
 
 def icon_wave():
     """粗正弦波（品红）"""
     main = hexc(0xFF00E5); white = hexc(0xFFFFFF)
     cv = new_canvas(); mask = [[0.0] * W for _ in range(H)]
-    sin_wave(cv, 8, 32, 20, 8, 1.5, 3, white)
-    mark(cv, mask, 8, 11, 32, 29)
+    sin_wave(cv, 10, 50, 30, 12, 1.5, 5, white)
+    mark(cv, mask, 10, 16, 50, 44)
     finish(cv, mask, main)
     return cv
 
@@ -267,27 +266,27 @@ def icon_scope():
     """示波器屏 + 波形（绿 + 琥珀）"""
     main = hexc(0x22FF88); sub = hexc(0xFFC857); white = hexc(0xFFFFFF)
     cv = new_canvas(); mask = [[0.0] * W for _ in range(H)]
-    round_rect_fill(cv, 8, 10, 32, 31, 4, white)
-    mark(cv, mask, 8, 10, 32, 31)
+    round_rect_fill(cv, 11, 13, 49, 49, 6, white)
+    mark(cv, mask, 11, 13, 49, 49)
     finish(cv, mask, main)
-    sin_wave(cv, 11, 29, 22, 5, 1.25, 3, white)
-    fill_circle(cv, 29, 14, 1, sub)
-    fill_circle(cv, 25, 14, 1, sub)
+    sin_wave(cv, 15, 45, 32, 8, 1.25, 5, white)
+    fill_circle(cv, 43, 19, 2, sub)
+    fill_circle(cv, 37, 19, 2, sub)
     return cv
 
 def icon_usb2ttl():
     """USB 插头 → 箭头 → 串口圆头（紫 + 青）"""
     main = hexc(0xB14CFF); sub = hexc(0x00F0FF); white = hexc(0xFFFFFF)
     cv = new_canvas(); mask = [[0.0] * W for _ in range(H)]
-    round_rect_fill(cv, 6, 15, 18, 28, 3, white)       # USB 插头
-    mark(cv, mask, 6, 15, 18, 28)
+    round_rect_fill(cv, 8, 22, 27, 41, 4, white)        # USB 插头
+    mark(cv, mask, 8, 22, 27, 41)
     finish(cv, mask, main)
-    for y in range(18, 25):
-        setpx(cv, 10, y, white)
-        setpx(cv, 13, y, white)
-    draw_line(cv, 21, 21, 29, 21, 3, sub)              # 箭头
-    poly_line(cv, [(29, 21), (25, 17), (25, 25)], 3, sub)
-    stroke_circle(cv, 33, 21, 3, 3, sub)               # 串口圆头
+    for y in range(26, 38):
+        setpx(cv, 14, y, white)
+        setpx(cv, 18, y, white)
+    draw_line(cv, 31, 31, 43, 31, 5, sub)               # 箭头
+    poly_line(cv, [(43, 31), (36, 24), (36, 38)], 5, sub)
+    stroke_circle(cv, 50, 31, 5, 5, sub)                # 串口圆头
     return cv
 
 ICONS = [
@@ -326,9 +325,9 @@ def emit_c():
         parts.append('    .header.magic = LV_IMAGE_HEADER_MAGIC,')
         parts.append('    .header.cf = LV_COLOR_FORMAT_ARGB8888,')
         parts.append('    .header.flags = 0,')
-        parts.append('    .header.w = 40,')
-        parts.append('    .header.h = 40,')
-        parts.append('    .header.stride = 160,')
+        parts.append('    .header.w = %d,' % W)
+        parts.append('    .header.h = %d,' % H)
+        parts.append('    .header.stride = %d,' % (W * 4))
         parts.append('    .data_size = %d,' % len(data))
         parts.append('    .data = icon_%s_data,' % name)
         parts.append('};')
@@ -358,15 +357,15 @@ def write_png(path, img, scale=1):
 
 def emit_png():
     canvases = [fn() for _, fn in ICONS]
-    scale = 6
-    pad = 12 * scale
-    cell = 40 * scale + pad
+    scale = 4
+    pad = 14 * scale
+    cell = W * scale + pad
     grid = [[(10, 10, 14, 255) for _ in range(cell * 3)] for _ in range(cell * 3)]
     for idx, cv in enumerate(canvases):
         gx, gy = idx % 3, idx // 3
         ox, oy = gx * cell + pad // 2, gy * cell + pad // 2
-        for y in range(40 * scale):
-            for x in range(40 * scale):
+        for y in range(H * scale):
+            for x in range(W * scale):
                 grid[oy + y][ox + x] = cv[y // scale][x // scale]
     write_png(OUT_PNG, grid)
 
