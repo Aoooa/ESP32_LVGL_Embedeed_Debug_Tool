@@ -15,6 +15,17 @@ static const char *TAG = "gesture";
 #define SWIPE_GLOBAL_DX   50     /* 全局手势（任意起点，仅识别不触发功能）：|dx| ≥50
                                   *   右滑 → right 事件，左滑 → left 事件（接口预留，UI 后续接） */
 
+/* 边缘垂直手势：
+ *   上边缘下滑（起点顶部 SWIPE_EDGE_TOP，向下滑 ≥MIN_DY）→ topdrop
+ *   下边缘上滑（起点底部，向上滑 ≥MIN_DY）→ bottomup
+ *   右边缘下滑（起点右缘，向下滑 ≥MIN_DY）→ rightdrop（退出状态栏等）
+ * 与水平手势（返回/左右滑）方向正交，同一手势只触发一种；触发后并入
+ * s_swipe_triggered（与非单击抑制共用），避免一次手势触发多个事件。 */
+#define SWIPE_EDGE_TOP    40
+#define SWIPE_EDGE_BOT    40
+#define SWIPE_EDGE_RIGHT  40
+#define SWIPE_MIN_DY      20
+
 /* ── 触摸防抖（时间戳锁存） ──
  * 物理层按下/松开各需持续 TOUCH_DEBOUNCE_MS 才确认上报给 LVGL：
  *   · 按下 <50ms 即消失 → 抖动，直接丢弃（不上报按下）
@@ -32,6 +43,12 @@ static gesture_left_cb_t s_left_cb;           /* 全局左滑事件回调（接�
 static void *s_left_ctx;
 static gesture_drag_cb_t s_drag_cb;           /* 拖动返回回调（手机式滑动返回） */
 static void *s_drag_ctx;
+static gesture_topdrop_cb_t s_topdrop_cb;     /* 上边缘下滑回调 */
+static void *s_topdrop_ctx;
+static gesture_bottomup_cb_t s_bottomup_cb;   /* 下边缘上滑回调 */
+static void *s_bottomup_ctx;
+static gesture_rightdrop_cb_t s_rightdrop_cb; /* 右边缘下滑回调 */
+static void *s_rightdrop_ctx;
 static bool s_global_swipe_en = true;         /* 全局右/左滑开关（贴边返回不受影响） */
 static bool s_swipe_tracking;                 /* 本次是否处于按下 */
 static lv_coord_t s_swipe_start_x, s_swipe_start_y;
@@ -81,6 +98,42 @@ static void fire_left_event(void)
         s_left_cb(s_left_ctx);
     } else {
         ESP_LOGW(TAG, "[EVT] swipe-left fired but no handler registered");
+    }
+}
+
+/* 上边缘下滑（read_cb 上下文直调，LVGL 线程） */
+static void fire_topdrop_event(void)
+{
+    if (s_topdrop_cb) {
+        ESP_LOGI(TAG, "[EVT] top-drop fired (start=%d,%d dy=%d)",
+                 s_swipe_start_x, s_swipe_start_y, s_swipe_last_y - s_swipe_start_y);
+        s_topdrop_cb(s_topdrop_ctx);
+    } else {
+        ESP_LOGW(TAG, "[EVT] top-drop fired but no handler registered");
+    }
+}
+
+/* 下边缘上滑 */
+static void fire_bottomup_event(void)
+{
+    if (s_bottomup_cb) {
+        ESP_LOGI(TAG, "[EVT] bottom-up fired (start=%d,%d dy=%d)",
+                 s_swipe_start_x, s_swipe_start_y, s_swipe_last_y - s_swipe_start_y);
+        s_bottomup_cb(s_bottomup_ctx);
+    } else {
+        ESP_LOGW(TAG, "[EVT] bottom-up fired but no handler registered");
+    }
+}
+
+/* 右边缘下滑 */
+static void fire_rightdrop_event(void)
+{
+    if (s_rightdrop_cb) {
+        ESP_LOGI(TAG, "[EVT] right-drop fired (start=%d,%d dy=%d)",
+                 s_swipe_start_x, s_swipe_start_y, s_swipe_last_y - s_swipe_start_y);
+        s_rightdrop_cb(s_rightdrop_ctx);
+    } else {
+        ESP_LOGW(TAG, "[EVT] right-drop fired but no handler registered");
     }
 }
 
@@ -249,6 +302,31 @@ esp_err_t gesture_read_cb(esp_lcd_touch_handle_t tp,
                 ESP_LOGI(TAG, "[SWIPE] global-left TRIGGER start_x=%d dx=%d -> left event",
                          s_swipe_start_x, dx);
                 fire_left_event();
+            } else if (s_global_swipe_en) {
+                /* 垂直边缘手势（方向正交；起点落在对应边缘区且垂直位移够才判定） */
+                int dy = ly - s_swipe_start_y;
+                int sh = lv_display_get_vertical_resolution(lv_display_get_default());
+                int sw = lv_display_get_horizontal_resolution(lv_display_get_default());
+                if ((s_swipe_start_y <= SWIPE_EDGE_TOP && dy >= SWIPE_MIN_DY) ||
+                    (s_swipe_start_y >= sh - SWIPE_EDGE_BOT && dy <= -SWIPE_MIN_DY) ||
+                    (s_swipe_start_x >= sw - SWIPE_EDGE_RIGHT && dy >= SWIPE_MIN_DY)) {
+                    if (!s_swipe_candidate) {
+                        s_swipe_candidate = true;
+                        lv_indev_wait_release(lv_indev_active());
+                        ESP_LOGI(TAG, "[SWIPE] edge-vert CANDIDATE start=%d,%d dy=%d -> wait_release",
+                                 s_swipe_start_x, s_swipe_start_y, dy);
+                    }
+                    if (s_swipe_start_y <= SWIPE_EDGE_TOP && dy >= SWIPE_MIN_DY) {
+                        s_swipe_triggered = true;
+                        fire_topdrop_event();
+                    } else if (s_swipe_start_y >= sh - SWIPE_EDGE_BOT && dy <= -SWIPE_MIN_DY) {
+                        s_swipe_triggered = true;
+                        fire_bottomup_event();
+                    } else if (s_swipe_start_x >= sw - SWIPE_EDGE_RIGHT && dy >= SWIPE_MIN_DY) {
+                        s_swipe_triggered = true;
+                        fire_rightdrop_event();
+                    }
+                }
             }
         } else if (s_drag_active && s_drag_cb) {
             /* 拖动中：持续上报位移（界面跟随手指） */
@@ -313,6 +391,27 @@ void gesture_set_global_swipe(bool en)
 {
     s_global_swipe_en = en;
     ESP_LOGI(TAG, "global swipe %s", en ? "enabled" : "disabled");
+}
+
+void gesture_set_topdrop_handler(gesture_topdrop_cb_t cb, void *ctx)
+{
+    s_topdrop_cb = cb;
+    s_topdrop_ctx = ctx;
+    ESP_LOGI(TAG, "top-drop handler %s", cb ? "registered" : "cleared");
+}
+
+void gesture_set_bottomup_handler(gesture_bottomup_cb_t cb, void *ctx)
+{
+    s_bottomup_cb = cb;
+    s_bottomup_ctx = ctx;
+    ESP_LOGI(TAG, "bottom-up handler %s", cb ? "registered" : "cleared");
+}
+
+void gesture_set_rightdrop_handler(gesture_rightdrop_cb_t cb, void *ctx)
+{
+    s_rightdrop_cb = cb;
+    s_rightdrop_ctx = ctx;
+    ESP_LOGI(TAG, "right-drop handler %s", cb ? "registered" : "cleared");
 }
 
 bool gesture_is_pressed(void)

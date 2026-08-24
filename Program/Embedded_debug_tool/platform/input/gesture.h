@@ -56,6 +56,20 @@ void gesture_set_left_handler(gesture_left_cb_t cb, void *ctx);
  * 贴边右滑返回不受影响）。用于 H 放大平移等需要独占水平拖动的场景。 */
 void gesture_set_global_swipe(bool en);
 
+/* ── 边缘垂直/方向手势（全局，APP 订阅响应；仅识别广播，APP 决定处理） ── */
+
+/* 上边缘下滑（起点在顶部 EDGE 区，向下滑 ≥ 阈值）→ fired */
+typedef void (*gesture_topdrop_cb_t)(void *ctx);
+void gesture_set_topdrop_handler(gesture_topdrop_cb_t cb, void *ctx);
+
+/* 下边缘上滑（起点在底部 EDGE 区，向上滑 ≥ 阈值）→ fired */
+typedef void (*gesture_bottomup_cb_t)(void *ctx);
+void gesture_set_bottomup_handler(gesture_bottomup_cb_t cb, void *ctx);
+
+/* 右边缘下滑（起点在右边缘 EDGE 区，向下滑 ≥ 阈值）→ fired */
+typedef void (*gesture_rightdrop_cb_t)(void *ctx);
+void gesture_set_rightdrop_handler(gesture_rightdrop_cb_t cb, void *ctx);
+
 /* 当前是否有触摸按下（调试/测试用） */
 bool gesture_is_pressed(void);
 
