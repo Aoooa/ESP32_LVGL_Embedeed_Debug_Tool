@@ -29,7 +29,7 @@ typedef enum {
     LAUNCH_APP_DAPLINK,     /* DAP Link（CMSIS-DAP 烧录器/调试器） */
     LAUNCH_APP_WAVEGEN,     /* 波形输出（PWM/正弦/脉冲） */
     LAUNCH_APP_SCOPE,       /* 示波器（ADC 采样显示） */
-    LAUNCH_APP_USBUART,     /* USB 串口 + ISP（CDC-ACM ↔ UART1） */
+    LAUNCH_APP_USB2TTL,     /* USB2TTL + ISP（CDC-ACM ↔ UART1） */
     LAUNCH_APP_COUNT,
 } launch_app_id_t;
 

@@ -41,8 +41,8 @@ idf_component_register(
         "${MODULE_DIR}/apps/wave_gen/wave_gen.c"
         "${MODULE_DIR}/scope/drv_scope.c"
         "${MODULE_DIR}/apps/scope/scope_app.c"
-        "${MODULE_DIR}/uart/app_usb_uart.c"
-        "${MODULE_DIR}/apps/usb_uart/usb_uart.c"
+        "${MODULE_DIR}/uart/app_usb2ttl.c"
+        "${MODULE_DIR}/apps/usb2ttl/usb2ttl.c"
 
     INCLUDE_DIRS
         "."
@@ -70,7 +70,7 @@ idf_component_register(
         "${MODULE_DIR}/wave"
         "${MODULE_DIR}/scope"
         "${MODULE_DIR}/apps/scope"
-        "${MODULE_DIR}/apps/usb_uart"
+        "${MODULE_DIR}/apps/usb2ttl"
 
     PRIV_REQUIRES
         spi_flash nvs_flash esp_netif esp_event

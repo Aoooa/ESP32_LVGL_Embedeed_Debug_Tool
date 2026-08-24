@@ -1,12 +1,12 @@
-/* usb_uart.c —— USB 虚拟串口（CDC-ACM）↔ UART1 + ISP 下载 APP（LVGL 9）
+/* usb2ttl.c —— USB 虚拟串口（CDC-ACM）↔ UART1 + ISP 下载 APP（LVGL 9）
  *
  * 配色沿用 card_reader（深色卡片风格），与桌面主题一致。
  * 状态轮询：服务状态来自 TinyUSB 任务/桥接任务，经 lv_timer 回到 LVGL
  * 线程刷新（250ms）。
  */
 
-#include "usb_uart.h"
-#include "app_usb_uart.h"
+#include "usb2ttl.h"
+#include "app_usb2ttl.h"
 #include "app_cardreader.h"
 #include "app_dap.h"
 #include "app_font.h"
@@ -26,9 +26,9 @@
 static const int s_bauds[] = { 115200, 57600, 9600 };
 #define BAUDS_N  (sizeof(s_bauds) / sizeof(s_bauds[0]))
 
-struct usb_uart_app {
+struct usb2ttl_app {
     lv_obj_t *root;
-    usb_uart_back_cb_t back_cb;
+    usb2ttl_back_cb_t back_cb;
     void *back_ctx;
 
     /* 状态行 */
@@ -41,6 +41,9 @@ struct usb_uart_app {
     lv_obj_t *btn_parity;
     lv_obj_t *btn_boot0;
     lv_obj_t *btn_rst;
+
+    /* 自动下载勾选框 */
+    lv_obj_t *chk_auto;
 
     /* 底部按钮 */
     lv_obj_t *btn_toggle;
@@ -65,9 +68,9 @@ static lv_obj_t *btn_label(lv_obj_t *btn)
 
 /* ── 状态 → 界面 ── */
 
-static void uu_update(struct usb_uart_app *uu)
+static void uu_update(struct usb2ttl_app *uu)
 {
-    usb_uart_state_t st = app_usb_uart_get_state();
+    usb2ttl_state_t st = app_usb2ttl_get_state();
     cardreader_state_t cr = app_cardreader_get_state();
     bool cr_busy = (cr == CARDREADER_EXPOSED || cr == CARDREADER_APP_OWNED);
     bool dap_busy = (app_dap_get_state() == DAP_STATE_READY);
@@ -75,30 +78,30 @@ static void uu_update(struct usb_uart_app *uu)
 
     /* USB 状态 */
     static const char *st_txt[] = {
-        [USB_UART_OFF] = "未启用",
-        [USB_UART_ON] = "运行中",
-        [USB_UART_ERROR] = "异常",
+        [USB2TTL_OFF] = "未启用",
+        [USB2TTL_ON] = "运行中",
+        [USB2TTL_ERROR] = "异常",
     };
     lv_label_set_text(uu->val_state, st_txt[st]);
     lv_obj_set_style_text_color(uu->val_state,
-                                st == USB_UART_ON ? UU_ACCENT :
-                                st == USB_UART_ERROR ? UU_ERR : UU_DIM, 0);
+                                st == USB2TTL_ON ? UU_ACCENT :
+                                st == USB2TTL_ERROR ? UU_ERR : UU_DIM, 0);
 
     /* PC 连接 */
-    bool pc_open = (st == USB_UART_ON) && app_usb_uart_pc_open();
+    bool pc_open = (st == USB2TTL_ON) && app_usb2ttl_pc_open();
     lv_label_set_text(uu->val_pc,
-                      st == USB_UART_ON ? (pc_open ? "已打开 (COM)" : "已枚举 · 未打开")
+                      st == USB2TTL_ON ? (pc_open ? "已打开 (COM)" : "已枚举 · 未打开")
                                         : "未连接");
     lv_obj_set_style_text_color(uu->val_pc, pc_open ? UU_ACCENT : UU_DIM, 0);
 
     /* 可编辑行 */
     char buf[16];
-    snprintf(buf, sizeof(buf), "%d", app_usb_uart_get_baud());
+    snprintf(buf, sizeof(buf), "%d", app_usb2ttl_get_baud());
     lv_label_set_text(btn_label(uu->btn_baud), buf);
     lv_label_set_text(btn_label(uu->btn_parity),
-                      app_usb_uart_get_parity_even() ? "8E1" : "8N1");
+                      app_usb2ttl_get_parity_even() ? "8E1" : "8N1");
     int b0, rst;
-    app_usb_uart_get_isp_pins(&b0, &rst);
+    app_usb2ttl_get_isp_pins(&b0, &rst);
     snprintf(buf, sizeof(buf), "IO%d", b0);
     lv_label_set_text(btn_label(uu->btn_boot0), buf);
     snprintf(buf, sizeof(buf), "IO%d", rst);
@@ -110,18 +113,18 @@ static void uu_update(struct usb_uart_app *uu)
         hint = cr_busy
             ? "读卡器(MSD)占用 USB，请先关闭再\n开启本功能。"
             : "DAP(SWD)占用 USB，请先关闭再开\n启本功能。";
-    } else if (st == USB_UART_ON) {
+    } else if (st == USB2TTL_ON) {
         hint = "桥接运行中：PC 打开串口后即可双向\n收发。UART1 已被独占，TCP/终端\n转发暂停。ISP 复位约 0.5s。";
-    } else if (st == USB_UART_ERROR) {
+    } else if (st == USB2TTL_ERROR) {
         hint = "上次启动失败，请检查 USB 连接后\n重试。";
     } else {
-        hint = "开启后 PC 枚举为 USB 串口，经\nUART1(IO2/IO4) 连目标。ISP 需接\nBOOT0/RST 线（下方引脚设置）。";
+        hint = "开启后 PC 枚举为 USB2TTL，经\nUART1(IO2/IO4) 连目标。勾选自动\n下载后可由 DTR/RTS 触发 ISP。";
     }
     lv_label_set_text(uu->val_hint, hint);
 
     /* 开启/关闭按钮 */
-    bool active = (st == USB_UART_ON);
-    lv_label_set_text(uu->lbl_toggle, active ? "关闭 USB 串口" : "开启 USB 串口");
+    bool active = (st == USB2TTL_ON);
+    lv_label_set_text(uu->lbl_toggle, active ? "关闭 USB2TTL" : "开启 USB2TTL");
     if (!active && usb_conflict) {
         lv_obj_add_state(uu->btn_toggle, LV_STATE_DISABLED);
     } else {
@@ -129,12 +132,22 @@ static void uu_update(struct usb_uart_app *uu)
     }
 
     /* 波特率/校验按钮：仅 OFF 可改（服务层同样拒绝） */
-    if (st == USB_UART_OFF) {
+    if (st == USB2TTL_OFF) {
         lv_obj_remove_state(uu->btn_baud, LV_STATE_DISABLED);
         lv_obj_remove_state(uu->btn_parity, LV_STATE_DISABLED);
     } else {
         lv_obj_add_state(uu->btn_baud, LV_STATE_DISABLED);
         lv_obj_add_state(uu->btn_parity, LV_STATE_DISABLED);
+    }
+
+    /* 自动下载勾选框与服务层标志同步（标志跨 APP 生命周期保留） */
+    bool checked = lv_obj_has_state(uu->chk_auto, LV_STATE_CHECKED);
+    if (checked != app_usb2ttl_get_auto_isp()) {
+        if (app_usb2ttl_get_auto_isp()) {
+            lv_obj_add_state(uu->chk_auto, LV_STATE_CHECKED);
+        } else {
+            lv_obj_remove_state(uu->chk_auto, LV_STATE_CHECKED);
+        }
     }
 }
 
@@ -142,22 +155,22 @@ static void uu_update(struct usb_uart_app *uu)
 
 static void uu_toggle_cb(lv_event_t *e)
 {
-    struct usb_uart_app *uu = lv_event_get_user_data(e);
+    struct usb2ttl_app *uu = lv_event_get_user_data(e);
     if (!uu) return;
-    if (app_usb_uart_get_state() == USB_UART_ON) {
-        app_usb_uart_disable();
+    if (app_usb2ttl_get_state() == USB2TTL_ON) {
+        app_usb2ttl_disable();
     } else {
-        app_usb_uart_enable();
+        app_usb2ttl_enable();
     }
     uu_update(uu);
 }
 
 static void uu_isp_cb(lv_event_t *e)
 {
-    struct usb_uart_app *uu = lv_event_get_user_data(e);
+    struct usb2ttl_app *uu = lv_event_get_user_data(e);
     if (!uu) return;
-    ESP_LOGI("usb_uart", "ISP button pressed");
-    esp_err_t ret = app_usb_uart_enter_isp();
+    ESP_LOGI("usb2ttl", "ISP button pressed");
+    esp_err_t ret = app_usb2ttl_enter_isp();
     if (ret != ESP_OK) {
         lv_label_set_text(uu->val_hint, "ISP 引脚配置无效，请检查\nBOOT0/RST 设置。");
     }
@@ -166,12 +179,12 @@ static void uu_isp_cb(lv_event_t *e)
 
 static void uu_baud_cb(lv_event_t *e)
 {
-    struct usb_uart_app *uu = lv_event_get_user_data(e);
+    struct usb2ttl_app *uu = lv_event_get_user_data(e);
     if (!uu) return;
-    int cur = app_usb_uart_get_baud();
+    int cur = app_usb2ttl_get_baud();
     for (int i = 0; i < (int)BAUDS_N; i++) {
         if (s_bauds[i] == cur) {
-            app_usb_uart_set_baud(s_bauds[(i + 1) % BAUDS_N]);
+            app_usb2ttl_set_baud(s_bauds[(i + 1) % BAUDS_N]);
             break;
         }
     }
@@ -180,22 +193,22 @@ static void uu_baud_cb(lv_event_t *e)
 
 static void uu_parity_cb(lv_event_t *e)
 {
-    struct usb_uart_app *uu = lv_event_get_user_data(e);
+    struct usb2ttl_app *uu = lv_event_get_user_data(e);
     if (!uu) return;
-    app_usb_uart_set_parity_even(!app_usb_uart_get_parity_even());
+    app_usb2ttl_set_parity_even(!app_usb2ttl_get_parity_even());
     uu_update(uu);
 }
 
 /* 引脚编辑：num_input 确认回调（白名单 + 不相等由服务层校验） */
 static void uu_num_confirm(void *ctx, bool ok, int value)
 {
-    struct usb_uart_app *uu = ctx;
+    struct usb2ttl_app *uu = ctx;
     if (!ok) return;
     int b0, rst;
-    app_usb_uart_get_isp_pins(&b0, &rst);
+    app_usb2ttl_get_isp_pins(&b0, &rst);
     esp_err_t ret = (uu->num_opt == 0)
-        ? app_usb_uart_set_isp_pins(value, rst)
-        : app_usb_uart_set_isp_pins(b0, value);
+        ? app_usb2ttl_set_isp_pins(value, rst)
+        : app_usb2ttl_set_isp_pins(b0, value);
     if (ret != ESP_OK) {
         lv_label_set_text(uu->val_hint, "无效引脚：需为板面空闲脚且与另一\n脚不同，请重新设置。");
     }
@@ -204,11 +217,11 @@ static void uu_num_confirm(void *ctx, bool ok, int value)
 
 static void uu_pin_cb(lv_event_t *e)
 {
-    struct usb_uart_app *uu = lv_event_get_user_data(e);
+    struct usb2ttl_app *uu = lv_event_get_user_data(e);
     if (!uu) return;
     uu->num_opt = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target_obj(e));
     int b0, rst;
-    app_usb_uart_get_isp_pins(&b0, &rst);
+    app_usb2ttl_get_isp_pins(&b0, &rst);
     int initial = (uu->num_opt == 0) ? b0 : rst;
     num_input_show(uu->root, initial, 5, 44, false, 0, uu_num_confirm, uu);
 }
@@ -216,6 +229,16 @@ static void uu_pin_cb(lv_event_t *e)
 static void uu_timer_cb(lv_timer_t *t)
 {
     uu_update(lv_timer_get_user_data(t));
+}
+
+/* 自动下载勾选框回调 */
+static void uu_auto_cb(lv_event_t *e)
+{
+    struct usb2ttl_app *uu = lv_event_get_user_data(e);
+    if (!uu) return;
+    bool checked = lv_obj_has_state(uu->chk_auto, LV_STATE_CHECKED);
+    app_usb2ttl_set_auto_isp(checked);
+    uu_update(uu);
 }
 
 /* ── 行构建 ── */
@@ -292,9 +315,9 @@ static void uu_row_btn(lv_obj_t *parent, const char *key, lv_event_cb_t cb,
 
 /* ── 构建 ── */
 
-usb_uart_app_t *usb_uart_create(lv_obj_t *parent, usb_uart_back_cb_t back_cb, void *ctx)
+usb2ttl_app_t *usb2ttl_create(lv_obj_t *parent, usb2ttl_back_cb_t back_cb, void *ctx)
 {
-    usb_uart_app_t *uu = lv_malloc(sizeof(usb_uart_app_t));
+    usb2ttl_app_t *uu = lv_malloc(sizeof(usb2ttl_app_t));
     if (!uu) return NULL;
     lv_memzero(uu, sizeof(*uu));
     uu->back_cb = back_cb;
@@ -312,7 +335,7 @@ usb_uart_app_t *usb_uart_create(lv_obj_t *parent, usb_uart_back_cb_t back_cb, vo
 
     /* 标题 */
     lv_obj_t *title = lv_label_create(root);
-    lv_label_set_text(title, "USB UART + ISP");
+    lv_label_set_text(title, "USB2TTL + ISP");
     lv_obj_set_pos(title, 10, 8);
     lv_obj_set_style_text_color(title, UU_ACCENT, 0);
     lv_obj_set_style_text_font(title, uu_font(), 0);
@@ -338,6 +361,30 @@ usb_uart_app_t *usb_uart_create(lv_obj_t *parent, usb_uart_back_cb_t back_cb, vo
     uu_row_btn(info, "校验", uu_parity_cb, uu, &uu->btn_parity);
     uu_row_btn(info, "BOOT0 引脚", uu_pin_cb, (void *)(intptr_t)0, &uu->btn_boot0);
     uu_row_btn(info, "RST 引脚", uu_pin_cb, (void *)(intptr_t)1, &uu->btn_rst);
+
+    /* 自动下载勾选框（默认关）：PC 经 SetCommState 控制 DTR/RTS 触发 ISP */
+    lv_obj_t *auto_row = lv_obj_create(info);
+    lv_obj_set_size(auto_row, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(auto_row, UU_CARD, 0);
+    lv_obj_set_style_bg_opa(auto_row, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(auto_row, 0, 0);
+    lv_obj_set_style_radius(auto_row, 6, 0);
+    lv_obj_set_style_pad_hor(auto_row, 12, 0);
+    lv_obj_set_style_pad_ver(auto_row, 4, 0);
+    lv_obj_clear_flag(auto_row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(auto_row, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(auto_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+    lv_obj_t *auto_k = lv_label_create(auto_row);
+    lv_label_set_text(auto_k, "自动下载");
+    lv_obj_set_style_text_color(auto_k, UU_DIM, 0);
+    lv_obj_set_style_text_font(auto_k, uu_font(), 0);
+
+    uu->chk_auto = lv_checkbox_create(auto_row);
+    lv_checkbox_set_text(uu->chk_auto, "DTR→BOOT0  RTS→RST");
+    lv_obj_set_style_text_font(uu->chk_auto, uu_font(), 0);
+    lv_obj_set_style_text_color(uu->chk_auto, UU_TEXT, 0);
+    lv_obj_add_event_cb(uu->chk_auto, uu_auto_cb, LV_EVENT_VALUE_CHANGED, uu);
 
     uu_row_text(info, "提示", &uu->val_hint);
 
@@ -390,13 +437,13 @@ usb_uart_app_t *usb_uart_create(lv_obj_t *parent, usb_uart_back_cb_t back_cb, vo
     return uu;
 }
 
-void usb_uart_destroy(usb_uart_app_t *uu)
+void usb2ttl_destroy(usb2ttl_app_t *uu)
 {
     if (!uu) return;
     /* 退出 APP 自动关闭桥接（恢复 UART1 转发/USJ 控制台） */
-    if (app_usb_uart_get_state() == USB_UART_ON) {
-        ESP_LOGI("usb_uart", "exit -> disable bridge");
-        app_usb_uart_disable();
+    if (app_usb2ttl_get_state() == USB2TTL_ON) {
+        ESP_LOGI("usb2ttl", "exit -> disable bridge");
+        app_usb2ttl_disable();
     }
     if (uu->timer) lv_timer_delete(uu->timer);
     if (uu->root) {
@@ -407,7 +454,7 @@ void usb_uart_destroy(usb_uart_app_t *uu)
     lv_free(uu);
 }
 
-bool usb_uart_swipe_back(usb_uart_app_t *uu)
+bool usb2ttl_swipe_back(usb2ttl_app_t *uu)
 {
     (void)uu;
     return true;

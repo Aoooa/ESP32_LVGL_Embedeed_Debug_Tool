@@ -7,7 +7,7 @@
 #include "dap_link.h"
 #include "wave_gen.h"
 #include "scope_app.h"
-#include "usb_uart.h"
+#include "usb2ttl.h"
 #include "gesture.h"
 #include "esp_heap_caps.h"
 #include <stdlib.h>
@@ -39,7 +39,7 @@ static const lv_image_dsc_t *const s_app_icons[APP_COUNT] = {
     &launcher_icon_dap,        /* DAPLink */
     &launcher_icon_terminal,   /* WaveGen（复用图标，后续可换） */
     &launcher_icon_serialip,   /* Scope（复用图标，后续可换） */
-    &launcher_icon_serialip,   /* USB UART（复用图标，后续可换） */
+    &launcher_icon_serialip,   /* USB2TTL（复用图标，后续可换） */
 };
 
 static const struct {
@@ -55,7 +55,7 @@ static const struct {
     { "SWD",  APP_TYPE_LAUNCH,     LAUNCH_APP_DAPLINK },
     { "Wave",  APP_TYPE_LAUNCH,     LAUNCH_APP_WAVEGEN },
     { "Scope", APP_TYPE_LAUNCH,     LAUNCH_APP_SCOPE },
-    { "USB",   APP_TYPE_LAUNCH,     LAUNCH_APP_USBUART },
+    { "USB2TTL", APP_TYPE_LAUNCH,     LAUNCH_APP_USB2TTL },
 };
 
 /* ── 主题色（赛博朋克：暗底 + 霓虹青边框 + 霓虹品红拨轮） ── */
@@ -522,12 +522,12 @@ const app_manifest_t app_manifests[LAUNCH_APP_COUNT] = {
         .debug_event = (void (*)(void *, int))scope_debug_event,
         .entered = (void (*)(void *))scope_entered,
     },
-    [LAUNCH_APP_USBUART] = {
-        .id = LAUNCH_APP_USBUART,
-        .name = "USB UART",
-        .launch = (void *(*)(lv_obj_t *, void (*)(void *), void *))usb_uart_create,
-        .destroy = (void (*)(void *))usb_uart_destroy,
-        .back = (bool (*)(void *))usb_uart_swipe_back,
+    [LAUNCH_APP_USB2TTL] = {
+        .id = LAUNCH_APP_USB2TTL,
+        .name = "USB2TTL",
+        .launch = (void *(*)(lv_obj_t *, void (*)(void *), void *))usb2ttl_create,
+        .destroy = (void (*)(void *))usb2ttl_destroy,
+        .back = (bool (*)(void *))usb2ttl_swipe_back,
         .rotate = NULL,
         .refresh = NULL,
         .debug_event = NULL,

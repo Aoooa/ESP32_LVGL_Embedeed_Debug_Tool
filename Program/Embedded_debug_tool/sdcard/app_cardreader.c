@@ -18,7 +18,7 @@
 #include "app_cardreader.h"
 #include "drv_sdcard.h"
 #include "app_dap.h"
-#include "app_usb_uart.h"
+#include "app_usb2ttl.h"
 #include "esp_log.h"
 #include "esp_lv_adapter.h"
 #include "tinyusb.h"
@@ -195,14 +195,14 @@ esp_err_t app_cardreader_enable(void)
     if (st == CARDREADER_EXPOSED) return ESP_OK;
     /* APP_OWNED 为瞬态（PC 弹出后 3 秒自动关闭），无调用方会在此状态进来 */
 
-    /* USB PHY 互斥：DAP / USB-UART 占用时拒绝（三者共用内部 USB PHY） */
+    /* USB PHY 互斥：DAP / USB2TTL 占用时拒绝（三者共用内部 USB PHY） */
     if (app_dap_get_state() == DAP_STATE_READY) {
         ESP_LOGE(TAG, "DAP is using USB, disable it first");
         cardreader_set_state(CARDREADER_ERROR);
         return ESP_ERR_INVALID_STATE;
     }
-    if (app_usb_uart_get_state() == USB_UART_ON) {
-        ESP_LOGE(TAG, "USB-UART is using USB, disable it first");
+    if (app_usb2ttl_get_state() == USB2TTL_ON) {
+        ESP_LOGE(TAG, "USB2TTL is using USB, disable it first");
         cardreader_set_state(CARDREADER_ERROR);
         return ESP_ERR_INVALID_STATE;
     }

@@ -1,4 +1,4 @@
-/* app_usb_uart.c —— USB CDC-ACM 虚拟串口 ↔ UART1 桥接 + ISP 下载控制
+/* app_usb2ttl.c —— USB CDC-ACM 虚拟串口 ↔ UART1 桥接 + ISP 下载控制
  *
  * 数据流：
  *   PC → CDC RX FIFO → 桥接任务 → UART1 TX（IO2）
@@ -12,7 +12,7 @@
  *   tinyusb_driver_install(&cfg) → tinyusb_cdcacm_init(&acm_cfg)。
  */
 
-#include "app_usb_uart.h"
+#include "app_usb2ttl.h"
 #include "app_uart.h"          /* g_bridges / uart_bridge_t.paused */
 #include "app_cardreader.h"
 #include "app_dap.h"
@@ -33,25 +33,29 @@
 #endif
 #include <string.h>
 
-static const char *TAG = "app_usb_uart";
+static const char *TAG = "app_usb2ttl";
 
-#define USB_UART_CDC_ITF   TINYUSB_CDC_ACM_0   /* esp_tinyusb 接口号 */
-#define USB_UART_PORT      UART_NUM_1          /* 桥接 UART（IO2/IO4） */
-#define USB_UART_TASK_WAIT_MS  50              /* 停任务最大等待 */
+#define USB2TTL_CDC_ITF   TINYUSB_CDC_ACM_0   /* esp_tinyusb 接口号 */
+#define USB2TTL_PORT      UART_NUM_1          /* 桥接 UART（IO2/IO4） */
+#define USB2TTL_TASK_WAIT_MS  50              /* 停任务最大等待 */
 
 /* ── 状态 ── */
-static usb_uart_state_t s_state = USB_UART_OFF;
-static volatile bool s_pc_open;    /* PC 已打开串口（DTR+RTS） */
-static volatile bool s_run;        /* 桥接任务运行标志 */
-static TaskHandle_t s_task;        /* 桥接任务句柄（NULL=未运行） */
+static usb2ttl_state_t s_state = USB2TTL_OFF;
+static volatile bool s_pc_open;        /* PC 已打开串口（DTR+RTS） */
+static volatile bool s_run;            /* 桥接任务运行标志 */
+static TaskHandle_t s_task;            /* 桥接任务句柄（NULL=未运行） */
+
+/* ── 自动下载（DTR/RTS 直通映射，默认关） ── */
+static volatile bool s_auto_isp;           /* PC 经 SetCommState(DTR/RTS) 触发 ISP */
+static volatile bool s_auto_isp_gpio_on;   /* auto GPIO 当前已驱动（懒配置） */
 
 /* ── 串口参数（仅 OFF 可改，enable 时应用） ── */
 static int s_baud = 115200;
 static bool s_even_parity;         /* false=8N1，true=8E1 */
 
 /* ── ISP 引脚（enter_isp 时驱动，运行期可改） ── */
-static int s_isp_boot0 = USB_UART_BOOT0_DEF;
-static int s_isp_rst   = USB_UART_RST_DEF;
+static int s_isp_boot0 = USB2TTL_BOOT0_DEF;
+static int s_isp_rst   = USB2TTL_RST_DEF;
 
 /* 可用 ISP 引脚白名单：避开 LCD/触摸/SD/UART/USB 等硬占用脚。
  * IO6-15/IO21 为摄像头接口（未使用），IO37/IO44 空闲；其中 IO9/IO10 是
@@ -78,16 +82,16 @@ static char s_serial_str[13];
 static const char *s_string_desc[] = {
     (char[]){0x09, 0x04},         /* 0: English (0x0409) */
     "Embedded Debug Tool",        /* 1: Manufacturer */
-    "USB-UART Bridge",            /* 2: Product（PC 设备管理器显示） */
+    "USB2TTL Bridge",            /* 2: Product（PC 设备管理器显示） */
     s_serial_str,                 /* 3: Serial（MAC） */
-    "USB UART (UART1 IO2/IO4)",   /* 4: 接口字符串（CDC 数据接口） */
+    "USB2TTL (UART1 IO2/IO4)",   /* 4: 接口字符串（CDC 数据接口） */
 };
 
 /* 单 CDC-ACM：控制接口(0) + 数据接口(1)；端点 notify=0x81(IN)，
  * bulk OUT=0x02（PC→设备），bulk IN=0x82（设备→PC），全速 64B */
-#define USB_UART_DESC_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_CDC_DESC_LEN)
+#define USB2TTL_DESC_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_CDC_DESC_LEN)
 static const uint8_t s_config_desc[] = {
-    TUD_CONFIG_DESCRIPTOR(1, 2, 0, USB_UART_DESC_TOTAL_LEN,
+    TUD_CONFIG_DESCRIPTOR(1, 2, 0, USB2TTL_DESC_TOTAL_LEN,
                           0x80 | TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
     TUD_CDC_DESCRIPTOR(0, 4, 0x81, 8, 0x02, 0x82, 64),
 };
@@ -101,7 +105,7 @@ static const tusb_desc_device_t s_device_desc = {
     .bDeviceProtocol = MISC_PROTOCOL_IAD,
     .bMaxPacketSize0 = CFG_TUD_ENDPOINT0_SIZE,
     .idVendor = 0x303A,           /* Espressif */
-    .idProduct = 0x4003,          /* USB-UART Bridge */
+    .idProduct = 0x4003,          /* USB2TTL Bridge */
     .bcdDevice = 0x0100,
     .iManufacturer = 1,
     .iProduct = 2,
@@ -109,9 +113,59 @@ static const tusb_desc_device_t s_device_desc = {
     .bNumConfigurations = 1,
 };
 
+/* ── ISP GPIO 复用（手动序列与自动下载共用） ──
+ * BOOT0：推挽输出（低=下载模式，高=运行）
+ * RST：开漏 + 上拉（低=复位，高=释放） */
+static void usb2ttl_isp_gpio_output(void)
+{
+    gpio_config_t io = {
+        .pin_bit_mask = 1ULL << s_isp_boot0,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io);
+
+    io.pin_bit_mask = 1ULL << s_isp_rst;
+    io.mode = GPIO_MODE_OUTPUT_OD;
+    io.pull_up_en = GPIO_PULLUP_ENABLE;
+    io.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    gpio_config(&io);
+}
+
+static void usb2ttl_isp_gpio_release(void)
+{
+    gpio_config_t io = {
+        .pin_bit_mask = (1ULL << s_isp_boot0) | (1ULL << s_isp_rst),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io);
+}
+
+/* 自动下载：把 CDC DTR/RTS 直通映射到 BOOT0/RST GPIO。
+ * 极性对齐 esptool 的 DTR/RTS 复位约定（PC 工具按自身时序翻转控制线）：
+ *   DTR=1 → BOOT0 高（运行模式）；DTR=0 → BOOT0 低（下载模式）
+ *   RTS=1 → RST 低（复位）；RTS=0 → RST 高（释放）
+ * 可运行在 TinyUSB 任务（line-state 回调）或 LVGL 线程（勾选瞬间） */
+static void usb2ttl_auto_isp_apply(bool dtr, bool rts)
+{
+    if (!s_auto_isp_gpio_on) {
+        usb2ttl_isp_gpio_output();
+        s_auto_isp_gpio_on = true;
+    }
+    gpio_set_level(s_isp_boot0, dtr ? 1 : 0);
+    gpio_set_level(s_isp_rst, rts ? 0 : 1);   /* RTS=1 → 拉低复位 */
+    ESP_LOGD(TAG, "auto ISP: DTR=%d RTS=%d -> BOOT0=%d RST=%s",
+             dtr ? 1 : 0, rts ? 1 : 0, dtr ? 1 : 0, rts ? "LOW" : "HIGH");
+}
+
 /* ── TinyUSB 事件（TinyUSB 任务上下文，仅日志） ── */
 
-static void usb_uart_tusb_event_cb(tinyusb_event_t *event, void *arg)
+static void usb2ttl_tusb_event_cb(tinyusb_event_t *event, void *arg)
 {
     (void)arg;
     switch (event->id) {
@@ -127,19 +181,24 @@ static void usb_uart_tusb_event_cb(tinyusb_event_t *event, void *arg)
     }
 }
 
-/* CDC 线状态回调（TinyUSB 任务）：PC 打开/关闭串口。仅更新标志 */
-static void usb_uart_line_state_cb(int itf, cdcacm_event_t *event)
+/* CDC 线状态回调（TinyUSB 任务）：PC 打开/关闭串口。仅更新标志；
+ * 自动下载开启时把 DTR/RTS 直通映射到 BOOT0/RST GPIO */
+static void usb2ttl_line_state_cb(int itf, cdcacm_event_t *event)
 {
     (void)itf;
-    bool open = event->line_state_changed_data.dtr &&
-                event->line_state_changed_data.rts;
-    s_pc_open = open;
-    ESP_LOGI(TAG, "PC serial port %s", open ? "opened" : "closed");
+    bool dtr = event->line_state_changed_data.dtr;
+    bool rts = event->line_state_changed_data.rts;
+    s_pc_open = dtr && rts;
+    ESP_LOGI(TAG, "PC serial port %s (DTR=%d RTS=%d)",
+             s_pc_open ? "opened" : "closed", dtr ? 1 : 0, rts ? 1 : 0);
+    if (s_auto_isp) {
+        usb2ttl_auto_isp_apply(dtr, rts);
+    }
 }
 
 /* ── 桥接任务：双向转发 ── */
 
-static void usb_uart_bridge_task(void *arg)
+static void usb2ttl_bridge_task(void *arg)
 {
     (void)arg;
     uint8_t uart_buf[1024];
@@ -149,20 +208,20 @@ static void usb_uart_bridge_task(void *arg)
     while (s_run) {
         /* PC → 目标：CDC RX FIFO → UART1 TX */
         size_t n = 0;
-        if (tinyusb_cdcacm_read(USB_UART_CDC_ITF, cdc_buf, sizeof(cdc_buf), &n) == ESP_OK
+        if (tinyusb_cdcacm_read(USB2TTL_CDC_ITF, cdc_buf, sizeof(cdc_buf), &n) == ESP_OK
             && n > 0) {
-            uart_write_bytes(USB_UART_PORT, cdc_buf, n);
+            uart_write_bytes(USB2TTL_PORT, cdc_buf, n);
         }
 
         /* 目标 → PC：UART1 RX → CDC TX FIFO（PC 未打开端口时丢弃） */
-        int n2 = drv_uart_read(USB_UART_PORT, uart_buf, sizeof(uart_buf), 5);
+        int n2 = drv_uart_read(USB2TTL_PORT, uart_buf, sizeof(uart_buf), 5);
         if (n2 > 0 && s_pc_open) {
             size_t off = 0;
             while (off < (size_t)n2 && s_run) {
-                size_t w = tinyusb_cdcacm_write_queue(USB_UART_CDC_ITF,
+                size_t w = tinyusb_cdcacm_write_queue(USB2TTL_CDC_ITF,
                                                       uart_buf + off, n2 - off);
                 off += w;
-                tinyusb_cdcacm_write_flush(USB_UART_CDC_ITF, 0);   /* 非阻塞 */
+                tinyusb_cdcacm_write_flush(USB2TTL_CDC_ITF, 0);   /* 非阻塞 */
                 if (w == 0) vTaskDelay(1);   /* FIFO 满：等 TinyUSB 任务排空 */
             }
         }
@@ -172,11 +231,11 @@ static void usb_uart_bridge_task(void *arg)
     vTaskDelete(NULL);
 }
 
-static bool usb_uart_task_start(void)
+static bool usb2ttl_task_start(void)
 {
     s_run = true;
     s_task = NULL;
-    BaseType_t ok = xTaskCreateWithCaps(usb_uart_bridge_task, "usb_uart", 4096,
+    BaseType_t ok = xTaskCreateWithCaps(usb2ttl_bridge_task, "usb2ttl", 4096,
                                         NULL, 5, &s_task, MALLOC_CAP_SPIRAM);
     if (ok != pdPASS) {
         ESP_LOGE(TAG, "bridge task create failed");
@@ -186,12 +245,12 @@ static bool usb_uart_task_start(void)
     return true;
 }
 
-static void usb_uart_task_stop(void)
+static void usb2ttl_task_stop(void)
 {
     if (!s_task) return;
     s_run = false;
     for (int i = 0; i < 20 && s_task; i++) {
-        vTaskDelay(pdMS_TO_TICKS(USB_UART_TASK_WAIT_MS));
+        vTaskDelay(pdMS_TO_TICKS(USB2TTL_TASK_WAIT_MS));
     }
     if (s_task) {
         ESP_LOGW(TAG, "bridge task did not stop, force delete");
@@ -202,7 +261,7 @@ static void usb_uart_task_stop(void)
 
 /* ── UART1 参数应用/恢复 ── */
 
-static void usb_uart_apply_uart_cfg(int baud, bool even_parity)
+static void usb2ttl_apply_uart_cfg(int baud, bool even_parity)
 {
     uart_config_t cfg = {
         .baud_rate = baud,
@@ -212,16 +271,16 @@ static void usb_uart_apply_uart_cfg(int baud, bool even_parity)
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
         .source_clk = UART_SCLK_DEFAULT,
     };
-    ESP_ERROR_CHECK(uart_param_config(USB_UART_PORT, &cfg));
+    ESP_ERROR_CHECK(uart_param_config(USB2TTL_PORT, &cfg));
     ESP_LOGI(TAG, "UART1 %d baud, %s",
              baud, even_parity ? "8E1" : "8N1");
 }
 
 /* ── 开关 ── */
 
-esp_err_t app_usb_uart_enable(void)
+esp_err_t app_usb2ttl_enable(void)
 {
-    if (s_state == USB_UART_ON) return ESP_OK;
+    if (s_state == USB2TTL_ON) return ESP_OK;
 
     /* USB PHY 互斥：读卡器/DAP 占用时拒绝 */
     cardreader_state_t cr = app_cardreader_get_state();
@@ -241,7 +300,7 @@ esp_err_t app_usb_uart_enable(void)
     if (g_bridges[0]) g_bridges[0]->paused = 1;
 
     /* 应用波特率/校验 */
-    usb_uart_apply_uart_cfg(s_baud, s_even_parity);
+    usb2ttl_apply_uart_cfg(s_baud, s_even_parity);
 
     /* 序列号 = 芯片 MAC */
     uint8_t mac[6];
@@ -250,7 +309,7 @@ esp_err_t app_usb_uart_enable(void)
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
     /* 安装 TinyUSB CDC 设备：接管 USB PHY → USJ 控制台静默 */
-    tinyusb_config_t tusb_cfg = TINYUSB_CONFIG_FULL_SPEED(usb_uart_tusb_event_cb, NULL);
+    tinyusb_config_t tusb_cfg = TINYUSB_CONFIG_FULL_SPEED(usb2ttl_tusb_event_cb, NULL);
     tusb_cfg.descriptor.device = &s_device_desc;
     tusb_cfg.descriptor.full_speed_config = s_config_desc;
     tusb_cfg.descriptor.string = (const char **)s_string_desc;
@@ -263,10 +322,10 @@ esp_err_t app_usb_uart_enable(void)
     }
 
     tinyusb_config_cdcacm_t acm_cfg = {
-        .cdc_port = USB_UART_CDC_ITF,
+        .cdc_port = USB2TTL_CDC_ITF,
         .callback_rx = NULL,              /* 桥接任务轮询读取，无需回调 */
         .callback_rx_wanted_char = NULL,
-        .callback_line_state_changed = usb_uart_line_state_cb,
+        .callback_line_state_changed = usb2ttl_line_state_cb,
         .callback_line_coding_changed = NULL,
     };
     ret = tinyusb_cdcacm_init(&acm_cfg);
@@ -277,14 +336,14 @@ esp_err_t app_usb_uart_enable(void)
     }
 
     s_pc_open = false;
-    if (!usb_uart_task_start()) {
-        tinyusb_cdcacm_deinit(USB_UART_CDC_ITF);
+    if (!usb2ttl_task_start()) {
+        tinyusb_cdcacm_deinit(USB2TTL_CDC_ITF);
         tinyusb_driver_uninstall();
         goto fail;
     }
 
-    s_state = USB_UART_ON;
-    ESP_LOGI(TAG, "USB-UART enabled: baud=%d %s, UART1 fwd paused",
+    s_state = USB2TTL_ON;
+    ESP_LOGI(TAG, "USB2TTL enabled: baud=%d %s, UART1 fwd paused",
              s_baud, s_even_parity ? "8E1" : "8N1");
     return ESP_OK;
 
@@ -294,24 +353,24 @@ fail:
     /* 恢复 USJ 控制台（driver 已装成功过，PHY 需要重新映射回 USJ） */
     usb_serial_jtag_ll_phy_enable_external(false);
 #endif
-    s_state = USB_UART_ERROR;
+    s_state = USB2TTL_ERROR;
     return ret;
 }
 
-esp_err_t app_usb_uart_disable(void)
+esp_err_t app_usb2ttl_disable(void)
 {
-    if (s_state == USB_UART_OFF) return ESP_OK;
+    if (s_state == USB2TTL_OFF) return ESP_OK;
 
-    ESP_LOGI(TAG, "disabling USB-UART (%s)", app_usb_uart_state_str(s_state));
+    ESP_LOGI(TAG, "disabling USB2TTL (%s)", app_usb2ttl_state_str(s_state));
     esp_err_t ret = ESP_OK;
     esp_err_t r;
 
     /* 1. 停桥接任务 */
-    usb_uart_task_stop();
+    usb2ttl_task_stop();
 
     /* 2. 卸载 CDC-ACM + TinyUSB：USB 设备消失（ERROR 态可能未 init） */
-    if (tinyusb_cdcacm_initialized(USB_UART_CDC_ITF)) {
-        r = tinyusb_cdcacm_deinit(USB_UART_CDC_ITF);
+    if (tinyusb_cdcacm_initialized(USB2TTL_CDC_ITF)) {
+        r = tinyusb_cdcacm_deinit(USB2TTL_CDC_ITF);
         if (r != ESP_OK) ESP_LOGE(TAG, "cdcacm deinit failed: %s", esp_err_to_name(r));
     }
 
@@ -326,40 +385,46 @@ esp_err_t app_usb_uart_disable(void)
     usb_serial_jtag_ll_phy_enable_external(false);
 #endif
 
+    /* 3.5 自动下载驱动的 ISP GPIO 交还输入（目标解除 BOOT0/RST 控制） */
+    if (s_auto_isp_gpio_on) {
+        usb2ttl_isp_gpio_release();
+        s_auto_isp_gpio_on = false;
+    }
+
     /* 4. 恢复 UART1 默认参数 + 解除暂停（交还 TCP/终端转发） */
-    usb_uart_apply_uart_cfg(DRV_UART_BAUD_RATE, false);
+    usb2ttl_apply_uart_cfg(DRV_UART_BAUD_RATE, false);
     if (g_bridges[0]) g_bridges[0]->paused = 0;
 
-    s_state = USB_UART_OFF;
-    ESP_LOGI(TAG, "USB-UART disabled, UART1 restored to TCP/terminal");
+    s_state = USB2TTL_OFF;
+    ESP_LOGI(TAG, "USB2TTL disabled, UART1 restored to TCP/terminal");
     return ret;
 }
 
 /* ── 状态查询 ── */
 
-usb_uart_state_t app_usb_uart_get_state(void)
+usb2ttl_state_t app_usb2ttl_get_state(void)
 {
     return s_state;
 }
 
-const char *app_usb_uart_state_str(usb_uart_state_t st)
+const char *app_usb2ttl_state_str(usb2ttl_state_t st)
 {
     switch (st) {
-    case USB_UART_OFF:    return "off";
-    case USB_UART_ON:     return "on";
-    case USB_UART_ERROR:  return "error";
+    case USB2TTL_OFF:    return "off";
+    case USB2TTL_ON:     return "on";
+    case USB2TTL_ERROR:  return "error";
     default:              return "?";
     }
 }
 
-bool app_usb_uart_pc_open(void)
+bool app_usb2ttl_pc_open(void)
 {
     return s_pc_open;
 }
 
 /* ── ISP 引脚 ── */
 
-esp_err_t app_usb_uart_set_isp_pins(int boot0, int rst)
+esp_err_t app_usb2ttl_set_isp_pins(int boot0, int rst)
 {
     /* 引脚仅在 enter_isp 时被驱动（LVGL 线程），运行期可改，无竞态 */
     if (!isp_pin_valid(boot0) || !isp_pin_valid(rst) || boot0 == rst) {
@@ -372,37 +437,22 @@ esp_err_t app_usb_uart_set_isp_pins(int boot0, int rst)
     return ESP_OK;
 }
 
-void app_usb_uart_get_isp_pins(int *boot0, int *rst)
+void app_usb2ttl_get_isp_pins(int *boot0, int *rst)
 {
     if (boot0) *boot0 = s_isp_boot0;
     if (rst) *rst = s_isp_rst;
 }
 
-esp_err_t app_usb_uart_enter_isp(void)
+esp_err_t app_usb2ttl_enter_isp(void)
 {
     if (s_isp_boot0 == s_isp_rst) return ESP_ERR_INVALID_STATE;
 
     ESP_LOGI(TAG, "ISP: BOOT0=IO%d -> 1, RST=IO%d low pulse",
              s_isp_boot0, s_isp_rst);
 
-    /* BOOT0：推挽输出，先低（防复位瞬间误采样） */
-    gpio_config_t io = {
-        .pin_bit_mask = 1ULL << s_isp_boot0,
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    gpio_config(&io);
-    gpio_set_level(s_isp_boot0, 0);
-
-    /* RST：开漏 + 上拉（复位线默认为高/高阻，驱动低有效） */
-    io.pin_bit_mask = 1ULL << s_isp_rst;
-    io.mode = GPIO_MODE_OUTPUT_OD;
-    io.pull_up_en = GPIO_PULLUP_ENABLE;
-    io.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    gpio_config(&io);
-    gpio_set_level(s_isp_rst, 1);
+    usb2ttl_isp_gpio_output();
+    gpio_set_level(s_isp_boot0, 0);   /* 先低（防复位瞬间误采样） */
+    gpio_set_level(s_isp_rst, 1);     /* 复位线释放（OD 截止 + 上拉） */
 
     /* 序列：BOOT0=1 → 稳定 → RST 拉低 → 保持 → 释放（BOOT0 采样）→
      * 等 bootloader → BOOT0=0 */
@@ -415,21 +465,44 @@ esp_err_t app_usb_uart_enter_isp(void)
     gpio_set_level(s_isp_boot0, 0);
 
     /* 交还引脚为输入（高阻）：目标可正常启动/后续复位 */
-    io.pin_bit_mask = (1ULL << s_isp_boot0) | (1ULL << s_isp_rst);
-    io.mode = GPIO_MODE_INPUT;
-    io.pull_up_en = GPIO_PULLUP_DISABLE;
-    io.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    gpio_config(&io);
+    usb2ttl_isp_gpio_release();
 
     ESP_LOGI(TAG, "ISP sequence done, target should be in bootloader");
     return ESP_OK;
 }
 
+/* ── 自动下载（DTR/RTS 直通触发 ISP） ── */
+
+void app_usb2ttl_set_auto_isp(bool en)
+{
+    s_auto_isp = en;
+    if (en) {
+        /* 勾选瞬间 PC 端口可能已打开（无新 line-state 回调）：按当前
+         * DTR/RTS 立即应用。桥接未开启（tinyusb 未装）时不驱动 GPIO，
+         * 等开启后 PC 连接自然触发 line-state 回调 */
+        if (s_state == USB2TTL_ON) {
+            uint8_t ls = tud_cdc_n_get_line_state(USB2TTL_CDC_ITF);
+            usb2ttl_auto_isp_apply((ls & 0x01) != 0, (ls & 0x02) != 0);
+        }
+    } else {
+        if (s_auto_isp_gpio_on) {
+            usb2ttl_isp_gpio_release();
+            s_auto_isp_gpio_on = false;
+        }
+    }
+    ESP_LOGI(TAG, "auto ISP %s", en ? "enabled" : "disabled");
+}
+
+bool app_usb2ttl_get_auto_isp(void)
+{
+    return s_auto_isp;
+}
+
 /* ── 串口参数 ── */
 
-esp_err_t app_usb_uart_set_baud(int baud)
+esp_err_t app_usb2ttl_set_baud(int baud)
 {
-    if (s_state != USB_UART_OFF) {
+    if (s_state != USB2TTL_OFF) {
         ESP_LOGE(TAG, "baud locked while bridge active");
         return ESP_ERR_INVALID_STATE;
     }
@@ -442,14 +515,14 @@ esp_err_t app_usb_uart_set_baud(int baud)
     return ESP_OK;
 }
 
-int app_usb_uart_get_baud(void)
+int app_usb2ttl_get_baud(void)
 {
     return s_baud;
 }
 
-esp_err_t app_usb_uart_set_parity_even(bool even)
+esp_err_t app_usb2ttl_set_parity_even(bool even)
 {
-    if (s_state != USB_UART_OFF) {
+    if (s_state != USB2TTL_OFF) {
         ESP_LOGE(TAG, "parity locked while bridge active");
         return ESP_ERR_INVALID_STATE;
     }
@@ -458,7 +531,7 @@ esp_err_t app_usb_uart_set_parity_even(bool even)
     return ESP_OK;
 }
 
-bool app_usb_uart_get_parity_even(void)
+bool app_usb2ttl_get_parity_even(void)
 {
     return s_even_parity;
 }
