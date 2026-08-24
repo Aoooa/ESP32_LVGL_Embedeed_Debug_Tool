@@ -100,6 +100,7 @@ lv_obj_t *speed_wheel_create(lv_obj_t *parent, int h_px,
     sw_t *w = lv_malloc(sizeof(sw_t));
     if (!w) return NULL;
     lv_memzero(w, sizeof(*w));
+    if (h_px <= 0) h_px = 100;   /* 防御：非法高度用默认 */
     w->cb = cb;
     w->ctx = ctx;
     w->travel = h_px / 2 - SW_KNOB_W / 2 - SW_KNOB_GAP;

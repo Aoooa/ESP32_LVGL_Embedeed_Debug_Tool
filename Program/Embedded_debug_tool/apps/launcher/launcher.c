@@ -894,6 +894,7 @@ lv_obj_t *launcher_create(lv_obj_t *parent)
     s_launcher.drum = drum;
 
     launcher_build_cards();
+    launcher_compute_geom();   /* 先算几何（wheel_h 等），build_wheel 依赖正确高度 */
     launcher_build_wheel();
     launcher_relayout_core();
 
