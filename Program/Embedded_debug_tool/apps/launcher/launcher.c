@@ -111,8 +111,7 @@ typedef struct {
     lv_obj_t *card_bgs[APP_COUNT];   /* 共享背景位图（烘焙后 set_src 刷新） */
 #endif
     lv_obj_t *icon_imgs[APP_COUNT];   /* 静态霓虹图标位图（两种模式都在用） */
-    lv_obj_t *name_boxes[APP_COUNT];  /* 名字容器（图标右缘→卡右缘，label 在内 flex 居中） */
-    lv_obj_t *text_labels[APP_COUNT]; /* APP 名称标签（容器子对象） */
+    lv_obj_t *text_labels[APP_COUNT]; /* APP 名称标签（relayout 手动计算居中位置） */
 
     /* 调速拨轮 */
     lv_obj_t *wheel;             /* 触摸热区容器（覆盖整个拨轮区域） */
@@ -916,22 +915,9 @@ static void launcher_build_cards(void)
         lv_obj_add_flag(icon, LV_OBJ_FLAG_EVENT_BUBBLE);
         s_launcher.icon_imgs[i] = icon;
 
-        /* 名字容器：占"图标右缘 → 卡片右缘"，label 作为子对象 flex 居中，
-         * 短名（SD/SWD）也自动居中 */
-        lv_obj_t *nbox = lv_obj_create(card);
-        lv_obj_remove_flag(nbox, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC
-                           | LV_OBJ_FLAG_SCROLL_MOMENTUM);
-        lv_obj_add_flag(nbox, LV_OBJ_FLAG_EVENT_BUBBLE);
-        lv_obj_set_style_bg_opa(nbox, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(nbox, 0, 0);
-        lv_obj_set_style_radius(nbox, 0, 0);
-        lv_obj_set_style_pad_all(nbox, 0, 0);
-        lv_obj_set_flex_flow(nbox, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(nbox, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
-                              LV_FLEX_ALIGN_CENTER);
-        s_launcher.name_boxes[i] = nbox;
-
-        lv_obj_t *lbl = lv_label_create(nbox);
+        /* 名字 label 直接放卡片（无容器，避免 flex 每帧布局开销）：
+         * 居中位置由 relayout 手动计算（lv_text_get_width） */
+        lv_obj_t *lbl = lv_label_create(card);
         lv_label_set_text(lbl, s_apps[i].name);
         lv_obj_add_flag(lbl, LV_OBJ_FLAG_EVENT_BUBBLE);
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_26, 0);
@@ -974,11 +960,15 @@ static void launcher_relayout_core(void)
 #if LAUNCHER_CARDS_BAKED
         lv_image_set_src(s_launcher.card_bgs[i], &s_card_bg_dsc);   /* 烘焙后刷新引用 */
 #endif
-        /* 图标在左；名字容器 = 图标右缘(x=66) → 卡片右缘，label 容器内自动居中 */
+        /* 图标在左；名字手动居中：x = 图标右缘(66) + (名字区宽 - 文本宽)/2 */
         lv_obj_align(s_launcher.icon_imgs[i], LV_ALIGN_LEFT_MID, 6, 0);
-        lv_obj_set_pos(s_launcher.name_boxes[i], 66, 0);
-        lv_obj_set_size(s_launcher.name_boxes[i], s_launcher.card_w - 66,
-                        s_launcher.card_h);
+        lv_obj_update_layout(s_launcher.text_labels[i]);   /* label 尺寸 = 内容宽 */
+        int tw = lv_obj_get_width(s_launcher.text_labels[i]);
+        int area_x = 66;
+        int area_w = s_launcher.card_w - 66;
+        int lx = area_x + (area_w - tw) / 2;
+        if (lx < area_x) lx = area_x;
+        lv_obj_align(s_launcher.text_labels[i], LV_ALIGN_LEFT_MID, lx, 0);
     }
 
     /* 保持当前滚动位置（clamp 到新滚动域） */
