@@ -66,10 +66,6 @@ void gesture_set_topdrop_handler(gesture_topdrop_cb_t cb, void *ctx);
 typedef void (*gesture_bottomup_cb_t)(void *ctx);
 void gesture_set_bottomup_handler(gesture_bottomup_cb_t cb, void *ctx);
 
-/* 右边缘下滑（起点在右边缘 EDGE 区，向下滑 ≥ 阈值）→ fired */
-typedef void (*gesture_rightdrop_cb_t)(void *ctx);
-void gesture_set_rightdrop_handler(gesture_rightdrop_cb_t cb, void *ctx);
-
 /* 当前是否有触摸按下（调试/测试用） */
 bool gesture_is_pressed(void);
 
