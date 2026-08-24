@@ -34,6 +34,10 @@ int  reader_progress(const reader_t *r);
 /* 索引完成后的总渲染行数（索引中返回 0） */
 int  reader_total_lines(const reader_t *r);
 
+/* 取第 row 行文本（同 provider 语义：未完成/越界返回 NULL）。
+ * 行缓存可能被后续读取覆盖，返回指针仅当次有效。用于收藏快照等。 */
+const char *reader_line_at(const reader_t *r, int row);
+
 /* 折行像素宽（旋转重建判断用） */
 int  reader_line_width(const reader_t *r);
 

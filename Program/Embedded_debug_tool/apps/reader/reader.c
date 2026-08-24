@@ -343,6 +343,11 @@ int reader_line_width(const reader_t *r)
     return r ? r->line_width : 0;
 }
 
+const char *reader_line_at(const reader_t *r, int row)
+{
+    return reader_line((void *)r, row, NULL);
+}
+
 int reader_count(void *ctx)
 {
     reader_t *r = ctx;

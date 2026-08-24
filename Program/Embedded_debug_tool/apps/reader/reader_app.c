@@ -398,9 +398,19 @@ bool reader_app_swipe_back(reader_app_t *app)
 {
     if (!app) return true;
     /* 阅读页打开时：右滑返回手势先问阅读器——状态栏显示中则隐藏栏并拦截
-     * （返回 false，取消拖动）；栏已隐藏则放行（返回 true，进入跟随右滑返回） */
+     * （返回 false，取消拖动）；栏已隐藏则按入口决定返回目标 */
     if (app->rv && reader_view_active(app->rv)) {
-        return !reader_view_handle_back(app->rv);
+        if (reader_view_handle_back(app->rv)) return false;   /* 栏显示→隐藏栏，拦截 */
+        /* 栏已隐藏：
+         *   书架模式 → 直接关闭阅读层回书架（拦截 launcher 的 root 拖动，
+         *             否则拖动整个 reader root 会先露出下层桌面而非书架）
+         *   direct 模式 → 放行，进入跟随右滑返回上一级（file_browser） */
+        if (!app->direct_mode) {
+            ESP_LOGI("reader_app", "[SWIPE] shelf-mode reader -> close to shelf");
+            reader_view_close(app->rv);
+            return false;
+        }
+        return true;
     }
     return true;
 }
