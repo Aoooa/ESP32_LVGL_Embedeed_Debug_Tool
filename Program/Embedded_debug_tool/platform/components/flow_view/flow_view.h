@@ -82,6 +82,11 @@ int flow_view_get_max_top(lv_obj_t *obj);
 /* 动态调整可见行数（阅读器全屏/带栏切换）：重建位图与 canvas，内容保留重绘 */
 void flow_view_set_visible_lines(lv_obj_t *obj, int visible_lines);
 
+/* 调整行距（每行额外垂直像素，可正可负）。只改有效行高 = 字体行高 + spacing，
+ * 一屏可见行数随之变化；折行内容/索引/行号不变（纯 UI）。重算视口并重绘，
+ * 保持当前行号。 */
+void flow_view_set_line_spacing(lv_obj_t *obj, int spacing);
+
 /* 点击回调（单击且无滑动时触发，pos 为屏幕坐标；滚动查看不触发）。 */
 typedef void (*flow_view_clicked_cb_t)(void *user_data, lv_point_t pos);
 void flow_view_set_clicked_cb(lv_obj_t *obj, flow_view_clicked_cb_t cb, void *user_data);

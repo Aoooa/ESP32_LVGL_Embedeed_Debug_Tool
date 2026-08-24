@@ -47,7 +47,8 @@ typedef struct {
     uint8_t *bitmap;              /* RGB565 位图（create 时分配） */
     const lv_font_t *font;
     lv_color_t color;
-    int line_h;                   /* 行高（默认宏，须与字体匹配） */
+    int line_h;                   /* 基础行高（字体行高） */
+    int line_spacing;             /* 额外行距（行距 UI 调整，纯垂直方向，不影响折行/索引） */
     int offset_px;                /* 像素级滚动偏移（0..max_px），平滑滚动 */
     int touch_y;                  /* 触摸跟踪 */
     int pending_dy;               /* 触摸累积位移（30ms 节流合并） */
@@ -74,6 +75,12 @@ static int32_t fv_glyph_w(void *ctx, uint32_t code, uint32_t next)
 }
 
 /* ── 内部工具 ── */
+
+/* 有效行高 = 基础行高 + 行距（行距只改垂直行高，不影响折行/索引/行号） */
+static int fv_row_h(const flow_view_t *v)
+{
+    return v->line_h + v->line_spacing;
+}
 
 static int fv_bitmap_bytes(const flow_view_t *v)
 {
@@ -128,7 +135,7 @@ static void fv_draw_line(flow_view_t *v, const char *text, uint8_t style, int y)
     dsc.color = v->color;
     dsc.text = text;
     int w = lv_obj_get_width(v->canvas);
-    lv_area_t coords = { 4, y, w - 4, y + v->line_h - 1 };
+    lv_area_t coords = { 4, y, w - 4, y + fv_row_h(v) - 1 };
     lv_draw_label(&layer, &dsc, &coords);
     /* finish_layer 内部会全幅失效——抑制后由调用方统一失效 */
     lv_display_enable_invalidation(lv_obj_get_display(v->canvas), false);
@@ -139,8 +146,8 @@ static void fv_draw_line(flow_view_t *v, const char *text, uint8_t style, int y)
 static int fv_max_px(const flow_view_t *v)
 {
     int max = fv_max_top(v);
-    if (max > INT32_MAX / v->line_h) return INT32_MAX;   /* 超大文件防溢出 */
-    return max * v->line_h;
+    if (max > INT32_MAX / fv_row_h(v)) return INT32_MAX;   /* 超大文件防溢出 */
+    return max * fv_row_h(v);
 }
 
 /* 更新右侧滚动指示条（必须在 LVGL 锁内） */
@@ -153,7 +160,7 @@ static void fv_update_scrollbar(flow_view_t *v)
     }
     lv_obj_clear_flag(v->scrollbar, LV_OBJ_FLAG_HIDDEN);
     int vis_h = lv_obj_get_height(v->canvas);
-    int thumb_h = vis_h * vis_h / (fv_line_count(v) * v->line_h);
+    int thumb_h = vis_h * vis_h / (fv_line_count(v) * fv_row_h(v));
     if (thumb_h < 8) thumb_h = 8;
     if (thumb_h > vis_h) thumb_h = vis_h;
     int y = (vis_h - thumb_h) * v->offset_px / max_px;
@@ -167,14 +174,14 @@ static void fv_full_redraw(flow_view_t *v)
 {
     memset(v->bitmap, 0xFF, (size_t)fv_bitmap_bytes(v));
 
-    int start = v->offset_px / v->line_h;
-    int y0 = -(v->offset_px % v->line_h);
+    int start = v->offset_px / fv_row_h(v);
+    int y0 = -(v->offset_px % fv_row_h(v));
     int visible = v->model.visible_lines;
     for (int k = 0; k < visible + 1; k++) {
         int row = start + k;
         if (row >= fv_line_count(v)) break;
-        int y = y0 + k * v->line_h;
-        if (y + v->line_h <= 0) continue;   /* 顶部移出的行跳过 */
+        int y = y0 + k * fv_row_h(v);
+        if (y + fv_row_h(v) <= 0) continue;   /* 顶部移出的行跳过 */
         uint8_t st = 0;
         fv_draw_line(v, fv_line_text(v, row, &st), st, y);
     }
@@ -185,13 +192,13 @@ static void fv_full_redraw(flow_view_t *v)
 /* 重绘与 [y0, y1] 区域相交的行（增量滚动后露出区） */
 static void fv_draw_rows_in(flow_view_t *v, int y0, int y1)
 {
-    int start = v->offset_px / v->line_h;
-    int first_y = -(v->offset_px % v->line_h);
+    int start = v->offset_px / fv_row_h(v);
+    int first_y = -(v->offset_px % fv_row_h(v));
     for (int k = 0; k < v->model.visible_lines + 1; k++) {
         int row = start + k;
         if (row >= fv_line_count(v)) break;
-        int y = first_y + k * v->line_h;
-        if (y + v->line_h <= y0) continue;      /* 完全在区域上方 */
+        int y = first_y + k * fv_row_h(v);
+        if (y + fv_row_h(v) <= y0) continue;      /* 完全在区域上方 */
         if (y > y1) break;                      /* 完全在区域下方 */
         uint8_t st = 0;
         fv_draw_line(v, fv_line_text(v, row, &st), st, y);
@@ -237,7 +244,7 @@ static void fv_redraw(flow_view_t *v)
  * 滚动位置恒为 0 */
 static void fv_sync_row(flow_view_t *v)
 {
-    int top = v->offset_px / v->line_h;
+    int top = v->offset_px / fv_row_h(v);
     int max = fv_max_top(v);
     if (top < 0) top = 0;
     if (top > max) top = max;
@@ -323,7 +330,7 @@ static void fv_constructor(const lv_obj_class_t *class_p, lv_obj_t *obj)
     /* 视口宽跟随 LVGL 逻辑分辨率（横竖屏通用，不再硬编码） */
     lv_display_t *disp = lv_display_get_default();
     int w = disp ? lv_display_get_horizontal_resolution(disp) : FLOW_VIEW_DEF_WIDTH;
-    int h = FLOW_VIEW_VISIBLE_LINES_DEF * v->line_h;
+    int h = FLOW_VIEW_VISIBLE_LINES_DEF * fv_row_h(v);
     int max_lines = FLOW_VIEW_MAX_LINES_DEF;
 
     /* 分配位图 + 行缓冲（内存钩子，默认 malloc） */
@@ -529,7 +536,7 @@ void flow_view_go_to(lv_obj_t *obj, int line)
         if (line < 0) line = 0;
         if (line > max) line = max;
         v->model.view_top = line;
-        v->offset_px = line * v->line_h;
+        v->offset_px = line * fv_row_h(v);
         v->redraw_pending = true;
         v->force_redraw = true;
     }
@@ -544,7 +551,7 @@ void flow_view_set_font(lv_obj_t *obj, const lv_font_t *font)
         v->font = font;
         v->line_h = lv_font_get_line_height(font);   /* 行高随字体（中文行高更大） */
         v->model.glyph_ctx = (void *)font;
-        v->offset_px = flow_model_view_top(&v->model) * v->line_h;   /* 按行号保持阅读位置 */
+        v->offset_px = flow_model_view_top(&v->model) * fv_row_h(v);   /* 按行号保持阅读位置 */
         v->redraw_pending = true;
         v->force_redraw = true;
     }
@@ -590,7 +597,7 @@ void flow_view_set_visible_lines(lv_obj_t *obj, int visible_lines)
         return;
     }
     int w = lv_obj_get_width(lv_obj_get_parent(obj));   /* 视口宽 = 父（阅读区）宽，横竖屏自适应 */
-    int h = visible_lines * v->line_h;
+    int h = visible_lines * fv_row_h(v);
     uint8_t *buf = flow_view_malloc((size_t)w * h * 2);
     if (!buf) {
         fv_unlock();
@@ -606,6 +613,42 @@ void flow_view_set_visible_lines(lv_obj_t *obj, int visible_lines)
     lv_obj_set_size(obj, w, h);   /* 对象尺寸与位图一致，消除底部空余 */
     v->redraw_pending = true;
         v->force_redraw = true;
+    fv_unlock();
+}
+
+void flow_view_set_line_spacing(lv_obj_t *obj, int spacing)
+{
+    flow_view_t *v = (flow_view_t *)obj;
+    fv_lock();
+    if (!fv_ready(v)) {
+        fv_unlock();
+        return;
+    }
+    int old_row = fv_row_h(v);
+    int view_h = v->model.visible_lines * old_row;
+    int top = v->offset_px / old_row;            /* 当前查看行（行号，与索引无关） */
+    v->line_spacing = spacing;
+    int new_row = fv_row_h(v);
+    if (new_row < 8) new_row = 8;                /* 行高下限 */
+    int new_lines = view_h / new_row;
+    if (new_lines < 1) new_lines = 1;
+    int w = lv_obj_get_width(lv_obj_get_parent(obj));
+    int h = new_lines * new_row;
+    uint8_t *buf = flow_view_malloc((size_t)w * h * 2);
+    if (!buf) {
+        fv_unlock();
+        return;
+    }
+    memset(buf, 0xFF, (size_t)w * h * 2);
+    flow_view_free(v->bitmap);
+    v->bitmap = buf;
+    v->model.visible_lines = new_lines;
+    v->offset_px = top * new_row;                /* 保持当前行号 */
+    lv_obj_set_size(v->canvas, w, h);
+    lv_canvas_set_buffer(v->canvas, buf, w, h, LV_COLOR_FORMAT_RGB565);
+    lv_obj_set_size(obj, w, h);
+    v->redraw_pending = true;
+    v->force_redraw = true;
     fv_unlock();
 }
 
