@@ -371,10 +371,14 @@ static void ra_build_row(lv_obj_t *row, const ra_entry_t *b, int idx, reader_app
     lv_obj_set_flex_grow(col, 1);
     lv_obj_set_height(col, LV_SIZE_CONTENT);
     lv_obj_remove_flag(col, LV_OBJ_FLAG_SCROLLABLE);
+    /* 关键：lv_obj 默认 CLICKABLE 会把行主体点击吞掉（CLICKED 落在 col 上、
+     * 行按钮收不到）。清可点 + 事件冒泡到行 → 点书名恢复正常 */
+    lv_obj_clear_flag(col, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(col, LV_OBJ_FLAG_EVENT_BUBBLE);
     lv_obj_set_style_bg_opa(col, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(col, 0, 0);
     lv_obj_set_style_pad_all(col, 0, 0);
-    lv_obj_set_style_pad_gap(col, 4, 0);   /* 缩放后的书名与状态行留距 */
+    lv_obj_set_style_pad_gap(col, 4, 0);
     lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(col, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
@@ -625,6 +629,9 @@ static void ra_favs_fill(reader_app_t *app)
         lv_obj_set_flex_grow(col, 1);
         lv_obj_set_height(col, LV_SIZE_CONTENT);
         lv_obj_remove_flag(col, LV_OBJ_FLAG_SCROLLABLE);
+        /* 同上：清可点 + 冒泡，行主体（打开书）点击不被吞 */
+        lv_obj_clear_flag(col, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_flag(col, LV_OBJ_FLAG_EVENT_BUBBLE);
         lv_obj_set_style_bg_opa(col, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(col, 0, 0);
         lv_obj_set_style_pad_left(col, 8, 0);
