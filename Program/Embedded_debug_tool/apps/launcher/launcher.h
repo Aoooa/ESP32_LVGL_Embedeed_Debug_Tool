@@ -30,6 +30,7 @@ typedef enum {
     LAUNCH_APP_WAVEGEN,     /* 波形输出（PWM/正弦/脉冲） */
     LAUNCH_APP_SCOPE,       /* 示波器（ADC 采样显示） */
     LAUNCH_APP_USB2TTL,     /* USB2TTL + ISP（CDC-ACM ↔ UART1） */
+    LAUNCH_APP_WEBFS,       /* WebFS（浏览器访问 SD 文件管理） */
     LAUNCH_APP_COUNT,
 } launch_app_id_t;
 

@@ -1,0 +1,22 @@
+#ifndef APP_WEB_FS_H
+#define APP_WEB_FS_H
+
+/* app_web_fs —— SD 文件管理 Web API（挂到现有 esp_http_server）。
+ *
+ * 路由（查询参数统一 p=（URL 编码），完整路径须在 /sdcard/ 下）：
+ *   GET  /fs                   单页前端
+ *   GET  /fs/list?p=<dir>      JSON 目录列表 [{n,d,s,m},...]
+ *   GET  /fs/download?p=<file> 流式下载（chunked）
+ *   POST /fs/upload?p=<file>   body 流式写入
+ *   POST /fs/mkdir?p=<dir>     新建目录
+ *   POST /fs/delete?p=<path>   删除文件或空目录
+ *   POST /fs/rename?p=<old>&q=<new>  重命名/移动
+ * 线程：httpd 任务内执行；所有 SD 访问持 esp_lv_adapter_lock（与 LCD 共享 SPI2）。
+ */
+
+#include "esp_http_server.h"
+
+/* 注册全部 /fs* 路由到 httpd（幂等） */
+esp_err_t app_web_fs_init(httpd_handle_t server);
+
+#endif /* APP_WEB_FS_H */

@@ -11,6 +11,7 @@ idf_component_register(
         "${MODULE_DIR}/web/app_web_http.c"
         "${MODULE_DIR}/web/app_web_ws.c"
         "${MODULE_DIR}/web/app_web_broadcast.c"
+        "${MODULE_DIR}/web/app_web_fs.c"
         "${MODULE_DIR}/display/drv_display.c"
         "${MODULE_DIR}/display/app_display.c"
         "${MODULE_DIR}/platform/input/gesture.c"
@@ -47,6 +48,7 @@ idf_component_register(
         "${MODULE_DIR}/apps/scope/scope_app.c"
         "${MODULE_DIR}/uart/app_usb2ttl.c"
         "${MODULE_DIR}/apps/usb2ttl/usb2ttl.c"
+        "${MODULE_DIR}/apps/web_fs/web_fs_app.c"
 
     INCLUDE_DIRS
         "."
@@ -76,6 +78,7 @@ idf_component_register(
         "${MODULE_DIR}/scope"
         "${MODULE_DIR}/apps/scope"
         "${MODULE_DIR}/apps/usb2ttl"
+        "${MODULE_DIR}/apps/web_fs"
 
     PRIV_REQUIRES
         spi_flash nvs_flash esp_netif esp_event

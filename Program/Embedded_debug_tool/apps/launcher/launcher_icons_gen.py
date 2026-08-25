@@ -289,6 +289,18 @@ def icon_usb2ttl():
     stroke_circle(cv, 50, 31, 5, 5, sub)                # 串口圆头
     return cv
 
+def icon_webfs():
+    """网络文件：地球（环 + 纬线 + 弧）+ 网络亮点（青蓝 + 绿）"""
+    main = hexc(0x3EC6FF); sub = hexc(0x7DFF8C); white = hexc(0xFFFFFF)
+    cv = new_canvas(); mask = [[0.0] * W for _ in range(H)]
+    stroke_circle(cv, 30, 30, 15, 5, white)             # 地球环
+    arc(cv, 30, 30, 15, 200, 340, 3, white)             # 纬线
+    arc(cv, 30, 30, 9, 20, 160, 3, white)               # 另一侧弧
+    mark(cv, mask, 8, 8, 52, 52)
+    finish(cv, mask, main)
+    fill_circle(cv, 45, 16, 3, sub)                     # 网络亮点
+    return cv
+
 ICONS = [
     ("files",    icon_files),
     ("reader",   icon_reader),
@@ -299,6 +311,7 @@ ICONS = [
     ("wave",     icon_wave),
     ("scope",    icon_scope),
     ("usb2ttl",  icon_usb2ttl),
+    ("webfs",    icon_webfs),
 ]
 
 def to_argb_bytes(cv):
@@ -360,9 +373,11 @@ def emit_png():
     scale = 4
     pad = 14 * scale
     cell = W * scale + pad
-    grid = [[(10, 10, 14, 255) for _ in range(cell * 3)] for _ in range(cell * 3)]
+    cols = 3
+    rows = (len(canvases) + cols - 1) // cols
+    grid = [[(10, 10, 14, 255) for _ in range(cell * cols)] for _ in range(cell * rows)]
     for idx, cv in enumerate(canvases):
-        gx, gy = idx % 3, idx // 3
+        gx, gy = idx % cols, idx // cols
         ox, oy = gx * cell + pad // 2, gy * cell + pad // 2
         for y in range(H * scale):
             for x in range(W * scale):

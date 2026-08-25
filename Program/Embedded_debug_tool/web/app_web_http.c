@@ -1,5 +1,6 @@
 #include "app_web.h"
 #include "app_uart.h"
+#include "app_web_fs.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,6 +30,7 @@ static esp_err_t root_handler(httpd_req_t *req)
         "<h1>Embedded Debug Tool</h1>"
         "<a href=\"/page?uart=0\">UART1<span class=\"sub\">IO2 / IO4 &middot; TCP :8080</span></a>"
         "<a href=\"/page?uart=1\">UART2<span class=\"sub\">IO16 / IO17 &middot; TCP :8081</span></a>"
+        "<a href=\"/fs\">WebFS<span class=\"sub\">SD 文件管理 /sdcard</span></a>"
         "</body></html>";
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_send(req, html, strlen(html));
@@ -179,7 +181,7 @@ void app_web_start(void)
     if (g_httpd) return;   /* 已在运行（stop 后可重新 start） */
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 8;
+    config.max_uri_handlers = 20;      /* 原有 4 + WebFS 7 + 余量 */
     config.stack_size = 4096;      /* word 单位（xTaskCreate 语义）= 16KB；实测峰值 ~5.4KB，留足余量 */
     config.lru_purge_enable = true;
     config.max_open_sockets = 5;   /* 实际并发：1 页面 + 2 WS；受 LWIP_MAX_SOCKETS 约束 */
@@ -198,4 +200,5 @@ void app_web_start(void)
     for (int i = 0; i < 4; i++) {
         httpd_register_uri_handler(g_httpd, &uris[i]);
     }
+    app_web_fs_init(g_httpd);   /* SD 文件管理 /fs*（幂等注册） */
 }
