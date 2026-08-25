@@ -37,6 +37,13 @@ esp_err_t app_sdcard_list_dir(const char *path, app_sdcard_dir_cb_t cb, void *ct
         if (cb) {
             long size = 0;
             time_t mtime = 0;
+            char fp[512];
+            snprintf(fp, sizeof(fp), "%s/%s", path, ent->d_name);
+            struct stat st;
+            if (stat(fp, &st) == 0) {   /* 填充 size/mtime（书架排序用） */
+                size = (long)st.st_size;
+                mtime = st.st_mtime;
+            }
             cb(ctx, ent->d_name, ent->d_type == DT_DIR, size, mtime);
         }
     }

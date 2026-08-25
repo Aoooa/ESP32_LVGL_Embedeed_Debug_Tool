@@ -6,6 +6,7 @@
 #include "app_font.h"
 #include "reader.h"
 #include "reader_favcache.h"
+#include "sd_async.h"
 #include "gesture.h"
 #include "speed_wheel.h"
 #include "num_input.h"
@@ -96,6 +97,8 @@ struct reader_view {
     bool indexing;
     int line_w;                /* 打开时的折行像素宽 */
     float speed_acc;           /* 调速器速度累积器（行数，取整翻页） */
+    int resume_line;           /* 断点续读：上次阅读行（0 基） */
+    bool resume_set;           /* 存在进度记录 */
 };
 
 /* 前向声明（互引：进度条/调速器手动操作停自动滚动；收藏切换刷新弹窗） */
@@ -233,7 +236,7 @@ static void rv_progress_timer(lv_timer_t *t)
             rv->indexing = false;
             lv_obj_add_flag(rv->index_lbl, LV_OBJ_FLAG_HIDDEN);
             lv_obj_clear_flag(rv->wheel, LV_OBJ_FLAG_HIDDEN);   /* 索引完成显示调速器 */
-            flow_view_go_to(rv->view, 0);
+            flow_view_go_to(rv->view, rv->resume_set ? rv->resume_line : 0);   /* 断点续读 */
             rv_update_progress(rv);
             rv_refresh_star(rv);
         }
@@ -366,12 +369,10 @@ static void rv_refresh_star(reader_view_t *rv)
     lv_obj_set_style_text_color(rv->star_lbl, faved ? RV_FAV_COLOR : RV_FAV_GRAY, 0);
 }
 
+/* 收藏落盘 → 异步队列（快照拷贝入队后立即返回，后台任务持锁写盘，不阻塞 UI） */
 static void rv_fav_save(reader_view_t *rv)
 {
-    if (esp_lv_adapter_lock(-1) == ESP_OK) {
-        reader_fav_save(rv->path, &rv->fav);
-        esp_lv_adapter_unlock();
-    }
+    sd_async_save_fav(rv->path, &rv->fav);
 }
 
 /* 收藏列表弹窗操作 */
@@ -424,6 +425,34 @@ static void rv_fav_dlg_dismiss_evt(lv_event_t *e)
     rv_fav_dlg_close(lv_event_get_user_data(e));
 }
 
+/* 按字符数（非字节）安全截断 UTF-8 文本，若被截断则在末尾追加省略号 "…" */
+#define RV_PREVIEW_CHARS 22   /* 双行预览：内容区宽 ~192px / 中文 16px ≈ 12 字/行 ×2 */
+
+static void rv_truncate_preview(const char *src, int max_chars, char *out, size_t outsz)
+{
+    size_t in = 0, o = 0;
+    int chars = 0;
+    size_t srclen = strlen(src);
+    while (in < srclen && chars < max_chars && o + 8 < outsz) {
+        unsigned char c = (unsigned char)src[in];
+        int len = 1;
+        if ((c & 0xE0) == 0xC0 && in + 1 < srclen && (src[in + 1] & 0xC0) == 0x80) len = 2;
+        else if ((c & 0xF0) == 0xE0 && in + 2 < srclen && (src[in + 1] & 0xC0) == 0x80
+                 && (src[in + 2] & 0xC0) == 0x80) len = 3;
+        else if ((c & 0xF8) == 0xF0 && in + 3 < srclen && (src[in + 1] & 0xC0) == 0x80
+                 && (src[in + 2] & 0xC0) == 0x80 && (src[in + 3] & 0xC0) == 0x80) len = 4;
+        memcpy(out + o, src + in, len);
+        o += (size_t)len;
+        in += (size_t)len;
+        chars++;
+    }
+    if (in < srclen && o + 4 < outsz) {
+        memcpy(out + o, "\xE2\x80\xA6", 3);   /* … U+2026（han_sc_16 含此字形） */
+        o += 3;
+    }
+    out[o] = '\0';
+}
+
 /* 重建弹窗行列表（打开/删除/收藏变更后） */
 static void rv_fav_dlg_refresh(reader_view_t *rv)
 {
@@ -440,7 +469,7 @@ static void rv_fav_dlg_refresh(reader_view_t *rv)
     }
     for (int i = 0; i < rv->fav.count; i++) {
         lv_obj_t *row = lv_obj_create(rv->fav_rows);
-        lv_obj_set_size(row, lv_pct(100), 32);
+        lv_obj_set_size(row, lv_pct(100), 46);   /* 双行预览行高：2×19px 字 + 上下边距 */
         lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_set_style_bg_color(row, lv_color_hex(0xF9FAFB), 0);
         lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
@@ -456,20 +485,26 @@ static void rv_fav_dlg_refresh(reader_view_t *rv)
 
         lv_obj_t *ln = lv_label_create(row);
         lv_obj_set_width(ln, 52);
+        lv_obj_set_height(ln, 46);   /* 与行同高：横向 flex 下无垂直位移，pad_top 让字贴第一行 */
         lv_obj_set_style_text_color(ln, lv_color_hex(0x6B7280), 0);
         lv_obj_set_style_text_font(ln, rv_ui_font(), 0);
         lv_obj_set_style_pad_left(ln, 6, 0);
+        lv_obj_set_style_pad_top(ln, 4, 0);
         lv_label_set_text_fmt(ln, "L%d", rv->fav.items[i].line + 1);   /* 显示 1 基 */
 
+        /* 内容预览：最多两行，超出末尾加省略号 */
+        char preview[FAV_CONTENT_MAX + 8];
+        rv_truncate_preview(rv->fav.items[i].content, RV_PREVIEW_CHARS, preview, sizeof(preview));
         lv_obj_t *ct = lv_label_create(row);
         lv_obj_set_flex_grow(ct, 1);
+        lv_obj_set_height(ct, 38);   /* 双行：2 × 19px 行高 */
         lv_obj_set_style_text_color(ct, RV_TEXT, 0);
         lv_obj_set_style_text_font(ct, rv_ui_font(), 0);
-        lv_label_set_long_mode(ct, LV_LABEL_LONG_DOT);
-        lv_label_set_text(ct, rv->fav.items[i].content);
+        lv_label_set_long_mode(ct, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(ct, preview);
 
         lv_obj_t *del = lv_button_create(row);
-        lv_obj_set_size(del, 36, 28);
+        lv_obj_set_size(del, 40, 36);
         lv_obj_set_style_bg_color(del, lv_color_hex(0xFFFFFF), 0);
         lv_obj_set_style_border_color(del, RV_BTN_BORDER, 0);
         lv_obj_set_style_border_width(del, 1, 0);
@@ -753,8 +788,16 @@ bool reader_view_open(reader_view_t *rv, const char *path)
     rv->path[sizeof(rv->path) - 1] = '\0';
     rv_auto_stop(rv);
     rv->fav.count = 0;
+    rv->resume_set = false;
+    rv->resume_line = 0;
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
         reader_fav_load(rv->path, &rv->fav);
+        /* 断点续读：读回上次进度（done 无行号 → 从头） */
+        int p = sd_read_prog(rv->path);
+        if (p >= 0) {
+            rv->resume_set = true;
+            rv->resume_line = p;
+        }
         esp_lv_adapter_unlock();
     }
     rv_refresh_star(rv);
@@ -784,6 +827,14 @@ void reader_view_close(reader_view_t *rv)
         lv_obj_set_style_text_color(rv->star_lbl, RV_FAV_GRAY, 0);
     }
     if (rv->reader) {
+        /* 阅读进度异步保存（右滑返回/关闭阅读层时）：记录当前首行；
+         * 已滚到末行（top >= max）→ 标记 done（阅读完成）。
+         * 只入队不写盘 → UI 零阻塞。 */
+        if (rv->path[0]) {
+            int top = flow_view_get_view_top(rv->view);
+            int max = flow_view_get_max_top(rv->view);
+            sd_async_save_prog(rv->path, top, max > 0 && top >= max);
+        }
         flow_view_set_line_provider(rv->view, NULL, NULL);
         reader_close(rv->reader);
         rv->reader = NULL;
