@@ -11,11 +11,21 @@
 static const char *TAG = "reader_favcache";
 #define SD_HIDDEN_DIR "/sdcard/.reader"
 
+/* 完整路径 → 文件名（FNV-1a 32）：不同目录同名 txt 互不干扰。
+ * 不能用 basename（同名书会共用同一 .fav 而串数据） */
+static uint32_t path_hash(const char *s)
+{
+    uint32_t h = 2166136261u;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        h ^= *p;
+        h *= 16777619u;
+    }
+    return h;
+}
+
 static void fav_path(const char *txt_path, char *out, size_t outsz)
 {
-    const char *base = strrchr(txt_path, '/');
-    base = base ? base + 1 : txt_path;
-    snprintf(out, outsz, SD_HIDDEN_DIR "/%s.fav", base);
+    snprintf(out, outsz, SD_HIDDEN_DIR "/%08X.fav", (unsigned)path_hash(txt_path));
 }
 
 bool reader_fav_load(const char *txt_path, reader_fav_list_t *list)

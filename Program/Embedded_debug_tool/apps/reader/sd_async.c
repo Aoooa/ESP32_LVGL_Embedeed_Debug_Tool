@@ -34,17 +34,23 @@ typedef struct {
 static QueueHandle_t s_q;
 static bool s_started;
 
-static const char *sd_base(const char *p)
+/* 完整路径 → 文件名（FNV-1a 32）：不同目录同名 txt 互不干扰
+ * （.prog/.favbook 不能用 basename，否则同名书共用同一文件而串数据） */
+static uint32_t path_hash(const char *s)
 {
-    const char *b = strrchr(p, '/');
-    return b ? b + 1 : p;
+    uint32_t h = 2166136261u;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        h ^= *p;
+        h *= 16777619u;
+    }
+    return h;
 }
 
 static void sd_write_prog(const char *path, int line, bool done)
 {
     mkdir(SD_ASYNC_DIR, 0777);
     char fp[180];
-    snprintf(fp, sizeof(fp), SD_ASYNC_DIR "/%s.prog", sd_base(path));
+    snprintf(fp, sizeof(fp), SD_ASYNC_DIR "/%08X.prog", (unsigned)path_hash(path));
     FILE *f = fopen(fp, "w");
     if (!f) {
         ESP_LOGW(TAG, "prog: open failed %s", fp);
@@ -59,7 +65,7 @@ static void sd_write_favbook(const char *path, bool fav)
 {
     mkdir(SD_ASYNC_DIR, 0777);
     char fp[180];
-    snprintf(fp, sizeof(fp), SD_ASYNC_DIR "/%s.favbook", sd_base(path));
+    snprintf(fp, sizeof(fp), SD_ASYNC_DIR "/%08X.favbook", (unsigned)path_hash(path));
     if (fav) {
         FILE *f = fopen(fp, "w");
         if (f) fclose(f);
@@ -141,7 +147,7 @@ bool sd_async_set_favbook(const char *path, bool fav)
 int sd_read_prog(const char *path)
 {
     char fp[180];
-    snprintf(fp, sizeof(fp), SD_ASYNC_DIR "/%s.prog", sd_base(path));
+    snprintf(fp, sizeof(fp), SD_ASYNC_DIR "/%08X.prog", (unsigned)path_hash(path));
     FILE *f = fopen(fp, "r");
     if (!f) return -1;
     int line = -1;
@@ -158,7 +164,7 @@ int sd_read_prog(const char *path)
 bool sd_favbook_exists(const char *path)
 {
     char fp[180];
-    snprintf(fp, sizeof(fp), SD_ASYNC_DIR "/%s.favbook", sd_base(path));
+    snprintf(fp, sizeof(fp), SD_ASYNC_DIR "/%08X.favbook", (unsigned)path_hash(path));
     struct stat st;
     return stat(fp, &st) == 0;
 }

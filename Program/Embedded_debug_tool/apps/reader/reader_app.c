@@ -7,6 +7,7 @@
 #include "app_font.h"
 #include "reader_view.h"
 #include "sd_async.h"
+#include "num_input.h"
 #include "esp_lv_adapter.h"
 #include "launcher.h"
 #include "esp_heap_caps.h"
@@ -21,12 +22,9 @@
 #define RA_PATH_MAX     128
 #define RA_ENTRY_MAX    128      /* 扫描收集上限（128×208B≈26KB 内部 RAM） */
 #define RA_NAME_MAX     80       /* 显示名（去后缀） */
-#define RA_TOP_BAR_H    28
 #define RA_ROW_H        48       /* 书架行高（书名 + 状态说明 + 右侧星） */
-#define RA_SETBAR_H     44       /* 底部设置栏高（Favs/Sort/View/翻页） */
-#define RA_PAGE_ROWS    3        /* 翻页模式每页行数（list 高 ≈ 172px / 48px 行高） */
-#define RA_BTN_W        46
-#define RA_BTN_H        32
+#define RA_SETBAR_H     38       /* 底部设置栏高（Favs/Sort/View 均分，黑底） */
+#define RA_PAGEBAR_H    26       /* 页码栏高（透明，贴屏幕底，置于设置栏下方） */
 #define RA_BTN_GAP      8
 #define RA_DIRQ_MAX     128      /* 待扫描目录队列上限（BFS，PSRAM 分配） */
 #define RA_MAX_DEPTH    8        /* 扫描最大深度（广度优先，栈需求恒定） */
@@ -66,7 +64,6 @@ typedef struct {
 struct reader_app {
     lv_obj_t *root;
     lv_obj_t *list;
-    lv_obj_t *lbl_count;
     reader_app_back_cb_t back_cb;
     void *back_ctx;
     reader_view_t *rv;
@@ -92,8 +89,9 @@ struct reader_app {
     ra_view_t view_mode;
     int page;                   /* 翻页模式当前页（0 基） */
     int page_count;
-    lv_obj_t *setbar;           /* 底部设置栏 */
-    lv_obj_t *btn_favs, *btn_sort, *btn_view, *btn_prev, *btn_next, *btn_page; /* 页码按钮 */
+    lv_obj_t *setbar;           /* 底部设置栏（黑底，Favs/Sort/View 均分） */
+    lv_obj_t *btn_favs, *btn_sort, *btn_view;
+    lv_obj_t *pagebar;          /* 页码栏（透明，贴屏幕底，仅翻页模式显示） */
     /* 弹窗（收藏夹/排序/视图） */
     lv_obj_t *dlg;              /* NULL=未开 */
     lv_obj_t *dlg_rows;
@@ -229,14 +227,120 @@ static void ra_reload_states(reader_app_t *app)
     }
 }
 
-static void ra_update_count(reader_app_t *app)
+/* ── 页码栏（翻页模式专用；透明贴屏幕底，位于设置栏下方） ── */
+static void ra_render_list(reader_app_t *app);
+
+static void ra_page_pick_evt(lv_event_t *e)
 {
-    if (!app->lbl_count) return;
-    if (app->view_mode == RA_VIEW_PAGES && app->page_count > 0) {
-        lv_label_set_text_fmt(app->lbl_count, "%d/%d", app->page + 1, app->page_count);
-    } else {
-        lv_label_set_text_fmt(app->lbl_count, "%d 本", app->entry_count);
+    reader_app_t *app = lv_event_get_user_data(e);
+    int p = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target_obj(e));
+    if (!app || app->view_mode != RA_VIEW_PAGES) return;
+    if (p >= 0 && p < app->page_count && p != app->page) {
+        app->page = p;
+        ra_render_list(app);
     }
+}
+
+/* 页码旁输入框跳页（num_input） */
+static void ra_page_go_done(void *ctx, bool ok, int v)
+{
+    reader_app_t *app = ctx;
+    if (!ok || !app || app->view_mode != RA_VIEW_PAGES) return;
+    int p = v - 1;
+    if (p < 0) p = 0;
+    if (p >= app->page_count) p = app->page_count - 1;
+    app->page = p;
+    ra_render_list(app);
+}
+
+static void ra_page_go_evt(lv_event_t *e)
+{
+    reader_app_t *app = lv_event_get_user_data(e);
+    if (!app || app->view_mode != RA_VIEW_PAGES) return;
+    num_input_show(app->root, app->page + 1, 1,
+                   app->page_count > 0 ? app->page_count : 1, false, 0,
+                   ra_page_go_done, app);
+}
+
+/* 重建页码栏：首/尾页必显 + 当前页前后两页，其余用 "…" 省略；右侧 Go 输入跳页 */
+static void ra_refresh_pagebar(reader_app_t *app)
+{
+    if (!app->pagebar) return;
+    lv_obj_clean(app->pagebar);
+    if (app->view_mode != RA_VIEW_PAGES || app->page_count <= 1) {
+        lv_obj_add_flag(app->pagebar, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_obj_clear_flag(app->pagebar, LV_OBJ_FLAG_HIDDEN);
+
+    int pc = app->page_count;
+    int cur = app->page;
+    int list[16], n = 0;
+#define PUSH_PAGE(p) do { int _p = (p); if (_p >= 1 && _p <= pc && (n == 0 || list[n - 1] != _p)) list[n++] = _p; } while (0)
+    PUSH_PAGE(1);
+    for (int d = -2; d <= 2; d++) PUSH_PAGE(cur + 1 + d);
+    PUSH_PAGE(pc);
+#undef PUSH_PAGE
+
+    for (int i = 0; i < n; i++) {
+        if (i > 0 && list[i] - list[i - 1] > 1) {
+            lv_obj_t *dots = lv_label_create(app->pagebar);
+            lv_obj_set_style_text_color(dots, RA_EMPTY, 0);
+            lv_obj_set_style_text_font(dots, ra_ui_font(), 0);
+            lv_label_set_text(dots, "…");   /* U+2026 */
+        }
+        bool curpage = (list[i] == cur + 1);
+        lv_obj_t *b = lv_button_create(app->pagebar);
+        lv_obj_set_size(b, 26, 20);
+        lv_obj_set_style_bg_opa(b, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_bg_color(b, lv_color_hex(0x1F2937), LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(b, LV_OPA_COVER, LV_STATE_PRESSED);
+        lv_obj_set_style_border_width(b, 0, 0);
+        lv_obj_set_style_radius(b, 4, 0);
+        lv_obj_set_style_pad_all(b, 0, 0);
+        lv_obj_t *l = lv_label_create(b);
+        lv_obj_set_size(l, 26, 16);
+        lv_obj_set_pos(l, 0, 0);
+        lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_color(l, curpage ? RA_FAV_YELLOW : RA_TEXT, 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
+        lv_label_set_text_fmt(l, "%d", list[i]);
+        /* 下划线装饰（链接感；当前页黄色） */
+        lv_obj_t *ul = lv_obj_create(b);
+        lv_obj_set_size(ul, 12, 2);
+        lv_obj_set_pos(ul, (26 - 12) / 2, 17);
+        lv_obj_set_style_bg_color(ul, curpage ? RA_FAV_YELLOW : lv_color_hex(0x4B5563), 0);
+        lv_obj_set_style_bg_opa(ul, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(ul, 0, 0);
+        lv_obj_set_style_radius(ul, 1, 0);
+        lv_obj_set_user_data(b, (void *)(intptr_t)(list[i] - 1));
+        lv_obj_add_event_cb(b, ra_page_pick_evt, LV_EVENT_CLICKED, app);
+    }
+
+    /* Go：输入页码跳转 */
+    lv_obj_t *go = lv_button_create(app->pagebar);
+    lv_obj_set_size(go, 30, 20);
+    lv_obj_set_style_bg_opa(go, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_color(go, lv_color_hex(0x1F2937), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(go, LV_OPA_COVER, LV_STATE_PRESSED);
+    lv_obj_set_style_border_width(go, 0, 0);
+    lv_obj_set_style_radius(go, 4, 0);
+    lv_obj_set_style_pad_all(go, 0, 0);
+    lv_obj_t *gl = lv_label_create(go);
+    lv_obj_set_size(gl, 30, 16);
+    lv_obj_set_pos(gl, 0, 0);
+    lv_obj_set_style_text_align(gl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(gl, RA_TEXT, 0);
+    lv_obj_set_style_text_font(gl, &lv_font_montserrat_12, 0);
+    lv_label_set_text(gl, "Go");
+    lv_obj_t *gul = lv_obj_create(go);
+    lv_obj_set_size(gul, 12, 2);
+    lv_obj_set_pos(gul, (30 - 12) / 2, 17);
+    lv_obj_set_style_bg_color(gul, lv_color_hex(0x4B5563), 0);
+    lv_obj_set_style_bg_opa(gul, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(gul, 0, 0);
+    lv_obj_set_style_radius(gul, 1, 0);
+    lv_obj_add_event_cb(go, ra_page_go_evt, LV_EVENT_CLICKED, app);
 }
 
 /* 书架行渲染（书名放大 + 状态说明 + 右星） */
@@ -306,7 +410,7 @@ static void ra_build_row(lv_obj_t *row, const ra_entry_t *b, int idx, reader_app
     lv_obj_add_event_cb(star, ra_star_evt, LV_EVENT_CLICKED, app);
 }
 
-/* 统一渲染：滚动模式全量；翻页模式只画当前页（行数 = RA_PAGE_ROWS） */
+/* 统一渲染：滚动模式全量；翻页模式只画当前页（每页行数按屏幕高度动态计算） */
 static void ra_render_list(reader_app_t *app)
 {
     lv_obj_clean(app->list);
@@ -314,14 +418,19 @@ static void ra_render_list(reader_app_t *app)
         lv_obj_t *t = lv_label_create(app->list);
         lv_label_set_text(t, "(没有 TXT 文件)");
         lv_obj_set_style_text_color(t, RA_EMPTY, 0);
+        ra_refresh_pagebar(app);
         return;
     }
-    app->page_count = (app->entry_count + RA_PAGE_ROWS - 1) / RA_PAGE_ROWS;
+    /* 每页行数 = 列表可视高 / 行高（随屏幕高度变化） */
+    int rows = 1;
+    int lh = lv_obj_get_height(app->list);
+    if (lh > RA_ROW_H) rows = lh / RA_ROW_H;
+    app->page_count = (app->entry_count + rows - 1) / rows;
     if (app->page >= app->page_count) app->page = app->page_count - 1;
     if (app->page < 0) app->page = 0;
 
-    int start = (app->view_mode == RA_VIEW_PAGES) ? app->page * RA_PAGE_ROWS : 0;
-    int end = (app->view_mode == RA_VIEW_PAGES) ? (app->page + 1) * RA_PAGE_ROWS : app->entry_count;
+    int start = (app->view_mode == RA_VIEW_PAGES) ? app->page * rows : 0;
+    int end = (app->view_mode == RA_VIEW_PAGES) ? (app->page + 1) * rows : app->entry_count;
     if (end > app->entry_count) end = app->entry_count;
 
     for (int i = start; i < end; i++) {
@@ -330,8 +439,10 @@ static void ra_render_list(reader_app_t *app)
         lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_set_style_pad_all(row, 0, 0);
         lv_obj_set_style_pad_hor(row, 8, 0);
-        lv_obj_set_style_border_width(row, 0, 0);
-        lv_obj_set_style_radius(row, 4, 0);
+        lv_obj_set_style_border_width(row, 1, 0);
+        lv_obj_set_style_border_side(row, LV_BORDER_SIDE_BOTTOM, 0);   /* 行间横线分隔 */
+        lv_obj_set_style_border_color(row, lv_color_hex(0x1F2937), 0);
+        lv_obj_set_style_radius(row, 0, 0);
         lv_obj_set_style_bg_color(row, RA_ROW, 0);
         lv_obj_set_style_bg_color(row, RA_ROW_PRESSED, LV_STATE_PRESSED);
         lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
@@ -340,6 +451,7 @@ static void ra_render_list(reader_app_t *app)
         lv_obj_add_event_cb(row, ra_item_event, LV_EVENT_CLICKED, app);
         ra_build_row(row, &app->entries[i], i, app);
     }
+    ra_refresh_pagebar(app);   /* 页码栏随渲染刷新 */
 }
 
 /* ── 弹窗（收藏夹 / 排序 / 视图），复用阅读器收藏弹窗样式 ── */
@@ -446,7 +558,21 @@ static void ra_dlg_row(reader_app_t *app, const char *label, lv_event_cb_t cb, i
     }
 }
 
-/* 收藏夹：列出已收藏本书，点击关闭弹窗并打开该 txt（复用书架行打开流程） */
+/* 阅读进度文本（书架行 / 收藏夹弹窗共用） */
+static const char *ra_prog_text(const ra_entry_t *b, char *buf, size_t n)
+{
+    if (b->prog_state == -2) return "Completed";
+    if (b->prog_state >= 0) {
+        snprintf(buf, n, "Read L%d", b->prog_state + 1);
+        return buf;
+    }
+    return "Not read";
+}
+
+/* 收藏夹内容：书名 + 阅读进度，最右删除收藏按钮；点行主体打开书 */
+static void ra_favs_fill(reader_app_t *app);
+
+/* 点击收藏夹里的书：关闭弹窗并打开该 txt（复用书架行打开流程） */
 static void ra_fav_book_open_evt(lv_event_t *e)
 {
     reader_app_t *app = lv_event_get_user_data(e);
@@ -459,16 +585,75 @@ static void ra_fav_book_open_evt(lv_event_t *e)
     lv_timer_set_repeat_count(app->defer_timer, 1);
 }
 
-static void ra_favs_evt(lv_event_t *e)
+/* 收藏夹删除：取消收藏本书（异步删 .favbook），刷新书架行与弹窗列表 */
+static void ra_fav_book_del_evt(lv_event_t *e)
 {
     reader_app_t *app = lv_event_get_user_data(e);
-    if (!app) return;
-    ra_dlg_build(app);
-    if (!app->dlg_rows) return;
+    int idx = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target_obj(e));
+    if (!app || idx < 0 || idx >= app->entry_count) return;
+    if (!app->entries[idx].favbook) return;
+    app->entries[idx].favbook = false;
+    sd_async_set_favbook(app->entries[idx].path, false);
+    ra_render_list(app);            /* 书架行星状态同步（弹窗在下层，不影响显示） */
+    if (app->dlg) ra_favs_fill(app);   /* 重建弹窗列表 */
+}
+static void ra_favs_fill(reader_app_t *app)
+{
+    if (!app || !app->dlg_rows) return;
+    lv_obj_clean(app->dlg_rows);
     int shown = 0;
     for (int i = 0; i < app->entry_count; i++) {
         if (!app->entries[i].favbook) continue;
-        ra_dlg_row(app, app->entries[i].name, ra_fav_book_open_evt, i);
+        ra_entry_t *b = &app->entries[i];
+        lv_obj_t *row = lv_obj_create(app->dlg_rows);
+        lv_obj_set_size(row, lv_pct(100), 42);
+        lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_bg_color(row, lv_color_hex(0xF9FAFB), 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(row, lv_color_hex(0xEEF2FF), LV_STATE_PRESSED);
+        lv_obj_set_style_border_color(row, lv_color_hex(0xE5E7EB), 0);
+        lv_obj_set_style_border_width(row, 1, 0);
+        lv_obj_set_style_radius(row, 6, 0);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_user_data(row, (void *)(intptr_t)i);
+        lv_obj_add_event_cb(row, ra_fav_book_open_evt, LV_EVENT_CLICKED, app);
+
+        lv_obj_t *col = lv_obj_create(row);
+        lv_obj_set_flex_grow(col, 1);
+        lv_obj_set_height(col, LV_SIZE_CONTENT);
+        lv_obj_remove_flag(col, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_bg_opa(col, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(col, 0, 0);
+        lv_obj_set_style_pad_left(col, 8, 0);
+        lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(col, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+        lv_obj_t *nm = lv_label_create(col);
+        lv_obj_set_style_text_color(nm, lv_color_hex(0x111111), 0);
+        lv_obj_set_style_text_font(nm, ra_ui_font(), 0);
+        lv_label_set_text(nm, b->name);
+        char pbuf[24];
+        lv_obj_t *pg = lv_label_create(col);
+        lv_obj_set_style_text_color(pg, lv_color_hex(0x6B7280), 0);
+        lv_obj_set_style_text_font(pg, &lv_font_montserrat_12, 0);
+        lv_label_set_text(pg, ra_prog_text(b, pbuf, sizeof(pbuf)));
+
+        lv_obj_t *del = lv_button_create(row);
+        lv_obj_set_size(del, 32, 32);
+        lv_obj_set_style_bg_color(del, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_color(del, lv_color_hex(0xF3F4F6), LV_STATE_PRESSED);
+        lv_obj_set_style_border_color(del, lv_color_hex(0xD1D5DB), 0);
+        lv_obj_set_style_border_width(del, 1, 0);
+        lv_obj_set_style_radius(del, 6, 0);
+        lv_obj_set_style_pad_all(del, 0, 0);
+        lv_obj_t *dl = lv_label_create(del);
+        lv_obj_center(dl);
+        lv_label_set_text(dl, "×");
+        lv_obj_set_style_text_font(dl, ra_ui_font(), 0);
+        lv_obj_set_style_text_color(dl, lv_color_hex(0x111111), 0);
+        lv_obj_set_user_data(del, (void *)(intptr_t)i);
+        lv_obj_add_event_cb(del, ra_fav_book_del_evt, LV_EVENT_CLICKED, app);
         shown++;
     }
     if (shown == 0) {
@@ -479,6 +664,15 @@ static void ra_favs_evt(lv_event_t *e)
         lv_obj_set_style_text_font(l, ra_ui_font(), 0);
         lv_label_set_text(l, "No favorites");
     }
+}
+
+/* 收藏夹：打开对话框并填充 */
+static void ra_favs_evt(lv_event_t *e)
+{
+    reader_app_t *app = lv_event_get_user_data(e);
+    if (!app) return;
+    ra_dlg_build(app);
+    ra_favs_fill(app);
 }
 
 /* 排序：弹出选项列表 */
@@ -493,7 +687,6 @@ static void ra_sort_pick_evt(lv_event_t *e)
     s_cmp_sort = app->sort;
     qsort(app->entries, app->entry_count, sizeof(ra_entry_t), ra_cmp);
     ra_render_list(app);
-    ra_update_count(app);
 }
 
 static void ra_sort_evt(lv_event_t *e)
@@ -517,15 +710,7 @@ static void ra_view_pick_evt(lv_event_t *e)
     ra_dlg_close(app);
     app->view_mode = (ra_view_t)v;
     app->page = 0;
-    if (app->view_mode == RA_VIEW_PAGES) {
-        lv_obj_clear_flag(app->btn_prev, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(app->btn_next, LV_OBJ_FLAG_HIDDEN);
-    } else {
-        lv_obj_add_flag(app->btn_prev, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(app->btn_next, LV_OBJ_FLAG_HIDDEN);
-    }
-    ra_render_list(app);
-    ra_update_count(app);
+    ra_render_list(app);   /* 页码栏显隐/内容由 render 内 ra_refresh_pagebar 处理 */
 }
 
 static void ra_view_evt(lv_event_t *e)
@@ -538,39 +723,15 @@ static void ra_view_evt(lv_event_t *e)
     ra_dlg_row(app, "Pages",  ra_view_pick_evt, RA_VIEW_PAGES);
 }
 
-/* 翻页 ◀ ▶ */
-static void ra_prev_evt(lv_event_t *e)
-{
-    reader_app_t *app = lv_event_get_user_data(e);
-    if (!app || app->view_mode != RA_VIEW_PAGES) return;
-    ra_dlg_close(app);
-    if (app->page > 0) {
-        app->page--;
-        ra_render_list(app);
-        ra_update_count(app);
-    }
-}
-
-static void ra_next_evt(lv_event_t *e)
-{
-    reader_app_t *app = lv_event_get_user_data(e);
-    if (!app || app->view_mode != RA_VIEW_PAGES) return;
-    ra_dlg_close(app);
-    if (app->page + 1 < app->page_count) {
-        app->page++;
-        ra_render_list(app);
-        ra_update_count(app);
-    }
-}
-
-/* 底部设置栏标准按钮（白面板上：白底黑字） */
-static lv_obj_t *ra_bar_btn(lv_obj_t *row, const char *label, lv_event_cb_t cb, void *ctx)
+/* 底部设置栏标准按钮（黑底面板：深色按钮白字，flex_grow 均分宽度，矮） */
+static lv_obj_t *ra_setbar_btn(lv_obj_t *row, const char *label, lv_event_cb_t cb, void *ctx)
 {
     lv_obj_t *b = lv_button_create(row);
-    lv_obj_set_size(b, RA_BTN_W, RA_BTN_H);
-    lv_obj_set_style_bg_color(b, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_bg_color(b, lv_color_hex(0xF3F4F6), LV_STATE_PRESSED);
-    lv_obj_set_style_border_color(b, lv_color_hex(0xD1D5DB), 0);
+    lv_obj_set_height(b, 26);
+    lv_obj_set_flex_grow(b, 1);   /* 均分设置栏宽度 */
+    lv_obj_set_style_bg_color(b, lv_color_hex(0x1F2937), 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(0x374151), LV_STATE_PRESSED);
+    lv_obj_set_style_border_color(b, RA_BTN_BORDER, 0);
     lv_obj_set_style_border_width(b, 1, 0);
     lv_obj_set_style_radius(b, 8, 0);
     lv_obj_set_style_pad_all(b, 0, 0);
@@ -578,7 +739,7 @@ static lv_obj_t *ra_bar_btn(lv_obj_t *row, const char *label, lv_event_cb_t cb, 
     lv_obj_center(l);
     lv_label_set_text(l, label);
     lv_obj_set_style_text_font(l, ra_ui_font(), 0);
-    lv_obj_set_style_text_color(l, lv_color_hex(0x111111), 0);
+    lv_obj_set_style_text_color(l, RA_TEXT, 0);
     if (cb) lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, ctx);
     return b;
 }
@@ -651,7 +812,6 @@ static void ra_scan(reader_app_t *app)
         if (app->no_sd_timer) lv_timer_delete(app->no_sd_timer);
         app->no_sd_timer = lv_timer_create(ra_no_sd_back, 1000, app);
         lv_timer_set_repeat_count(app->no_sd_timer, 1);
-        lv_label_set_text(app->lbl_count, "0 本");
         return;
     }
 
@@ -665,8 +825,7 @@ static void ra_scan(reader_app_t *app)
         qsort(app->entries, app->entry_count, sizeof(ra_entry_t), ra_cmp);
         ra_reload_states(app);   /* 读每本书的收藏/进度状态（持 SD 锁） */
     }
-    ra_render_list(app);
-    ra_update_count(app);
+    ra_render_list(app);   /* 内部刷新页码栏 */
 }
 
 /* ── Public API ── */
@@ -696,70 +855,51 @@ reader_app_t *reader_app_create(lv_obj_t *parent, reader_app_back_cb_t back_cb, 
     lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
     app->root = root;
 
-    /* 顶部栏：书架（居中） | N 本（右上） */
-    lv_obj_t *bar = lv_obj_create(root);
-    lv_obj_set_size(bar, lv_pct(100), RA_TOP_BAR_H);
-    lv_obj_set_style_bg_color(bar, RA_BG, 0);
-    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(bar, 1, 0);
-    lv_obj_set_style_border_side(bar, LV_BORDER_SIDE_BOTTOM, 0);
-    lv_obj_set_style_border_color(bar, RA_BTN_BORDER, 0);
-    lv_obj_set_style_radius(bar, 0, 0);
-    lv_obj_set_style_pad_all(bar, 0, 0);
-    lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
-    lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t *title = lv_label_create(bar);
-    lv_obj_set_flex_grow(title, 1);
-    lv_obj_set_style_text_color(title, RA_TEXT, 0);
-    lv_obj_set_style_text_font(title, ra_ui_font(), 0);
-    lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_text(title, "书架");
-
-    app->lbl_count = lv_label_create(bar);
-    lv_obj_set_width(app->lbl_count, 56);
-    lv_obj_set_style_text_color(app->lbl_count, RA_TEXT, 0);
-    lv_obj_set_style_text_font(app->lbl_count, ra_ui_font(), 0);
-    lv_obj_set_style_text_align(app->lbl_count, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_obj_set_style_pad_right(app->lbl_count, 8, 0);
-    lv_label_set_text(app->lbl_count, "0 本");
-
-    /* 中部列表（顶栏与底部设置栏之间） */
-    int list_h = lv_obj_get_height(parent) - RA_TOP_BAR_H - RA_SETBAR_H;
+    /* 中部列表（整页：顶部到设置栏/页码栏，无标题栏） */
+    int list_h = lv_obj_get_height(parent) - RA_SETBAR_H - RA_PAGEBAR_H;
     app->list = lv_list_create(root);
     lv_obj_set_size(app->list, lv_pct(100), list_h);
-    lv_obj_align(app->list, LV_ALIGN_TOP_LEFT, 0, RA_TOP_BAR_H);
+    lv_obj_align(app->list, LV_ALIGN_TOP_LEFT, 0, 0);
     lv_obj_set_style_bg_color(app->list, RA_BG, 0);
     lv_obj_set_style_border_width(app->list, 0, 0);
     lv_obj_set_style_radius(app->list, 0, 0);
     lv_obj_set_style_pad_all(app->list, 0, 0);
-    lv_obj_set_style_pad_row(app->list, 2, 0);
+    lv_obj_set_style_pad_row(app->list, 0, 0);   /* 行间用分隔线，不设空隙 */
     lv_obj_set_style_text_color(app->list, RA_TEXT, 0);
 
-    /* 底部设置栏（白面板，贴底）：Favs / Sort / View + 翻页 ◀▶ */
+    /* 底部设置栏（黑底，贴页码栏上方）：Favs / Sort / View 均分宽度 */
     app->setbar = lv_obj_create(root);
     lv_obj_remove_flag(app->setbar, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_pos(app->setbar, 0, lv_obj_get_height(parent) - RA_SETBAR_H);
+    lv_obj_set_pos(app->setbar, 0, lv_obj_get_height(parent) - RA_SETBAR_H - RA_PAGEBAR_H);
     lv_obj_set_size(app->setbar, lv_pct(100), RA_SETBAR_H);
-    lv_obj_set_style_bg_color(app->setbar, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_color(app->setbar, RA_BG, 0);
     lv_obj_set_style_bg_opa(app->setbar, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(app->setbar, lv_color_hex(0xD1D5DB), 0);
+    lv_obj_set_style_border_color(app->setbar, RA_BTN_BORDER, 0);
     lv_obj_set_style_border_width(app->setbar, 1, 0);
     lv_obj_set_style_border_side(app->setbar, LV_BORDER_SIDE_TOP, 0);
-    lv_obj_set_style_radius(app->setbar, 8, 0);
-    lv_obj_set_style_pad_all(app->setbar, 0, 0);
+    lv_obj_set_style_radius(app->setbar, 0, 0);
+    lv_obj_set_style_pad_all(app->setbar, 6, 0);
     lv_obj_set_style_pad_gap(app->setbar, RA_BTN_GAP, 0);
     lv_obj_set_flex_flow(app->setbar, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(app->setbar, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_align(app->setbar, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    app->btn_favs = ra_bar_btn(app->setbar, "Favs", ra_favs_evt, app);
-    app->btn_sort = ra_bar_btn(app->setbar, "Sort", ra_sort_evt, app);
-    app->btn_view = ra_bar_btn(app->setbar, "View", ra_view_evt, app);
-    app->btn_prev = ra_bar_btn(app->setbar, "<", ra_prev_evt, app);
-    app->btn_next = ra_bar_btn(app->setbar, ">", ra_next_evt, app);
-    lv_obj_add_flag(app->btn_prev, LV_OBJ_FLAG_HIDDEN);   /* 翻页模式才显示 */
-    lv_obj_add_flag(app->btn_next, LV_OBJ_FLAG_HIDDEN);
+    app->btn_favs = ra_setbar_btn(app->setbar, "Favs", ra_favs_evt, app);
+    app->btn_sort = ra_setbar_btn(app->setbar, "Sort", ra_sort_evt, app);
+    app->btn_view = ra_setbar_btn(app->setbar, "View", ra_view_evt, app);
+
+    /* 页码栏（透明，贴屏幕底；仅翻页模式显示内容） */
+    app->pagebar = lv_obj_create(root);
+    lv_obj_remove_flag(app->pagebar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_pos(app->pagebar, 0, lv_obj_get_height(parent) - RA_PAGEBAR_H);
+    lv_obj_set_size(app->pagebar, lv_pct(100), RA_PAGEBAR_H);
+    lv_obj_set_style_bg_opa(app->pagebar, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(app->pagebar, 0, 0);
+    lv_obj_set_style_radius(app->pagebar, 0, 0);
+    lv_obj_set_style_pad_all(app->pagebar, 0, 0);
+    lv_obj_set_style_pad_gap(app->pagebar, 4, 0);
+    lv_obj_set_flex_flow(app->pagebar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(app->pagebar, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_add_flag(app->pagebar, LV_OBJ_FLAG_HIDDEN);
 
     /* 阅读器（全屏覆盖层，返回回书架） */
     app->rv = reader_view_create(root);
@@ -871,7 +1011,6 @@ void reader_app_drag_exit(reader_app_t *app)
         /* 回到书架：刷新进度/收藏状态显示（读 .prog/.favbook） */
         ra_reload_states(app);
         ra_render_list(app);
-        ra_update_count(app);
         return;
     }
     ESP_LOGI("reader_app", "[DRAG-EXIT] close app (back to stack source)");
