@@ -81,7 +81,6 @@ struct reader_view {
     /* 收藏列表弹窗（NULL=未开） */
     lv_obj_t *fav_dlg;
     lv_obj_t *fav_rows;
-    lv_obj_t *fav_head;
 
     /* 提示（居中短时消息） */
     lv_obj_t *toast;
@@ -385,7 +384,6 @@ static void rv_fav_dlg_close(reader_view_t *rv)
     lv_obj_delete(rv->fav_dlg);
     rv->fav_dlg = NULL;
     rv->fav_rows = NULL;
-    rv->fav_head = NULL;
 }
 
 static void rv_fav_dlg_delete(reader_view_t *rv, int idx)
@@ -433,9 +431,6 @@ static void rv_fav_dlg_refresh(reader_view_t *rv)
 {
     if (!rv->fav_dlg || !rv->fav_rows) return;
     lv_obj_clean(rv->fav_rows);
-    if (rv->fav_head) {
-        lv_label_set_text_fmt(rv->fav_head, "Favorites (%d)", rv->fav.count);
-    }
     if (rv->fav.count == 0) {
         lv_obj_t *l = lv_label_create(rv->fav_rows);
         lv_obj_set_width(l, lv_pct(100));
@@ -520,21 +515,16 @@ static void rv_fav_dlg_build(reader_view_t *rv)
     lv_obj_set_style_radius(panel, 10, 0);
     lv_obj_set_style_pad_all(panel, 0, 0);
 
-    rv->fav_head = lv_label_create(panel);
-    lv_obj_set_pos(rv->fav_head, 8, 4);
-    lv_obj_set_height(rv->fav_head, 24);
-    lv_obj_set_style_text_color(rv->fav_head, RV_TEXT, 0);
-    lv_obj_set_style_text_font(rv->fav_head, rv_ui_font(), 0);
-    lv_label_set_text(rv->fav_head, "Favorites");
-
-    /* 关闭按钮（右上角） */
+    /* 退出按钮（底部边缘中间；该按钮在 rows 之前创建 → z 序在列表之上，
+     * 按住列表滚动不误触，独立点击生效） */
     lv_obj_t *cx = lv_button_create(panel);
-    lv_obj_set_size(cx, 40, 26);
-    lv_obj_align(cx, LV_ALIGN_TOP_RIGHT, -4, 1);
+    lv_obj_set_size(cx, 88, 34);
+    lv_obj_align(cx, LV_ALIGN_BOTTOM_MID, 0, -6);
     lv_obj_set_style_bg_color(cx, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_color(cx, lv_color_hex(0xF3F4F6), LV_STATE_PRESSED);
     lv_obj_set_style_border_color(cx, RV_BTN_BORDER, 0);
     lv_obj_set_style_border_width(cx, 1, 0);
-    lv_obj_set_style_radius(cx, 6, 0);
+    lv_obj_set_style_radius(cx, 8, 0);
     lv_obj_set_style_pad_all(cx, 0, 0);
     lv_obj_t *xl = lv_label_create(cx);
     lv_obj_center(xl);
@@ -543,9 +533,10 @@ static void rv_fav_dlg_build(reader_view_t *rv)
     lv_obj_set_style_text_color(xl, RV_TEXT, 0);
     lv_obj_add_event_cb(cx, rv_fav_dlg_dismiss_evt, LV_EVENT_CLICKED, rv);
 
+    /* 列表占满标题区 + 上方留白（退出按钮之上） */
     lv_obj_t *rows = lv_obj_create(panel);
-    lv_obj_set_pos(rows, 6, 32);
-    lv_obj_set_size(rows, sw - 32, sh - 60 - 38);
+    lv_obj_set_pos(rows, 6, 6);
+    lv_obj_set_size(rows, sw - 32, sh - 60 - 6 - 34 - 6 - 6);   /* 面板高 - 上下边距 - 按钮高 */
     lv_obj_set_style_bg_opa(rows, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(rows, 0, 0);
     lv_obj_set_style_radius(rows, 0, 0);
