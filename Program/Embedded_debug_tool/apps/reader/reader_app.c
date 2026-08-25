@@ -95,6 +95,9 @@ struct reader_app {
     /* 弹窗（收藏夹/排序/视图） */
     lv_obj_t *dlg;              /* NULL=未开 */
     lv_obj_t *dlg_rows;
+    /* 下拉（Sort/View 选项面板，非对话框） */
+    lv_obj_t *dd;
+    void (*dd_done)(reader_app_t *, int);
 };
 
 static int ra_screen_w(void)
@@ -394,7 +397,7 @@ static void ra_build_row(lv_obj_t *row, const ra_entry_t *b, int idx, reader_app
     lv_obj_set_style_text_color(st, RA_EMPTY, 0);
     lv_obj_set_style_text_font(st, &lv_font_montserrat_12, 0);
     if (b->prog_state == -2) lv_label_set_text(st, "Completed");
-    else if (b->prog_state >= 0) lv_label_set_text_fmt(st, "Read L%d", b->prog_state + 1);
+    else if (b->prog_state >= 0) lv_label_set_text_fmt(st, "~%d", b->prog_state + 1);
     else lv_label_set_text(st, "Not read");
 
     lv_obj_t *star = lv_button_create(row);
@@ -418,6 +421,11 @@ static void ra_build_row(lv_obj_t *row, const ra_entry_t *b, int idx, reader_app
 /* 统一渲染：滚动模式全量；翻页模式只画当前页（每页行数按屏幕高度动态计算） */
 static void ra_render_list(reader_app_t *app)
 {
+    /* 列表高度：滚动模式贴到设置栏顶（无空白）；翻页模式在下方留页码栏 */
+    int base = lv_obj_get_height(app->root) - RA_SETBAR_H;
+    int want = (app->view_mode == RA_VIEW_PAGES) ? base - RA_PAGEBAR_H : base;
+    if (lv_obj_get_height(app->list) != want) lv_obj_set_height(app->list, want);
+
     lv_obj_clean(app->list);
     if (app->entry_count == 0) {
         lv_obj_t *t = lv_label_create(app->list);
@@ -563,12 +571,12 @@ static void ra_dlg_row(reader_app_t *app, const char *label, lv_event_cb_t cb, i
     }
 }
 
-/* 阅读进度文本（书架行 / 收藏夹弹窗共用） */
+/* 阅读进度文本（书架行 / 收藏夹弹窗共用）：~行号（1 基） */
 static const char *ra_prog_text(const ra_entry_t *b, char *buf, size_t n)
 {
     if (b->prog_state == -2) return "Completed";
     if (b->prog_state >= 0) {
-        snprintf(buf, n, "Read L%d", b->prog_state + 1);
+        snprintf(buf, n, "~%d", b->prog_state + 1);
         return buf;
     }
     return "Not read";
@@ -683,13 +691,81 @@ static void ra_favs_evt(lv_event_t *e)
     ra_favs_fill(app);
 }
 
-/* 排序：弹出选项列表 */
-static void ra_sort_pick_evt(lv_event_t *e)
+/* ── 下拉选项面板（Sort/View 用；锚定在设置栏上方的深色小面板，非全屏对话框） ── */
+
+typedef struct { const char *label; int value; } ra_dd_item_t;
+
+static void ra_dd_close(reader_app_t *app)
+{
+    if (app && app->dd) {
+        lv_obj_delete(app->dd);
+        app->dd = NULL;
+    }
+    if (app) app->dd_done = NULL;
+}
+
+static void ra_dd_row_evt(lv_event_t *e)
 {
     reader_app_t *app = lv_event_get_user_data(e);
-    int v = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target_obj(e));
+    int val = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target_obj(e));
+    void (*done)(reader_app_t *, int) = app ? app->dd_done : NULL;
+    ra_dd_close(app);
+    if (done) done(app, val);
+}
+
+static void ra_dd_open(reader_app_t *app, const ra_dd_item_t *items, int n,
+                       void (*done)(reader_app_t *, int))
+{
     if (!app) return;
-    ra_dlg_close(app);
+    if (app->dd) ra_dd_close(app);
+    app->dd_done = done;
+
+    lv_display_t *disp = lv_display_get_default();
+    int sw = disp ? lv_display_get_horizontal_resolution(disp) : 320;
+    int sh = disp ? lv_display_get_vertical_resolution(disp) : 240;
+
+    int w = 150;
+    int h = n * 34 + 4;
+    int x = (sw - w) / 2;
+    int y = sh - RA_SETBAR_H - RA_PAGEBAR_H - h - 4;   /* 紧贴设置栏上方 */
+    if (y < 2) y = 2;
+
+    lv_obj_t *panel = lv_obj_create(app->root);
+    lv_obj_remove_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_pos(panel, x, y);
+    lv_obj_set_size(panel, w, h);
+    lv_obj_set_style_bg_color(panel, lv_color_hex(0x111827), 0);
+    lv_obj_set_style_bg_opa(panel, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(panel, RA_BTN_BORDER, 0);
+    lv_obj_set_style_border_width(panel, 1, 0);
+    lv_obj_set_style_radius(panel, 8, 0);
+    lv_obj_set_style_pad_all(panel, 2, 0);
+    lv_obj_set_style_pad_gap(panel, 2, 0);
+    lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(panel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    for (int i = 0; i < n; i++) {
+        lv_obj_t *b = lv_button_create(panel);
+        lv_obj_set_size(b, lv_pct(100), 32);
+        lv_obj_set_style_bg_color(b, lv_color_hex(0x1F2937), 0);
+        lv_obj_set_style_bg_color(b, lv_color_hex(0x374151), LV_STATE_PRESSED);
+        lv_obj_set_style_border_width(b, 0, 0);
+        lv_obj_set_style_radius(b, 6, 0);
+        lv_obj_set_style_pad_all(b, 0, 0);
+        lv_obj_t *l = lv_label_create(b);
+        lv_obj_set_style_text_color(l, RA_TEXT, 0);
+        lv_obj_set_style_text_font(l, ra_ui_font(), 0);
+        lv_obj_set_style_pad_left(l, 8, 0);
+        lv_label_set_text(l, items[i].label);
+        lv_obj_set_user_data(b, (void *)(intptr_t)items[i].value);
+        lv_obj_add_event_cb(b, ra_dd_row_evt, LV_EVENT_CLICKED, app);
+    }
+    app->dd = panel;
+}
+
+/* 排序：应用选项（改 sort → 重排 → 重绘） */
+static void ra_sort_apply(reader_app_t *app, int v)
+{
+    if (!app) return;
     app->sort = (ra_sort_t)v;
     app->page = 0;
     s_cmp_sort = app->sort;
@@ -697,38 +773,47 @@ static void ra_sort_pick_evt(lv_event_t *e)
     ra_render_list(app);
 }
 
+static void ra_sort_done(reader_app_t *app, int v)
+{
+    ra_sort_apply(app, v);
+}
+
 static void ra_sort_evt(lv_event_t *e)
 {
     reader_app_t *app = lv_event_get_user_data(e);
     if (!app) return;
-    ra_dlg_build(app);
-    if (!app->dlg_rows) return;
-    ra_dlg_row(app, "Name A-Z", ra_sort_pick_evt, RA_SORT_NAME_ASC);
-    ra_dlg_row(app, "Name Z-A", ra_sort_pick_evt, RA_SORT_NAME_DESC);
-    ra_dlg_row(app, "Newest",   ra_sort_pick_evt, RA_SORT_MTIME_NEW);
-    ra_dlg_row(app, "Oldest",   ra_sort_pick_evt, RA_SORT_MTIME_OLD);
+    static const ra_dd_item_t items[] = {
+        { "Name A-Z", RA_SORT_NAME_ASC },
+        { "Name Z-A", RA_SORT_NAME_DESC },
+        { "Newest",   RA_SORT_MTIME_NEW },
+        { "Oldest",   RA_SORT_MTIME_OLD },
+    };
+    ra_dd_open(app, items, 4, ra_sort_done);
 }
 
 /* 显示模式：滚动 / 翻页 */
-static void ra_view_pick_evt(lv_event_t *e)
+static void ra_view_apply(reader_app_t *app, int v)
 {
-    reader_app_t *app = lv_event_get_user_data(e);
-    int v = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target_obj(e));
     if (!app) return;
-    ra_dlg_close(app);
     app->view_mode = (ra_view_t)v;
     app->page = 0;
-    ra_render_list(app);   /* 页码栏显隐/内容由 render 内 ra_refresh_pagebar 处理 */
+    ra_render_list(app);   /* 列表高/页码栏由 render 内处理 */
+}
+
+static void ra_view_done(reader_app_t *app, int v)
+{
+    ra_view_apply(app, v);
 }
 
 static void ra_view_evt(lv_event_t *e)
 {
     reader_app_t *app = lv_event_get_user_data(e);
     if (!app) return;
-    ra_dlg_build(app);
-    if (!app->dlg_rows) return;
-    ra_dlg_row(app, "Scroll", ra_view_pick_evt, RA_VIEW_SCROLL);
-    ra_dlg_row(app, "Pages",  ra_view_pick_evt, RA_VIEW_PAGES);
+    static const ra_dd_item_t items[] = {
+        { "Scroll", RA_VIEW_SCROLL },
+        { "Pages",  RA_VIEW_PAGES },
+    };
+    ra_dd_open(app, items, 2, ra_view_done);
 }
 
 /* 底部设置栏标准按钮（黑底面板：深色按钮白字，flex_grow 均分宽度，矮） */
@@ -863,8 +948,8 @@ reader_app_t *reader_app_create(lv_obj_t *parent, reader_app_back_cb_t back_cb, 
     lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
     app->root = root;
 
-    /* 中部列表（整页：顶部到设置栏/页码栏，无标题栏） */
-    int list_h = lv_obj_get_height(parent) - RA_SETBAR_H - RA_PAGEBAR_H;
+    /* 中部列表（整页：顶部到设置栏顶端，无标题栏；翻页模式时下方让给页码栏） */
+    int list_h = lv_obj_get_height(parent) - RA_SETBAR_H;
     app->list = lv_list_create(root);
     lv_obj_set_size(app->list, lv_pct(100), list_h);
     lv_obj_align(app->list, LV_ALIGN_TOP_LEFT, 0, 0);
@@ -953,6 +1038,7 @@ void reader_app_destroy(reader_app_t *app)
     if (app->no_sd_timer) lv_timer_delete(app->no_sd_timer);
     if (app->defer_timer) lv_timer_delete(app->defer_timer);
     if (app->dlg) ra_dlg_close(app);
+    if (app->dd) ra_dd_close(app);
     if (app->rv) reader_view_destroy(app->rv);
     if (app->entries) heap_caps_free(app->entries);
     if (app->dirq) heap_caps_free(app->dirq);
@@ -979,6 +1065,10 @@ bool reader_app_swipe_back(reader_app_t *app)
     if (!app) return true;
     if (app->dlg) {
         ra_dlg_close(app);   /* 书架弹窗打开：先关闭（一步一动作） */
+        return false;
+    }
+    if (app->dd) {
+        ra_dd_close(app);    /* 下拉打开：先关闭 */
         return false;
     }
     /* 阅读页打开时：右滑返回手势先问阅读器——状态栏显示中则隐藏栏并拦截

@@ -751,13 +751,13 @@ bool reader_view_open(reader_view_t *rv, const char *path)
     if (rv->active) reader_view_close(rv);
 
     rv->active = true;
-    rv->ui_hidden = false;
+    rv->ui_hidden = true;   /* 默认纯阅读：栏隐藏，上边缘下滑调出（不要"先显示再关"的感觉） */
 
     lv_obj_set_x(rv->root, 0);   /* 清除上次拖动滑出/回弹残留的 x 偏移 */
     lv_obj_clear_flag(rv->root, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(rv->title, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(rv->bar, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(rv->bubble, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(rv->title, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(rv->bar, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(rv->bubble, LV_OBJ_FLAG_HIDDEN);
 
     const char *base = strrchr(path, '/');
     base = base ? base + 1 : path;
