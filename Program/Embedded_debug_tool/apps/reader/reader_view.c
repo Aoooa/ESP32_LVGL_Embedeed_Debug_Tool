@@ -40,7 +40,8 @@ static const char *TAG = "reader_view";
 #define RV_BTN_GAP     8
 #define RV_SPACING_MAX 16     /* 行距调节范围（0..16px，步进 2，纯 UI） */
 #define RV_SPACING_STEP 2
-#define RV_AUTO_TICK   400    /* 自动滚动周期 ms（慢速，2.5 行/秒） */
+#define RV_AUTO_TICK   30     /* 自动滚动周期 ms（逐像素平滑，见 RV_AUTO_PX） */
+#define RV_AUTO_PX     2      /* 每 tick 像素（66px/s ≈ 3.5 行/秒，慢速顺滑） */
 #define RV_AUTO_GREEN  0x16A34A
 #define RV_AUTO_RED    0xDC2626
 #define RV_FAV_GRAY    lv_color_hex(0x9CA3AF)   /* 未收藏 ☆ 灰 */
@@ -307,7 +308,8 @@ static void rv_topdrop_cb(void *ctx)
 }
 
 /* 右侧调速器 → 滚动 txt：速度 = pos³（符号保持，近中心极慢、越远越快）。
- * 累积器把连续回调的小步进聚成整数行才翻页，避免快速滑动一次跳太多。 */
+ * 像素累积：原速度（行/帧×行高）换算成像素，逐像素滚动画布 memmove 平滑，
+ * 不再每次跳一整行（视觉卡顿）。 */
 static void rv_speed_cb(void *ctx, float pos)
 {
     reader_view_t *rv = ctx;
@@ -316,16 +318,12 @@ static void rv_speed_cb(void *ctx, float pos)
     /* 低端线性 + 高端次方：起步即有可见响应（不虚位）但慢，拉远平滑加速。
      * f = 0.35·pos + 0.65·pos³：pos=0.2→0.075, 0.3→0.122, 0.6→0.35, 1→1 */
     float f = pos * (0.35f + 0.65f * pos * pos);
-    rv->speed_acc += f * 0.35f;               /* 基线调低，整体慢一拍 */
+    float row_h = (float)flow_view_get_row_h(rv->view);
+    rv->speed_acc += f * 0.35f * row_h;           /* 原速度（行/帧）→ 像素 */
     int delta = (int)rv->speed_acc;
     if (delta == 0) return;
     rv->speed_acc -= (float)delta;
-    int top = flow_view_get_view_top(rv->view);
-    int max = flow_view_get_max_top(rv->view);
-    int nt = top + delta;                     /* 下拉(pos>0)向后翻；上推向前 */
-    if (nt < 0) nt = 0;
-    if (nt > max) nt = max;
-    flow_view_go_to(rv->view, nt);
+    flow_view_scroll_by(rv->view, delta);         /* 下拉(pos>0)偏移增大；上推减小 */
 }
 
 /* ── 提示（居中短时消息，脚本化显示后自动隐藏） ── */
@@ -623,13 +621,11 @@ static void rv_auto_tick(lv_timer_t *t)
 {
     reader_view_t *rv = t->user_data;
     if (!rv || !rv->active || !rv->auto_active || rv->indexing) return;
-    int top = flow_view_get_view_top(rv->view);
-    int max = flow_view_get_max_top(rv->view);
-    if (top >= max) {
+    if (flow_view_get_view_top(rv->view) >= flow_view_get_max_top(rv->view)) {
         rv_auto_stop(rv);   /* 滚到底自动停 */
         return;
     }
-    flow_view_go_to(rv->view, top + 1);
+    flow_view_scroll_by(rv->view, RV_AUTO_PX);   /* 逐像素平滑下滚 */
 }
 
 static void rv_auto_stop(reader_view_t *rv)
@@ -916,15 +912,16 @@ reader_view_t *reader_view_create(lv_obj_t *parent)
     lv_obj_clear_flag(rv->title, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(rv->title, LV_OBJ_FLAG_HIDDEN);
 
-    /* 收藏星标（左上）：☆ 未收藏 / ★ 黄 已收藏当前行 */
+    /* 收藏星标（左上）：☆ 未收藏 / ★ 黄 已收藏当前行。
+ * 视觉 28×28 正方形（白底灰边圆角），热区外扩 18 → 触摸面积 ~64×64 */
     rv->star_btn = lv_button_create(rv->title);
-    lv_obj_set_size(rv->star_btn, 44, RV_TITLE_H);
-    lv_obj_set_ext_click_area(rv->star_btn, 16);   /* 顶栏小按钮加大热区，防轻触漂移丢点击 */
-    lv_obj_set_style_bg_opa(rv->star_btn, LV_OPA_TRANSP, 0);
+    lv_obj_set_size(rv->star_btn, RV_TITLE_H, RV_TITLE_H);
+    lv_obj_set_ext_click_area(rv->star_btn, 18);
+    lv_obj_set_style_bg_color(rv->star_btn, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_style_bg_color(rv->star_btn, lv_color_hex(0xE5E7EB), LV_STATE_PRESSED);
-    lv_obj_set_style_bg_opa(rv->star_btn, LV_OPA_COVER, LV_STATE_PRESSED);
-    lv_obj_set_style_border_width(rv->star_btn, 0, 0);
-    lv_obj_set_style_radius(rv->star_btn, 0, 0);
+    lv_obj_set_style_border_color(rv->star_btn, RV_BTN_BORDER, 0);
+    lv_obj_set_style_border_width(rv->star_btn, 1, 0);
+    lv_obj_set_style_radius(rv->star_btn, 6, 0);
     lv_obj_set_style_pad_all(rv->star_btn, 0, 0);
     rv->star_lbl = lv_label_create(rv->star_btn);
     lv_obj_center(rv->star_lbl);

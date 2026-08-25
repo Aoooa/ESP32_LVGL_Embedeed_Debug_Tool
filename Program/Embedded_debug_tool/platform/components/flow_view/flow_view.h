@@ -72,6 +72,13 @@ void flow_view_set_max_lines(lv_obj_t *obj, int max_lines);   /* 历史容量（
 void flow_view_append_text(lv_obj_t *obj, const char *text, size_t len);
 int  flow_view_get_line_count(lv_obj_t *obj);
 void flow_view_go_to(lv_obj_t *obj, int line);               /* 跳转行号（阅读器） */
+
+/* 按像素滚（平滑）：显示偏移偏移 ±px，自动钳制滚动范围。内部走位图 memmove 增量
+ * 重绘——调速器/自动滚动用它替代逐行 go_to，避免每次整行跳动的卡顿感 */
+void flow_view_scroll_by(lv_obj_t *obj, int px);
+
+/* 当前每行像素高（基础行高 + 行距），供调用方做「行速度 → 像素速度」换算 */
+int flow_view_get_row_h(lv_obj_t *obj);
 void flow_view_set_font(lv_obj_t *obj, const lv_font_t *font);
 void flow_view_set_color(lv_obj_t *obj, lv_color_t color);
 

@@ -543,6 +543,31 @@ void flow_view_go_to(lv_obj_t *obj, int line)
     fv_unlock();
 }
 
+void flow_view_scroll_by(lv_obj_t *obj, int px)
+{
+    flow_view_t *v = (flow_view_t *)obj;
+    fv_lock();
+    if (fv_ready(v)) {
+        flow_model_set_follow(&v->model, false);   /* 主动滚动退出跟随 */
+        int max_px = fv_max_px(v);
+        v->offset_px += px;
+        if (v->offset_px < 0) v->offset_px = 0;
+        if (v->offset_px > max_px) v->offset_px = max_px;
+        fv_sync_row(v);
+        v->redraw_pending = true;
+    }
+    fv_unlock();
+}
+
+int flow_view_get_row_h(lv_obj_t *obj)
+{
+    flow_view_t *v = (flow_view_t *)obj;
+    fv_lock();
+    int r = fv_row_h(v);
+    fv_unlock();
+    return r;
+}
+
 void flow_view_set_font(lv_obj_t *obj, const lv_font_t *font)
 {
     flow_view_t *v = (flow_view_t *)obj;
