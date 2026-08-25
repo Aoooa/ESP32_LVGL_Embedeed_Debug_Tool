@@ -4,6 +4,8 @@
 #include "esp_lv_adapter.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/portmacro.h"
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -16,6 +18,48 @@ static const char *TAG = "web_fs";
 #define FS_CHUNK     2048
 #define FS_MAX_ITEMS 512      /* 单目录列表上限（防止超大目录爆内存） */
 #define FS_PATH_MAX  240
+
+/* ── 传输状态（临界区保护；httpd 任务写，LVGL 任务读） ── */
+static portMUX_TYPE s_stat_mux = portMUX_INITIALIZER_UNLOCKED;
+static app_web_fs_status_t s_stat;
+
+static void fs_stat_set_begin(int upload, const char *basename, uint32_t total)
+{
+    portENTER_CRITICAL(&s_stat_mux);
+    s_stat.upload = upload;
+    s_stat.total = total;
+    s_stat.done = 0;
+    size_t i = 0;
+    for (; basename[i] && i < sizeof(s_stat.name) - 1; i++) {
+        s_stat.name[i] = basename[i];
+    }
+    s_stat.name[i] = '\0';
+    s_stat.busy = 1;
+    portEXIT_CRITICAL(&s_stat_mux);
+}
+
+static void fs_stat_progress(uint32_t done)
+{
+    portENTER_CRITICAL(&s_stat_mux);
+    s_stat.done = done;
+    portEXIT_CRITICAL(&s_stat_mux);
+}
+
+static void fs_stat_end(void)
+{
+    portENTER_CRITICAL(&s_stat_mux);
+    s_stat.busy = 0;
+    portEXIT_CRITICAL(&s_stat_mux);
+}
+
+esp_err_t app_web_fs_get_status(app_web_fs_status_t *out)
+{
+    if (!out) return ESP_ERR_INVALID_ARG;
+    portENTER_CRITICAL(&s_stat_mux);
+    *out = s_stat;
+    portEXIT_CRITICAL(&s_stat_mux);
+    return ESP_OK;
+}
 
 /* ── 工具 ── */
 
@@ -193,6 +237,12 @@ static esp_err_t fs_download_handler(httpd_req_t *req)
         esp_lv_adapter_unlock();
         return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "not found");
     }
+    /* 文件总长（进度显示） */
+    struct stat st;
+    uint32_t total = 0;
+    if (stat(v, &st) == 0 && st.st_size > 0) total = (uint32_t)st.st_size;
+    esp_lv_adapter_unlock();
+
     httpd_resp_set_type(req, "application/octet-stream");
     /* 下载文件名（去特殊字符，仅做展示用） */
     char fn[64], cd[96];
@@ -204,14 +254,27 @@ static esp_err_t fs_download_handler(httpd_req_t *req)
     fn[i] = '\0';
     snprintf(cd, sizeof(cd), "attachment; filename=\"%s\"", fn);
     httpd_resp_set_hdr(req, "Content-Disposition", cd);
+
+    /* 块级锁：SD 读一块（2KB）即释放，网络发送不持锁——
+     * LVGL 界面每块之间有刷新机会，大文件不冻结 UI */
+    fs_stat_set_begin(0, fn, total);
     char buf[FS_CHUNK];
+    uint32_t done = 0;
     for (;;) {
+        if (esp_lv_adapter_lock(-1) != ESP_OK) break;
         size_t r = fread(buf, 1, sizeof(buf), f);
+        esp_lv_adapter_unlock();
         if (r == 0) break;
         if (httpd_resp_send_chunk(req, buf, r) != ESP_OK) break;
+        done += (uint32_t)r;
+        fs_stat_progress(done);
     }
-    fclose(f);
-    esp_lv_adapter_unlock();
+    /* fclose 也是 SD 操作，须持锁执行 */
+    if (esp_lv_adapter_lock(-1) == ESP_OK) {
+        fclose(f);
+        esp_lv_adapter_unlock();
+    }
+    fs_stat_end();
     httpd_resp_send_chunk(req, NULL, 0);
     return ESP_OK;
 }
@@ -233,18 +296,32 @@ static esp_err_t fs_upload_handler(httpd_req_t *req)
         esp_lv_adapter_unlock();
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "open failed");
     }
-    /* 流式写盘：分批 recv，绝不整文件进内存 */
+    esp_lv_adapter_unlock();
+
+    /* 块级锁：网络收（recv）不持锁，SD 写一块（2KB）即释放——
+     * LVGL 界面每块之间有刷新机会，大文件不冻结 UI */
+    fs_stat_set_begin(1, fs_basename(v), req->content_len > 0 ? (uint32_t)req->content_len : 0);
     int remaining = req->content_len;
     char buf[FS_CHUNK];
     bool ok = true;
+    uint32_t done = 0;
     while (remaining > 0) {
         int r = httpd_req_recv(req, buf, remaining > FS_CHUNK ? FS_CHUNK : remaining);
         if (r <= 0) { ok = false; break; }
-        if (fwrite(buf, 1, (size_t)r, f) != (size_t)r) { ok = false; break; }
+        if (esp_lv_adapter_lock(-1) != ESP_OK) { ok = false; break; }
+        size_t w = fwrite(buf, 1, (size_t)r, f);
+        esp_lv_adapter_unlock();
+        if (w != (size_t)r) { ok = false; break; }
         remaining -= r;
+        done += (uint32_t)r;
+        fs_stat_progress(done);
     }
-    fclose(f);
-    esp_lv_adapter_unlock();
+    /* fclose 也是 SD 操作，须持锁执行 */
+    if (esp_lv_adapter_lock(-1) == ESP_OK) {
+        fclose(f);
+        esp_lv_adapter_unlock();
+    }
+    fs_stat_end();
     return fs_send_json(req, ok ? "{\"ok\":true}" : "{\"ok\":false}");
 }
 

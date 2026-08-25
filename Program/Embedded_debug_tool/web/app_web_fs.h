@@ -15,8 +15,21 @@
  */
 
 #include "esp_http_server.h"
+#include <stdint.h>
+
+/* 传输状态（UI 轮询显示用；临界区保护，可跨任务读取） */
+typedef struct {
+    int busy;              /* 是否有传输进行中 */
+    int upload;            /* 1=上传 0=下载 */
+    char name[64];         /* 文件名（去路径） */
+    uint32_t done;
+    uint32_t total;        /* 0=未知 */
+} app_web_fs_status_t;
 
 /* 注册全部 /fs* 路由到 httpd（幂等） */
 esp_err_t app_web_fs_init(httpd_handle_t server);
+
+/* 快照当前传输状态（任意任务可调） */
+esp_err_t app_web_fs_get_status(app_web_fs_status_t *out);
 
 #endif /* APP_WEB_FS_H */
