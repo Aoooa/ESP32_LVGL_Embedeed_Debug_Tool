@@ -22,9 +22,9 @@
 #define RA_PATH_MAX     128
 #define RA_ENTRY_MAX    128      /* 扫描收集上限（128×208B≈26KB 内部 RAM） */
 #define RA_NAME_MAX     80       /* 显示名（去后缀） */
-#define RA_ROW_H        48       /* 书架行高（书名 + 状态说明 + 右侧星） */
-#define RA_SETBAR_H     38       /* 底部设置栏高（Favs/Sort/View 均分，黑底） */
-#define RA_PAGEBAR_H    26       /* 页码栏高（透明，贴屏幕底，置于设置栏下方） */
+#define RA_ROW_H        44       /* 书架行高（书名 + 状态说明 + 右侧星） */
+#define RA_SETBAR_H     38       /* 底部设置栏高（Favs/Sort/View 均分，黑底，贴屏幕底） */
+#define RA_PAGEBAR_H    24       /* 页码栏高（透明，位于设置栏之上；仅翻页模式显示） */
 #define RA_BTN_GAP      8
 #define RA_DIRQ_MAX     128      /* 待扫描目录队列上限（BFS，PSRAM 分配） */
 #define RA_MAX_DEPTH    8        /* 扫描最大深度（广度优先，栈需求恒定） */
@@ -383,7 +383,8 @@ static void ra_build_row(lv_obj_t *row, const ra_entry_t *b, int idx, reader_app
     lv_obj_set_style_text_color(name, RA_TEXT, 0);
     lv_obj_set_style_text_font(name, ra_ui_font(), 0);
     lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_LEFT, 0);
-    lv_obj_set_style_transform_scale(name, 320, 0);   /* 视觉 ~20px（内置中文仅 16px，缩放放大） */
+    /* 书名用内置中文 16px（无更大中文字体；不缩放——transform_scale 软件重采样，
+     * 滚动/重绘昂贵，是书架变卡/打开迟缓的元凶。行高 44 预留观感留白） */
 
     lv_obj_t *st = lv_label_create(col);
     lv_obj_set_style_text_color(st, RA_EMPTY, 0);
@@ -434,7 +435,7 @@ static void ra_render_list(reader_app_t *app)
     if (end > app->entry_count) end = app->entry_count;
 
     for (int i = start; i < end; i++) {
-        lv_obj_t *row = lv_obj_create(app->list);
+        lv_obj_t *row = lv_button_create(app->list);
         lv_obj_set_size(row, lv_pct(100), RA_ROW_H);
         lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_set_style_pad_all(row, 0, 0);
@@ -867,10 +868,10 @@ reader_app_t *reader_app_create(lv_obj_t *parent, reader_app_back_cb_t back_cb, 
     lv_obj_set_style_pad_row(app->list, 0, 0);   /* 行间用分隔线，不设空隙 */
     lv_obj_set_style_text_color(app->list, RA_TEXT, 0);
 
-    /* 底部设置栏（黑底，贴页码栏上方）：Favs / Sort / View 均分宽度 */
+    /* 底部设置栏（黑底，贴屏幕底）：Favs / Sort / View 均分宽度 */
     app->setbar = lv_obj_create(root);
     lv_obj_remove_flag(app->setbar, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_pos(app->setbar, 0, lv_obj_get_height(parent) - RA_SETBAR_H - RA_PAGEBAR_H);
+    lv_obj_set_pos(app->setbar, 0, lv_obj_get_height(parent) - RA_SETBAR_H);
     lv_obj_set_size(app->setbar, lv_pct(100), RA_SETBAR_H);
     lv_obj_set_style_bg_color(app->setbar, RA_BG, 0);
     lv_obj_set_style_bg_opa(app->setbar, LV_OPA_COVER, 0);
@@ -887,10 +888,10 @@ reader_app_t *reader_app_create(lv_obj_t *parent, reader_app_back_cb_t back_cb, 
     app->btn_sort = ra_setbar_btn(app->setbar, "Sort", ra_sort_evt, app);
     app->btn_view = ra_setbar_btn(app->setbar, "View", ra_view_evt, app);
 
-    /* 页码栏（透明，贴屏幕底；仅翻页模式显示内容） */
+    /* 页码栏（透明，位于设置栏之上；仅翻页模式显示内容） */
     app->pagebar = lv_obj_create(root);
     lv_obj_remove_flag(app->pagebar, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_pos(app->pagebar, 0, lv_obj_get_height(parent) - RA_PAGEBAR_H);
+    lv_obj_set_pos(app->pagebar, 0, lv_obj_get_height(parent) - RA_SETBAR_H - RA_PAGEBAR_H);
     lv_obj_set_size(app->pagebar, lv_pct(100), RA_PAGEBAR_H);
     lv_obj_set_style_bg_opa(app->pagebar, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(app->pagebar, 0, 0);
