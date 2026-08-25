@@ -518,7 +518,7 @@ static void rv_fav_dlg_build(reader_view_t *rv)
     /* 退出按钮（底部边缘中间；该按钮在 rows 之前创建 → z 序在列表之上，
      * 按住列表滚动不误触，独立点击生效） */
     lv_obj_t *cx = lv_button_create(panel);
-    lv_obj_set_size(cx, 88, 34);
+    lv_obj_set_size(cx, 36, 36);   /* 正方形小按钮 */
     lv_obj_align(cx, LV_ALIGN_BOTTOM_MID, 0, -6);
     lv_obj_set_style_bg_color(cx, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_style_bg_color(cx, lv_color_hex(0xF3F4F6), LV_STATE_PRESSED);
@@ -536,7 +536,7 @@ static void rv_fav_dlg_build(reader_view_t *rv)
     /* 列表占满标题区 + 上方留白（退出按钮之上） */
     lv_obj_t *rows = lv_obj_create(panel);
     lv_obj_set_pos(rows, 6, 6);
-    lv_obj_set_size(rows, sw - 32, sh - 60 - 6 - 34 - 6 - 6);   /* 面板高 - 上下边距 - 按钮高 */
+    lv_obj_set_size(rows, sw - 32, sh - 60 - 6 - 36 - 6 - 6);   /* 面板高 - 上下边距 - 按钮高 */
     lv_obj_set_style_bg_opa(rows, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(rows, 0, 0);
     lv_obj_set_style_radius(rows, 0, 0);
