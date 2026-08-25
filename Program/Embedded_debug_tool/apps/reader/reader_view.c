@@ -60,6 +60,7 @@ struct reader_view {
     lv_obj_t *view;            /* flow_view：txt 内容 */
     lv_obj_t *bar;
     lv_timer_t *progress_timer;
+    lv_timer_t *auto_hide_timer;   /* 打开后延时自动隐藏状态栏（一次性） */
     lv_obj_t *index_lbl;
     lv_obj_t *wheel;           /* 右侧调速器（系统组件 speed_wheel） */
 
@@ -282,6 +283,18 @@ static void rv_chrome_ready_cb(lv_anim_t *a)
         lv_obj_add_flag(rv->bar, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(rv->bubble, LV_OBJ_FLAG_HIDDEN);
     }
+}
+
+/* 打开后延时自动隐藏状态栏：先展示一下栏，再收起进入纯阅读 */
+#define RV_AUTO_HIDE_MS 500
+
+static void rv_auto_hide_cb(lv_timer_t *t)
+{
+    reader_view_t *rv = t->user_data;
+    rv->auto_hide_timer = NULL;   /* 一次性定时器：本次触发后由 LVGL 自动删除 */
+    if (!rv || !rv->active || rv->ui_hidden) return;
+    rv->ui_hidden = true;
+    rv_chrome_anim(rv, false);
 }
 
 static void rv_tap_event(void *user_data, lv_point_t pos)
@@ -751,13 +764,19 @@ bool reader_view_open(reader_view_t *rv, const char *path)
     if (rv->active) reader_view_close(rv);
 
     rv->active = true;
-    rv->ui_hidden = true;   /* 默认纯阅读：栏隐藏，上边缘下滑调出（不要"先显示再关"的感觉） */
+    rv->ui_hidden = false;
 
     lv_obj_set_x(rv->root, 0);   /* 清除上次拖动滑出/回弹残留的 x 偏移 */
     lv_obj_clear_flag(rv->root, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(rv->title, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(rv->bar, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(rv->bubble, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(rv->title, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(rv->bar, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(rv->bubble, LV_OBJ_FLAG_HIDDEN);
+    rv_chrome_anim(rv, true);   /* 先展示状态栏（滑入动画） */
+
+    /* 500ms 后自动收起状态栏进入纯阅读（用户可在此之前上滑/点击交互） */
+    if (rv->auto_hide_timer) lv_timer_delete(rv->auto_hide_timer);
+    rv->auto_hide_timer = lv_timer_create(rv_auto_hide_cb, RV_AUTO_HIDE_MS, rv);
+    lv_timer_set_repeat_count(rv->auto_hide_timer, 1);
 
     const char *base = strrchr(path, '/');
     base = base ? base + 1 : path;
@@ -811,6 +830,10 @@ bool reader_view_open(reader_view_t *rv, const char *path)
 void reader_view_close(reader_view_t *rv)
 {
     if (!rv) return;
+    if (rv->auto_hide_timer) {
+        lv_timer_delete(rv->auto_hide_timer);
+        rv->auto_hide_timer = NULL;
+    }
     rv_auto_stop(rv);
     rv_fav_dlg_close(rv);
     rv->active = false;
@@ -890,6 +913,10 @@ void reader_view_destroy(reader_view_t *rv)
     gesture_set_topdrop_handler(NULL, NULL);   /* 注销上边缘下滑订阅 */
     rv_auto_stop(rv);
     rv_fav_dlg_close(rv);
+    if (rv->auto_hide_timer) {
+        lv_timer_delete(rv->auto_hide_timer);
+        rv->auto_hide_timer = NULL;
+    }
     if (rv->toast_timer) {
         lv_timer_delete(rv->toast_timer);
         rv->toast_timer = NULL;

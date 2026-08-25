@@ -713,7 +713,7 @@ static void ra_dd_row_evt(lv_event_t *e)
     if (done) done(app, val);
 }
 
-static void ra_dd_open(reader_app_t *app, const ra_dd_item_t *items, int n,
+static void ra_dd_open(reader_app_t *app, lv_obj_t *anchor, const ra_dd_item_t *items, int n,
                        void (*done)(reader_app_t *, int))
 {
     if (!app) return;
@@ -724,11 +724,16 @@ static void ra_dd_open(reader_app_t *app, const ra_dd_item_t *items, int n,
     int sw = disp ? lv_display_get_horizontal_resolution(disp) : 320;
     int sh = disp ? lv_display_get_vertical_resolution(disp) : 240;
 
-    int w = 150;
+    /* 面板紧贴触发按钮（按钮在 setbar 内）：水平对准按钮中心，底部贴设置栏顶，
+     * 观感为"从按钮弹出的上拉列表"，不再是屏幕居中小面板 */
+    int w = 120;
     int h = n * 34 + 4;
-    int x = (sw - w) / 2;
-    int y = sh - RA_SETBAR_H - RA_PAGEBAR_H - h - 4;   /* 紧贴设置栏上方 */
-    if (y < 2) y = 2;
+    int bx = lv_obj_get_x(anchor);
+    int bw = lv_obj_get_width(anchor);
+    int x = bx + bw / 2 - w / 2;
+    if (x < 2) x = 2;
+    if (x + w > sw - 2) x = sw - 2 - w;
+    int y = (sh - RA_SETBAR_H) - h - 4;
 
     lv_obj_t *panel = lv_obj_create(app->root);
     lv_obj_remove_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
@@ -782,13 +787,14 @@ static void ra_sort_evt(lv_event_t *e)
 {
     reader_app_t *app = lv_event_get_user_data(e);
     if (!app) return;
+    if (app->dd) { ra_dd_close(app); return; }   /* 重复点击按钮关闭 */
     static const ra_dd_item_t items[] = {
         { "Name A-Z", RA_SORT_NAME_ASC },
         { "Name Z-A", RA_SORT_NAME_DESC },
         { "Newest",   RA_SORT_MTIME_NEW },
         { "Oldest",   RA_SORT_MTIME_OLD },
     };
-    ra_dd_open(app, items, 4, ra_sort_done);
+    ra_dd_open(app, app->btn_sort, items, 4, ra_sort_done);
 }
 
 /* 显示模式：滚动 / 翻页 */
@@ -809,11 +815,12 @@ static void ra_view_evt(lv_event_t *e)
 {
     reader_app_t *app = lv_event_get_user_data(e);
     if (!app) return;
+    if (app->dd) { ra_dd_close(app); return; }   /* 重复点击按钮关闭 */
     static const ra_dd_item_t items[] = {
         { "Scroll", RA_VIEW_SCROLL },
         { "Pages",  RA_VIEW_PAGES },
     };
-    ra_dd_open(app, items, 2, ra_view_done);
+    ra_dd_open(app, app->btn_view, items, 2, ra_view_done);
 }
 
 /* 底部设置栏标准按钮（黑底面板：深色按钮白字，flex_grow 均分宽度，矮） */
