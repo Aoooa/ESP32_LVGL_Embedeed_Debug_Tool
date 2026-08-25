@@ -26,8 +26,13 @@ typedef struct {
     uint32_t total;        /* 0=未知 */
 } app_web_fs_status_t;
 
-/* 注册全部 /fs* 路由到 httpd（幂等） */
-esp_err_t app_web_fs_init(httpd_handle_t server);
+/* httpd 句柄注入（app_web_http 启动后设置；开关路由用） */
+extern httpd_handle_t g_web_fs_httpd;
+
+/* 注册/注销全部 /fs* 路由（幂等；默认关闭，由 WebFS App 开关启用） */
+esp_err_t app_web_fs_start(void);
+void app_web_fs_stop(void);
+bool app_web_fs_enabled(void);
 
 /* 快照当前传输状态（任意任务可调） */
 esp_err_t app_web_fs_get_status(app_web_fs_status_t *out);

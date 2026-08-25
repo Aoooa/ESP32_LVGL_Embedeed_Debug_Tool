@@ -5,10 +5,14 @@
 #include "app_cardreader.h"
 #include "app_web_fs.h"
 #include "app_font.h"
+#include "esp_heap_caps.h"
 #include "misc/lv_timer_private.h"
 #include "esp_log.h"
 #include <stdio.h>
 #include <stdlib.h>
+
+/* 预生成二维码模块矩阵（apps/web_fs/wf_qr.inc，由 gen_qr.py 生成） */
+#include "wf_qr.inc"
 
 static const char *TAG = "web_fs_app";
 
@@ -21,8 +25,13 @@ static const char *TAG = "web_fs_app";
 
 struct web_fs_app {
     lv_obj_t *root;
+    lv_obj_t *toggle_btn;        /* web 服务开关（默认关） */
+    lv_obj_t *toggle_lbl;
+    lv_obj_t *url_lbl;           /* URL / off 状态行 */
     lv_obj_t *transfer_lbl;      /* 传输状态行 */
     lv_timer_t *transfer_timer;  /* 轮询 web_fs 传输状态（200ms） */
+    lv_obj_t *qr_canvas;         /* 二维码 canvas */
+    void *qr_buf;                /* canvas 位图（PSRAM） */
 };
 
 static lv_font_t *wf_font(void)
@@ -31,7 +40,7 @@ static lv_font_t *wf_font(void)
     return f ? f : &lv_font_montserrat_14;
 }
 
-static void wf_row(lv_obj_t *parent, const char *key, const char *value, lv_color_t vc)
+static lv_obj_t *wf_row(lv_obj_t *parent, const char *key, const char *value, lv_color_t vc)
 {
     lv_obj_t *row = lv_obj_create(parent);
     lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
@@ -58,6 +67,7 @@ static void wf_row(lv_obj_t *parent, const char *key, const char *value, lv_colo
     lv_label_set_text(v, value);
     lv_obj_set_style_text_color(v, vc, 0);
     lv_obj_set_style_text_font(v, wf_font(), 0);
+    return v;
 }
 
 /* 传输状态轮询（200ms）：显示 Idle / Uploading xxx NN% / Downloading xxx NN% */
@@ -81,6 +91,49 @@ static void wf_transfer_tick(lv_timer_t *t)
     }
 }
 
+/* 二维码：预生成矩阵 → RGB565 画布（存 flash，运行时只做像素展开） */
+static void wf_draw_qr(lv_obj_t *parent, web_fs_app_t *app)
+{
+    int n = wf_qr_n;
+    int scale = 3;
+    int px = n * scale;
+    uint16_t *buf = heap_caps_malloc((size_t)px * px * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) return;
+    for (int i = 0; i < px * px; i++) buf[i] = 0xFFFF;   /* 白底 */
+    const uint8_t *mm = wf_qr_modules;
+    for (int r = 0; r < n; r++) {
+        for (int c = 0; c < n; c++) {
+            if (!mm[r * n + c]) continue;
+            for (int dy = 0; dy < scale; dy++) {
+                for (int dx = 0; dx < scale; dx++) {
+                    buf[(r * scale + dy) * px + (c * scale + dx)] = 0x0000;
+                }
+            }
+        }
+    }
+    lv_obj_t *cv = lv_canvas_create(parent);
+    lv_canvas_set_buffer(cv, buf, px, px, LV_COLOR_FORMAT_RGB565);
+    lv_obj_set_size(cv, px, px);
+    lv_obj_clear_flag(cv, LV_OBJ_FLAG_CLICKABLE);   /* 不拦截列表滚动 */
+    app->qr_buf = buf;
+    app->qr_canvas = cv;
+}
+
+/* 开关：启用/停用 /fs* 路由 */
+static void wf_toggle_evt(lv_event_t *e)
+{
+    web_fs_app_t *app = lv_event_get_user_data(e);
+    if (!app) return;
+    if (app_web_fs_enabled()) app_web_fs_stop();
+    else app_web_fs_start();
+    if (app->toggle_lbl) lv_label_set_text(app->toggle_lbl, app_web_fs_enabled() ? "ON" : "OFF");
+    if (app->url_lbl) {
+        bool on = app_web_fs_enabled();
+        lv_label_set_text(app->url_lbl, on ? "http://192.168.4.1/fs" : "Web server off");
+        lv_obj_set_style_text_color(app->url_lbl, on ? WFACCENT : WFDIM, 0);
+    }
+}
+
 web_fs_app_t *web_fs_app_create(lv_obj_t *parent, void (*back_cb)(void *ctx), void *ctx)
 {
     (void)back_cb;
@@ -98,7 +151,7 @@ web_fs_app_t *web_fs_app_create(lv_obj_t *parent, void (*back_cb)(void *ctx), vo
     lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
     app->root = root;
 
-    /* 顶部栏 */
+    /* 顶部栏：标题 + 服务开关 */
     lv_obj_t *bar = lv_obj_create(root);
     lv_obj_set_size(bar, lv_pct(100), 40);
     lv_obj_set_pos(bar, 0, 0);
@@ -108,13 +161,29 @@ web_fs_app_t *web_fs_app_create(lv_obj_t *parent, void (*back_cb)(void *ctx), vo
     lv_obj_set_style_border_width(bar, 1, 0);
     lv_obj_set_style_border_side(bar, LV_BORDER_SIDE_BOTTOM, 0);
     lv_obj_set_style_radius(bar, 0, 0);
-    lv_obj_set_style_pad_all(bar, 0, 0);
+    lv_obj_set_style_pad_all(bar, 6, 0);
     lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_t *title = lv_label_create(bar);
-    lv_obj_center(title);
     lv_obj_set_style_text_color(title, WFTEXT, 0);
     lv_obj_set_style_text_font(title, wf_font(), 0);
     lv_label_set_text(title, "WebFS");
+    app->toggle_btn = lv_button_create(bar);
+    lv_obj_set_width(app->toggle_btn, 56);
+    lv_obj_set_height(app->toggle_btn, 28);
+    lv_obj_set_style_bg_color(app->toggle_btn, lv_color_hex(0x111827), 0);
+    lv_obj_set_style_bg_color(app->toggle_btn, lv_color_hex(0x374151), LV_STATE_PRESSED);
+    lv_obj_set_style_border_color(app->toggle_btn, WFBORDER, 0);
+    lv_obj_set_style_border_width(app->toggle_btn, 1, 0);
+    lv_obj_set_style_radius(app->toggle_btn, 8, 0);
+    lv_obj_set_style_pad_all(app->toggle_btn, 0, 0);
+    app->toggle_lbl = lv_label_create(app->toggle_btn);
+    lv_obj_center(app->toggle_lbl);
+    lv_obj_set_style_text_font(app->toggle_lbl, wf_font(), 0);
+    lv_obj_set_style_text_color(app->toggle_lbl, WFTEXT, 0);
+    lv_label_set_text(app->toggle_lbl, app_web_fs_enabled() ? "ON" : "OFF");
+    lv_obj_add_event_cb(app->toggle_btn, wf_toggle_evt, LV_EVENT_CLICKED, app);
 
     /* 信息区（可滚动，容纳状态/传输多行） */
     int shh = lv_display_get_vertical_resolution(lv_display_get_default());
@@ -142,10 +211,10 @@ web_fs_app_t *web_fs_app_create(lv_obj_t *parent, void (*back_cb)(void *ctx), vo
                "Previous SD operation failed (card missing?). Insert the card and retry.",
                WFWARN);
     } else {
-        wf_row(info, "URL", "http://192.168.4.1/fs", WFACCENT);
+        app->url_lbl = wf_row(info, "URL",
+                              app_web_fs_enabled() ? "http://192.168.4.1/fs" : "Web server off",
+                              app_web_fs_enabled() ? WFACCENT : WFDIM);
         wf_row(info, "Permission", "Read / write / delete files under /sdcard", WFTEXT);
-        wf_row(info, "USB vs Web", "One or the other: while CardR exposes the disk, WebFS is off.",
-               WFDIM);
     }
 
     /* 传输状态行（大文件上传/下载进度提示） */
@@ -158,7 +227,10 @@ web_fs_app_t *web_fs_app_create(lv_obj_t *parent, void (*back_cb)(void *ctx), vo
     lv_obj_set_style_radius(trow, 8, 0);
     lv_obj_set_style_pad_hor(trow, 12, 0);
     lv_obj_set_style_pad_ver(trow, 8, 0);
+    lv_obj_set_style_pad_gap(trow, 4, 0);
     lv_obj_clear_flag(trow, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(trow, LV_FLEX_FLOW_COLUMN);   /* 防止两 label 层叠 */
+    lv_obj_set_flex_align(trow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_t *tk = lv_label_create(trow);
     lv_label_set_text(tk, "Transfer");
     lv_obj_set_style_text_color(tk, WFDIM, 0);
@@ -171,6 +243,9 @@ web_fs_app_t *web_fs_app_create(lv_obj_t *parent, void (*back_cb)(void *ctx), vo
     lv_obj_set_style_text_font(app->transfer_lbl, wf_font(), 0);
 
     app->transfer_timer = lv_timer_create(wf_transfer_tick, 200, app);
+
+    /* 二维码（扫描连接 WiFi AP 后直达 /fs，服务需先开启） */
+    wf_draw_qr(info, app);
 
     ESP_LOGI(TAG, "create: cardreader=%d", (int)cr);
     return app;
@@ -187,6 +262,10 @@ void web_fs_app_destroy(web_fs_app_t *app)
         lv_obj_add_flag(app->root, LV_OBJ_FLAG_HIDDEN);
         lv_refr_now(NULL);
         lv_obj_delete(app->root);
+    }
+    if (app->qr_buf) {
+        heap_caps_free(app->qr_buf);   /* canvas 随 root 销毁，位图须手动释放 */
+        app->qr_buf = NULL;
     }
     free(app);
 }

@@ -200,5 +200,6 @@ void app_web_start(void)
     for (int i = 0; i < 4; i++) {
         httpd_register_uri_handler(g_httpd, &uris[i]);
     }
-    app_web_fs_init(g_httpd);   /* SD 文件管理 /fs*（幂等注册） */
+    /* WebFS 路由默认关闭：由 WebFS App 开关启用（app_web_fs_start/stop） */
+    g_web_fs_httpd = g_httpd;
 }

@@ -483,25 +483,49 @@ static esp_err_t fs_page_handler(httpd_req_t *req)
     return httpd_resp_send(req, FS_HTML, sizeof(FS_HTML) - 1);
 }
 
-esp_err_t app_web_fs_init(httpd_handle_t server)
+/* ── 开关：注册/注销 /fs* 路由（默认关闭，由 WebFS App 启用） ── */
+
+static const httpd_uri_t s_fs_uris[] = {
+    { .uri = "/fs",          .method = HTTP_GET,  .handler = fs_page_handler },
+    { .uri = "/fs/list",     .method = HTTP_GET,  .handler = fs_list_handler },
+    { .uri = "/fs/download", .method = HTTP_GET,  .handler = fs_download_handler },
+    { .uri = "/fs/upload",   .method = HTTP_POST, .handler = fs_upload_handler },
+    { .uri = "/fs/mkdir",    .method = HTTP_POST, .handler = fs_mkdir_handler },
+    { .uri = "/fs/delete",   .method = HTTP_POST, .handler = fs_delete_handler },
+    { .uri = "/fs/rename",   .method = HTTP_POST, .handler = fs_rename_handler },
+};
+#define FS_URI_COUNT (sizeof(s_fs_uris) / sizeof(s_fs_uris[0]))
+
+httpd_handle_t g_web_fs_httpd;   /* 由 app_web_http 启动时注入 */
+static bool s_fs_enabled;
+
+esp_err_t app_web_fs_start(void)
 {
-    if (!server) return ESP_ERR_INVALID_ARG;
-    static const httpd_uri_t uris[] = {
-        { .uri = "/fs",        .method = HTTP_GET,  .handler = fs_page_handler },
-        { .uri = "/fs/list",   .method = HTTP_GET,  .handler = fs_list_handler },
-        { .uri = "/fs/download", .method = HTTP_GET, .handler = fs_download_handler },
-        { .uri = "/fs/upload", .method = HTTP_POST, .handler = fs_upload_handler },
-        { .uri = "/fs/mkdir",  .method = HTTP_POST, .handler = fs_mkdir_handler },
-        { .uri = "/fs/delete", .method = HTTP_POST, .handler = fs_delete_handler },
-        { .uri = "/fs/rename", .method = HTTP_POST, .handler = fs_rename_handler },
-    };
+    if (s_fs_enabled || !g_web_fs_httpd) return s_fs_enabled ? ESP_OK : ESP_ERR_INVALID_STATE;
     esp_err_t ret = ESP_OK;
-    for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
-        esp_err_t r = httpd_register_uri_handler(server, &uris[i]);
+    for (size_t i = 0; i < FS_URI_COUNT; i++) {
+        esp_err_t r = httpd_register_uri_handler(g_web_fs_httpd, &s_fs_uris[i]);
         if (r != ESP_OK && r != ESP_ERR_HTTPD_HANDLER_EXISTS) {
-            ESP_LOGW(TAG, "register %s failed: %s", uris[i].uri, esp_err_to_name(r));
+            ESP_LOGW(TAG, "register %s failed: %s", s_fs_uris[i].uri, esp_err_to_name(r));
             ret = r;
         }
     }
+    if (ret == ESP_OK) s_fs_enabled = true;
+    ESP_LOGI(TAG, "fs %s", s_fs_enabled ? "enabled" : "enable failed");
     return ret;
+}
+
+void app_web_fs_stop(void)
+{
+    if (!s_fs_enabled) return;
+    for (size_t i = 0; i < FS_URI_COUNT; i++) {
+        httpd_unregister_uri_handler(g_web_fs_httpd, s_fs_uris[i].uri, s_fs_uris[i].method);
+    }
+    s_fs_enabled = false;
+    ESP_LOGI(TAG, "fs disabled");
+}
+
+bool app_web_fs_enabled(void)
+{
+    return s_fs_enabled && g_web_fs_httpd != NULL;
 }
