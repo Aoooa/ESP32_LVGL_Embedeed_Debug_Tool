@@ -11,6 +11,7 @@
 #include "app_dap.h"
 #include "app_font.h"
 #include "io_picker.h"
+#include "launcher.h"
 #include "esp_log.h"
 #include <stdio.h>
 
@@ -459,9 +460,24 @@ void usb2ttl_destroy(usb2ttl_app_t *uu)
 bool usb2ttl_swipe_back(usb2ttl_app_t *uu)
 {
     (void)uu;
-    if (io_picker_active()) {
-        io_picker_cancel();   /* 只关选择器（回调 -1），回 USB2TTL 原界面同位置 */
-        return false;
-    }
+    /* IO 选择器打开时放行进入拖动（drag_root 拖选择器本身） */
     return true;
+}
+
+/* 拖动返回目标：选择器打开时拖选择器本身（USB2TTL 原界面不动） */
+lv_obj_t *usb2ttl_drag_root(void *app)
+{
+    (void)app;
+    return io_picker_active() ? io_picker_get_obj() : NULL;
+}
+
+/* 拖动滑出完成：选择器激活 → 只关选择器（回调 -1），APP 保留原位 */
+void usb2ttl_drag_exit(void *app)
+{
+    (void)app;
+    if (io_picker_active()) {
+        io_picker_cancel();
+    } else {
+        launcher_app_close(NULL);
+    }
 }

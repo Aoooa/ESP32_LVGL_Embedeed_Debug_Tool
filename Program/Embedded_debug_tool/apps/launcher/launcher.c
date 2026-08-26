@@ -399,6 +399,8 @@ const app_manifest_t app_manifests[LAUNCH_APP_COUNT] = {
         .rotate = (void (*)(void *, int))wave_gen_rotate,
         .refresh = NULL,
         .debug_event = (void (*)(void *, int))wave_gen_debug_event,
+        .drag_root = (lv_obj_t *(*)(void *))wave_gen_drag_root,
+        .drag_exit = (void (*)(void *))wave_gen_drag_exit,
     },
     [LAUNCH_APP_SCOPE] = {
         .id = LAUNCH_APP_SCOPE,
@@ -420,6 +422,8 @@ const app_manifest_t app_manifests[LAUNCH_APP_COUNT] = {
         .rotate = NULL,
         .refresh = NULL,
         .debug_event = NULL,
+        .drag_root = (lv_obj_t *(*)(void *))usb2ttl_drag_root,
+        .drag_exit = (void (*)(void *))usb2ttl_drag_exit,
     },
     [LAUNCH_APP_WEBFS] = {
         .id = LAUNCH_APP_WEBFS,

@@ -28,6 +28,10 @@ void wave_gen_destroy(lv_obj_t *root);
 /* 右滑返回（launcher 分发）：弹窗开着先关弹窗（false），无弹窗请求关闭（true） */
 bool wave_gen_swipe_back(lv_obj_t *root);
 
+/* 拖动返回目标/滑出收尾（launcher 分发）：IO 选择器激活时只拖选择器、滑出仅关选择器 */
+lv_obj_t *wave_gen_drag_root(void *app);
+void wave_gen_drag_exit(void *app);
+
 /* 旋转事件（launcher 分发）：关闭弹窗并按新分辨率重排 */
 void wave_gen_rotate(lv_obj_t *root, int deg);
 

@@ -57,6 +57,9 @@ int io_picker_alloc(uint32_t caps);
 /* 当前选择界面是否显示中（供返回手势等判断） */
 bool io_picker_active(void);
 
+/* 当前选择界面根对象（供拖动返回目标使用；无界面返回 NULL） */
+lv_obj_t *io_picker_get_obj(void);
+
 /* 取消当前选择（等同点空白：回调 io=-1；界面销毁） */
 void io_picker_cancel(void);
 

@@ -11,6 +11,7 @@
 #include "app_font.h"
 #include "num_input.h"
 #include "io_picker.h"
+#include "launcher.h"
 #include "esp_lv_adapter.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -956,13 +957,10 @@ void wave_gen_destroy(lv_obj_t *root)
 bool wave_gen_swipe_back(lv_obj_t *root)
 {
     (void)root;
-    /* 右滑逐级返回：键盘 → IO 选择器 → 设置对话框 → 关闭 APP */
+    /* 右滑逐级返回：键盘 → 设置对话框 → 关闭 APP。
+     * IO 选择器打开时放行进入拖动（drag_root 会拖选择器本身，不拖本 APP） */
     if (num_input_is_active()) {
         num_input_cancel();   /* 关键盘（取消输入，回配置页） */
-        return false;
-    }
-    if (io_picker_active()) {
-        io_picker_cancel();   /* 只关选择器（回调 -1），回原界面同位置 */
         return false;
     }
     if (s_wg && s_wg->modal) {
@@ -970,6 +968,24 @@ bool wave_gen_swipe_back(lv_obj_t *root)
         return false;
     }
     return true;
+}
+
+/* 拖动返回目标：选择器打开时拖选择器本身（本 APP 原界面不动） */
+lv_obj_t *wave_gen_drag_root(void *app)
+{
+    (void)app;
+    return io_picker_active() ? io_picker_get_obj() : NULL;
+}
+
+/* 拖动滑出完成：选择器激活 → 只关选择器（回调 -1），APP 保留原位 */
+void wave_gen_drag_exit(void *app)
+{
+    (void)app;
+    if (io_picker_active()) {
+        io_picker_cancel();
+    } else {
+        launcher_app_close(NULL);
+    }
 }
 
 static void wave_gen_relayout(wg_t *w)

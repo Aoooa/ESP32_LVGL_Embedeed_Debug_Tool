@@ -20,4 +20,8 @@ usb2ttl_app_t *usb2ttl_create(lv_obj_t *parent, usb2ttl_back_cb_t back_cb, void 
 void usb2ttl_destroy(usb2ttl_app_t *app);
 bool usb2ttl_swipe_back(usb2ttl_app_t *app);
 
+/* 拖动返回目标/滑出收尾（launcher 分发）：IO 选择器激活时只拖选择器、滑出仅关选择器 */
+lv_obj_t *usb2ttl_drag_root(void *app);
+void usb2ttl_drag_exit(void *app);
+
 #endif /* USB2TTL_H */

@@ -281,6 +281,11 @@ bool io_picker_active(void)
     return s_ui != NULL;
 }
 
+lv_obj_t *io_picker_get_obj(void)
+{
+    return s_dlg;
+}
+
 void io_picker_cancel(void)
 {
     io_ui_close(-1);   /* 取消：回调 io=-1（调用方保留界面原位置） */
