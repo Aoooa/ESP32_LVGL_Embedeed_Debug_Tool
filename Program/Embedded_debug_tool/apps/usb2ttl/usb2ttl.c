@@ -10,7 +10,7 @@
 #include "app_cardreader.h"
 #include "app_dap.h"
 #include "app_font.h"
-#include "num_input.h"
+#include "io_picker.h"
 #include "esp_log.h"
 #include <stdio.h>
 
@@ -199,16 +199,16 @@ static void uu_parity_cb(lv_event_t *e)
     uu_update(uu);
 }
 
-/* 引脚编辑：num_input 确认回调（白名单 + 不相等由服务层校验） */
-static void uu_num_confirm(void *ctx, bool ok, int value)
+/* 引脚编辑：io_picker 确认回调（服务层校验：板面空闲 + 两脚不同） */
+static void uu_io_picked(void *ctx, int io)
 {
     struct usb2ttl_app *uu = ctx;
-    if (!ok) return;
+    if (!uu || io < 0) return;   /* 取消 */
     int b0, rst;
     app_usb2ttl_get_isp_pins(&b0, &rst);
     esp_err_t ret = (uu->num_opt == 0)
-        ? app_usb2ttl_set_isp_pins(value, rst)
-        : app_usb2ttl_set_isp_pins(b0, value);
+        ? app_usb2ttl_set_isp_pins(io, rst)
+        : app_usb2ttl_set_isp_pins(b0, io);
     if (ret != ESP_OK) {
         lv_label_set_text(uu->val_hint, "无效引脚：需为板面空闲脚且与另一\n脚不同，请重新设置。");
     }
@@ -220,10 +220,7 @@ static void uu_pin_cb(lv_event_t *e)
     struct usb2ttl_app *uu = lv_event_get_user_data(e);
     if (!uu) return;
     uu->num_opt = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target_obj(e));
-    int b0, rst;
-    app_usb2ttl_get_isp_pins(&b0, &rst);
-    int initial = (uu->num_opt == 0) ? b0 : rst;
-    num_input_show(uu->root, initial, 5, 44, false, 0, uu_num_confirm, uu);
+    io_picker_show(uu->root, IO_CAPS_ANY, uu_io_picked, uu);
 }
 
 static void uu_timer_cb(lv_timer_t *t)

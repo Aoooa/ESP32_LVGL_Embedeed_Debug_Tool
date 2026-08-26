@@ -10,6 +10,7 @@
 #include "drv_wave.h"
 #include "app_font.h"
 #include "num_input.h"
+#include "io_picker.h"
 #include "esp_lv_adapter.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -456,16 +457,24 @@ static void wg_mode_pick(lv_event_t *e)
     wg_rebuild_modal(w);   /* 参数列表随模式变化，示意图实时更新 */
 }
 
-/* 右侧区：IO 选择 */
-static void wg_io_pick(lv_event_t *e)
+/* 右侧区：IO 选择（弹出 io_picker，单选即回） */
+static void wg_io_picked(void *ctx, int io)
 {
-    wg_t *w = s_wg;
-    int io = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target_obj(e));
+    wg_t *w = ctx;
+    if (!w) return;
+    if (io < 0) return;   /* 取消 */
     for (int i = 0; i < WG_MAX_CH; i++) {
-        if (i != w->edit_ch && w->ch_used[i] && w->cfg[i].io == io) return;
+        if (i != w->edit_ch && w->ch_used[i] && w->cfg[i].io == io) return;   /* 其它通道占用，忽略 */
     }
     w->edit_cfg.io = io;
     wg_rebuild_modal(w);
+}
+
+static void wg_io_sel_evt(lv_event_t *e)
+{
+    wg_t *w = lv_event_get_user_data(e);
+    if (!w) return;
+    io_picker_show(w->root, IO_CAPS_ANY, wg_io_picked, w);
 }
 
 /* 左列选中 */
@@ -526,36 +535,27 @@ static void wg_build_right(lv_obj_t *right, wg_t *w)
             }
         }
     } else if (w->sel_opt == WG_OPT_IO) {
-        lv_obj_set_flex_flow(right, LV_FLEX_FLOW_ROW_WRAP);
+        lv_obj_set_flex_flow(right, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(right, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_gap(right, 4, 0);
-        for (int i = 0; i < WG_IO_COUNT; i++) {
-            bool taken = false;
-            for (int k = 0; k < WG_MAX_CH; k++) {
-                if (k != w->edit_ch && w->ch_used[k] && w->cfg[k].io == s_io_list[i]) taken = true;
-            }
-            bool sel = (s_io_list[i] == w->edit_cfg.io);
-            lv_obj_t *b = lv_button_create(right);
-            lv_obj_set_size(b, 40, 28);   /* 紧凑并排 */
-            lv_obj_set_style_radius(b, 4, 0);
-            lv_obj_set_style_bg_color(b, lv_color_hex(sel ? WG_GREEN : WG_PANEL), 0);
-            lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
-            lv_obj_set_style_border_color(b, lv_color_hex(WG_GREEN), 0);
-            lv_obj_set_style_border_width(b, 1, 0);
-            lv_obj_t *bl = lv_label_create(b);
-            char txt[12];
-            snprintf(txt, sizeof(txt), "IO%d", s_io_list[i]);
-            lv_label_set_text(bl, txt);
-            lv_obj_set_style_text_font(bl, &lv_font_montserrat_12, 0);
-            lv_obj_set_style_text_color(bl, lv_color_hex(sel ? WG_GREEN_DEEP : WG_TEXT), 0);
-            lv_obj_center(bl);
-            lv_obj_set_user_data(b, (void *)(intptr_t)s_io_list[i]);
-            if (!taken) {
-                lv_obj_add_event_cb(b, wg_io_pick, LV_EVENT_CLICKED, w);
-            } else {
-                lv_obj_add_state(b, LV_STATE_DISABLED);
-            }
-        }
+        lv_obj_set_style_pad_gap(right, 6, 0);
+        /* 单个选择按钮：显示当前 IO，点击弹出 io_picker */
+        lv_obj_t *b = lv_button_create(right);
+        lv_obj_set_size(b, 130, 30);
+        lv_obj_set_style_radius(b, 6, 0);
+        lv_obj_set_style_bg_color(b, lv_color_hex(WG_PANEL), 0);
+        lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_color(b, lv_color_hex(WG_GREEN), 0);
+        lv_obj_set_style_border_width(b, 1, 0);
+        lv_obj_t *bl = lv_label_create(b);
+        lv_label_set_text_fmt(bl, w->edit_cfg.io >= 0 ? "IO%d" : "Select IO", w->edit_cfg.io);
+        lv_obj_set_style_text_font(bl, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(bl, lv_color_hex(w->edit_cfg.io >= 0 ? WG_GREEN_HI : WG_TEXT), 0);
+        lv_obj_center(bl);
+        lv_obj_add_event_cb(b, wg_io_sel_evt, LV_EVENT_CLICKED, w);
+        lv_obj_t *t = lv_label_create(right);
+        lv_obj_set_style_text_font(t, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(t, lv_color_hex(WG_DIM), 0);
+        lv_label_set_text(t, "tap to pick a free pin");
     } else {
         /* 数值输入框（点击弹数字键盘） */
         wg_build_num(right, w, w->sel_opt);

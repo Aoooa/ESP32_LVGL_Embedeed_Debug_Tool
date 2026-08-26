@@ -10,7 +10,6 @@
 #include "scope_app.h"
 #include "usb2ttl.h"
 #include "web_fs_app.h"
-#include "io_picker_demo.h"
 #include "gesture.h"
 #include "esp_heap_caps.h"
 #include <stdlib.h>
@@ -20,7 +19,7 @@
 #include "esp_log.h"
 
 /* ── App 卡片表（每卡最多 3 行，每行 ≤15 字符防折行） ── */
-#define APP_COUNT 11
+#define APP_COUNT 10
 
 /* 卡片类型：可启动 app / 占位 */
 typedef enum { APP_TYPE_LAUNCH, APP_TYPE_PLACEHOLDER } app_type_t;
@@ -36,7 +35,6 @@ extern const lv_image_dsc_t launcher_icon_wave;
 extern const lv_image_dsc_t launcher_icon_scope;
 extern const lv_image_dsc_t launcher_icon_usb2ttl;
 extern const lv_image_dsc_t launcher_icon_webfs;
-extern const lv_image_dsc_t launcher_icon_io;
 
 static const lv_image_dsc_t *const s_app_icons[APP_COUNT] = {
     &launcher_icon_files,      /* Files */
@@ -49,7 +47,6 @@ static const lv_image_dsc_t *const s_app_icons[APP_COUNT] = {
     &launcher_icon_scope,      /* Scope */
     &launcher_icon_usb2ttl,    /* USB2TTL */
     &launcher_icon_webfs,      /* WebFS */
-    &launcher_icon_io,         /* IO Picker */
 };
 
 static const struct {
@@ -67,7 +64,6 @@ static const struct {
     { "Scope", APP_TYPE_LAUNCH,     LAUNCH_APP_SCOPE },
     { "USB2TTL", APP_TYPE_LAUNCH,     LAUNCH_APP_USB2TTL },
     { "WebFS", APP_TYPE_LAUNCH,     LAUNCH_APP_WEBFS },
-    { "IO Sel", APP_TYPE_LAUNCH,    LAUNCH_APP_IOPICKER },
 };
 
 /* ── 主题色（赛博朋克：暗底 + 霓虹青边框） ── */
@@ -431,16 +427,6 @@ const app_manifest_t app_manifests[LAUNCH_APP_COUNT] = {
         .launch = (void *(*)(lv_obj_t *, void (*)(void *), void *))web_fs_app_create,
         .destroy = (void (*)(void *))web_fs_app_destroy,
         .back = (bool (*)(void *))web_fs_app_swipe_back,
-        .rotate = NULL,
-        .refresh = NULL,
-        .debug_event = NULL,
-    },
-    [LAUNCH_APP_IOPICKER] = {
-        .id = LAUNCH_APP_IOPICKER,
-        .name = "IO Sel",
-        .launch = (void *(*)(lv_obj_t *, void (*)(void *), void *))io_picker_demo_create,
-        .destroy = (void (*)(void *))io_picker_demo_destroy,
-        .back = (bool (*)(void *))io_picker_demo_swipe_back,
         .rotate = NULL,
         .refresh = NULL,
         .debug_event = NULL,

@@ -31,7 +31,6 @@ typedef enum {
     LAUNCH_APP_SCOPE,       /* 示波器（ADC 采样显示） */
     LAUNCH_APP_USB2TTL,     /* USB2TTL + ISP（CDC-ACM ↔ UART1） */
     LAUNCH_APP_WEBFS,       /* WebFS（浏览器访问 SD 文件管理） */
-    LAUNCH_APP_IOPICKER,    /* IO Picker（引脚选择演示） */
     LAUNCH_APP_COUNT,
 } launch_app_id_t;
 
