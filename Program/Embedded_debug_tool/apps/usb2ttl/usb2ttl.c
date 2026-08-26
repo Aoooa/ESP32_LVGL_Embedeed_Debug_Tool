@@ -219,6 +219,7 @@ static void uu_pin_cb(lv_event_t *e)
 {
     struct usb2ttl_app *uu = lv_event_get_user_data(e);
     if (!uu) return;
+    /* 引脚序号（0=BOOT0, 1=RST）在按钮自身 user_data（ud 已是 uu） */
     uu->num_opt = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target_obj(e));
     io_picker_show(uu->root, IO_CAPS_ANY, uu_io_picked, uu);
 }
@@ -356,8 +357,11 @@ usb2ttl_app_t *usb2ttl_create(lv_obj_t *parent, usb2ttl_back_cb_t back_cb, void 
 
     uu_row_btn(info, "波特率", uu_baud_cb, uu, &uu->btn_baud);
     uu_row_btn(info, "校验", uu_parity_cb, uu, &uu->btn_parity);
-    uu_row_btn(info, "BOOT0 引脚", uu_pin_cb, (void *)(intptr_t)0, &uu->btn_boot0);
-    uu_row_btn(info, "RST 引脚", uu_pin_cb, (void *)(intptr_t)1, &uu->btn_rst);
+    /* 引脚行：事件 user_data = uu（上下文）；引脚序号放在按钮自身 user_data */
+    uu_row_btn(info, "BOOT0 引脚", uu_pin_cb, uu, &uu->btn_boot0);
+    lv_obj_set_user_data(uu->btn_boot0, (void *)(intptr_t)0);
+    uu_row_btn(info, "RST 引脚", uu_pin_cb, uu, &uu->btn_rst);
+    lv_obj_set_user_data(uu->btn_rst, (void *)(intptr_t)1);
 
     /* 自动下载勾选框（默认关）：PC 经 SetCommState 控制 DTR/RTS 触发 ISP */
     lv_obj_t *auto_row = lv_obj_create(info);
@@ -437,6 +441,7 @@ usb2ttl_app_t *usb2ttl_create(lv_obj_t *parent, usb2ttl_back_cb_t back_cb, void 
 void usb2ttl_destroy(usb2ttl_app_t *uu)
 {
     if (!uu) return;
+    if (io_picker_active()) io_picker_close_now();   /* 防悬挂回调 */
     /* 退出 APP 自动关闭桥接（恢复 UART1 转发/USJ 控制台） */
     if (app_usb2ttl_get_state() == USB2TTL_ON) {
         ESP_LOGI("usb2ttl", "exit -> disable bridge");

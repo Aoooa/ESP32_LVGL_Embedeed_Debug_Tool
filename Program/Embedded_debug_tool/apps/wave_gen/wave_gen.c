@@ -937,6 +937,7 @@ lv_obj_t *wave_gen_create(lv_obj_t *parent, wave_gen_back_cb_t back_cb, void *ct
 void wave_gen_destroy(lv_obj_t *root)
 {
     wg_t *w = s_wg;
+    if (io_picker_active()) io_picker_close_now();   /* 防悬挂回调 */
     if (w) {
         if (w->refresh_timer) lv_timer_delete(w->refresh_timer);
         for (int i = 0; i < WG_MAX_CH; i++) {
@@ -959,6 +960,9 @@ bool wave_gen_swipe_back(lv_obj_t *root)
     if (num_input_is_active()) {
         num_input_cancel();   /* 关键盘（取消输入，回配置页） */
         return false;
+    }
+    if (io_picker_active()) {
+        return true;   /* IO 选择器打开：整屏（含选择器）跟手滑出退出 */
     }
     if (s_wg && s_wg->modal) {
         wg_modal_close(s_wg);

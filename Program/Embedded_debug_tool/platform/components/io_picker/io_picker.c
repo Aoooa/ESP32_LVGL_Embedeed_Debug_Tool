@@ -161,55 +161,15 @@ static void io_ui_pin_evt(lv_event_t *e)
     io_ui_close(io);
 }
 
-/* ── 跟手拖动返回（全屏层右滑：拖动跟随手指，松手过半滑出/否则回弹） ── */
-
-static lv_coord_t s_drag_sx, s_drag_sy;
-static bool s_drag;
-
-static void io_ui_slide_done(lv_anim_t *a)
-{
-    (void)a;
-    io_ui_close(-1);   /* 滑出完成 = 取消 */
-}
+/* ── 空白点击取消（返回/整屏拖动由 launcher 统一处理：
+ * 拖动触发时 gesture 已 wait_release → LVGL 不再向界面派发触摸，屏只随根移动） ── */
 
 static void io_ui_evt(lv_event_t *e)
 {
     if (!s_dlg) return;
-    lv_event_code_t c = lv_event_get_code(e);
-    lv_display_t *disp = lv_display_get_default();
-    lv_coord_t sw = disp ? lv_display_get_horizontal_resolution(disp) : 320;
-
-    if (c == LV_EVENT_PRESSED) {
-        lv_point_t p;
-        lv_indev_get_point(lv_indev_active(), &p);
-        s_drag_sx = p.x;
-        s_drag_sy = p.y;
-        s_drag = false;
-    } else if (c == LV_EVENT_PRESSING) {
-        lv_point_t p;
-        lv_indev_get_point(lv_indev_active(), &p);
-        lv_coord_t dx = p.x - s_drag_sx;
-        lv_coord_t dy = p.y - s_drag_sy;
-        /* 横向主导才进入拖动（纵向交给列表滚动） */
-        if (!s_drag && dx > 10 && dx > dy && dx > -dy) s_drag = true;
-        if (s_drag) lv_obj_set_x(s_dlg, dx);
-    } else if (c == LV_EVENT_RELEASED) {
-        if (!s_drag) return;
-        lv_coord_t x = lv_obj_get_x(s_dlg);
-        int to = (x > sw / 3) ? sw : 0;
-        lv_anim_t a;
-        lv_anim_init(&a);
-        lv_anim_set_var(&a, s_dlg);
-        lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_obj_set_x);
-        lv_anim_set_values(&a, x, to);
-        lv_anim_set_time(&a, 150);
-        lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
-        if (to == sw) lv_anim_set_completed_cb(&a, io_ui_slide_done);
-        lv_anim_start(&a);
-        s_drag = false;
-    } else if (c == LV_EVENT_CLICKED) {
-        if (s_drag) return;
-        if (lv_event_get_target(e) == s_dlg) io_ui_close(-1);   /* 点空白取消 */
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED &&
+        lv_event_get_target(e) == s_dlg) {
+        io_ui_close(-1);   /* 点空白取消 */
     }
 }
 
@@ -255,7 +215,6 @@ bool io_picker_show(lv_obj_t *parent, uint32_t caps, io_pick_done_t cb, void *ct
         lv_obj_t *col = lv_obj_create(dlg);
         lv_obj_set_pos(col, side ? sw / 2 : 0, 0);
         lv_obj_set_size(col, col_w, sh);
-        lv_obj_add_flag(col, LV_OBJ_FLAG_EVENT_BUBBLE);   /* 冒泡给 dlg 做拖动 */
         lv_obj_set_style_bg_opa(col, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(col, 0, 0);
         lv_obj_set_style_radius(col, 0, 0);
@@ -273,7 +232,6 @@ bool io_picker_show(lv_obj_t *parent, uint32_t caps, io_pick_done_t cb, void *ct
 
             lv_obj_t *b = lv_button_create(col);
             lv_obj_set_size(b, lv_pct(100), 24);
-            lv_obj_add_flag(b, LV_OBJ_FLAG_EVENT_BUBBLE);
             lv_obj_set_style_pad_all(b, 0, 0);
             lv_obj_set_style_border_width(b, 0, 0);
             lv_obj_set_style_radius(b, 4, 0);
