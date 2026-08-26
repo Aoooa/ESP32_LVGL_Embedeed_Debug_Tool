@@ -281,6 +281,11 @@ bool io_picker_active(void)
     return s_ui != NULL;
 }
 
+void io_picker_cancel(void)
+{
+    io_ui_close(-1);   /* 取消：回调 io=-1（调用方保留界面原位置） */
+}
+
 void io_picker_close_now(void)
 {
     if (!s_ui) return;

@@ -459,5 +459,9 @@ void usb2ttl_destroy(usb2ttl_app_t *uu)
 bool usb2ttl_swipe_back(usb2ttl_app_t *uu)
 {
     (void)uu;
+    if (io_picker_active()) {
+        io_picker_cancel();   /* 只关选择器（回调 -1），回 USB2TTL 原界面同位置 */
+        return false;
+    }
     return true;
 }

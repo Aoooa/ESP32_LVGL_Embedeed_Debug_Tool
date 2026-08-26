@@ -956,13 +956,14 @@ void wave_gen_destroy(lv_obj_t *root)
 bool wave_gen_swipe_back(lv_obj_t *root)
 {
     (void)root;
-    /* 右滑逐级返回：键盘 → 设置对话框 → 关闭 APP */
+    /* 右滑逐级返回：键盘 → IO 选择器 → 设置对话框 → 关闭 APP */
     if (num_input_is_active()) {
         num_input_cancel();   /* 关键盘（取消输入，回配置页） */
         return false;
     }
     if (io_picker_active()) {
-        return true;   /* IO 选择器打开：整屏（含选择器）跟手滑出退出 */
+        io_picker_cancel();   /* 只关选择器（回调 -1），回原界面同位置 */
+        return false;
     }
     if (s_wg && s_wg->modal) {
         wg_modal_close(s_wg);
