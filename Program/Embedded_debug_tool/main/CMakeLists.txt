@@ -19,6 +19,7 @@ idf_component_register(
         "${MODULE_DIR}/platform/components/flow_view/flow_view.c"
         "${MODULE_DIR}/platform/components/num_input/num_input.c"
         "${MODULE_DIR}/platform/components/speed_wheel/speed_wheel.c"
+        "${MODULE_DIR}/platform/components/io_picker/io_picker.c"
         "${MODULE_DIR}/apps/file_browser/file_browser.c"
         "${MODULE_DIR}/apps/launcher/launcher.c"
         "${MODULE_DIR}/apps/launcher/launcher_icons.c"
@@ -49,6 +50,7 @@ idf_component_register(
         "${MODULE_DIR}/uart/app_usb2ttl.c"
         "${MODULE_DIR}/apps/usb2ttl/usb2ttl.c"
         "${MODULE_DIR}/apps/web_fs/web_fs_app.c"
+        "${MODULE_DIR}/apps/io_picker_demo/io_picker_demo.c"
 
     INCLUDE_DIRS
         "."
@@ -72,6 +74,7 @@ idf_component_register(
         "${MODULE_DIR}/platform/components/font_manager"
         "${MODULE_DIR}/platform/components/num_input"
         "${MODULE_DIR}/platform/components/speed_wheel"
+        "${MODULE_DIR}/platform/components/io_picker"
         "${MODULE_DIR}/sdcard"
         "${MODULE_DIR}/dap"
         "${MODULE_DIR}/wave"
@@ -79,6 +82,7 @@ idf_component_register(
         "${MODULE_DIR}/apps/scope"
         "${MODULE_DIR}/apps/usb2ttl"
         "${MODULE_DIR}/apps/web_fs"
+        "${MODULE_DIR}/apps/io_picker_demo"
 
     PRIV_REQUIRES
         spi_flash nvs_flash esp_netif esp_event

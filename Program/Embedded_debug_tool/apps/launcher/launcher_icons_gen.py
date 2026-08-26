@@ -301,6 +301,18 @@ def icon_webfs():
     fill_circle(cv, 45, 16, 3, sub)                     # 网络亮点
     return cv
 
+def icon_io():
+    """芯片体 + 左右引脚（青蓝）"""
+    main = hexc(0x3EC6FF); white = hexc(0xFFFFFF)
+    cv = new_canvas(); mask = [[0.0] * W for _ in range(H)]
+    round_rect_fill(cv, 18, 16, 42, 44, 4, white)       # 芯片体
+    for y in (21, 27, 33, 39):
+        draw_line(cv, 9, y, 18, y, 4, white)            # 左引脚
+        draw_line(cv, 42, y, 51, y, 4, white)           # 右引脚
+    mark(cv, mask, 9, 14, 51, 46)
+    finish(cv, mask, main)
+    return cv
+
 ICONS = [
     ("files",    icon_files),
     ("reader",   icon_reader),
@@ -312,6 +324,7 @@ ICONS = [
     ("scope",    icon_scope),
     ("usb2ttl",  icon_usb2ttl),
     ("webfs",    icon_webfs),
+    ("io",       icon_io),
 ]
 
 def to_argb_bytes(cv):
