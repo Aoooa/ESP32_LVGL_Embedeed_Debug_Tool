@@ -30,6 +30,7 @@ typedef enum {
     IO_CAP_I2C  = 1 << 3,
     IO_CAP_PWM  = 1 << 4,
     IO_CAP_ADC  = 1 << 5,
+    IO_CAP_ADC1 = 1 << 6,   /* 仅 ADC1（S3 连续 DMA 只支持 ADC1，IO1..10） */
 } io_cap_t;
 
 /* 选择结果回调：io = 选中引脚号；io < 0 = 用户取消 */

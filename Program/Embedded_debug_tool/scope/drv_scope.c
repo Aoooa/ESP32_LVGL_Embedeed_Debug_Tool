@@ -18,8 +18,11 @@
 #define S_TAG "drv_scope"
 
 #define SCOPE_ATTEN        ADC_ATTEN_DB_12   /* 满量程 ~3.1V（0..3.1V 单极性） */
-#define SCOPE_FRAME_BYTES  2048              /* conv_frame_size（每 DMA 帧 512 样本） */
-#define SCOPE_RAW_BUF_BYTES 2048             /* read 缓冲（1 个 DMA 帧；4B/样本） */
+#define SCOPE_FRAME_BYTES  1024              /* conv_frame_size（每 DMA 帧 256 样本）。
+                                              * 原 2048 时 rx_dma_buf=5×2048=10KB 连续内部
+                                              * DMA RAM，行程 RAM 余量不足导致 new_handle
+                                              * ESP_ERR_NO_MEM；1024 → 5KB，吞吐不变 */
+#define SCOPE_RAW_BUF_BYTES 1024             /* read 缓冲（1 个 DMA 帧；4B/样本） */
 #define SCOPE_READ_TIMEOUT 100               /* 拉帧阻塞超时 ms */
 #define SCOPE_PRE_TRIG_RATIO 4    /* 预触发 = 窗口的 1/4（25%），动态窗口下按比例 */
 
@@ -307,7 +310,10 @@ err:
     if (s_handle) { adc_continuous_deinit(s_handle); s_handle = NULL; }
     vSemaphoreDelete(s_lock);
     s_lock = NULL;
-    ESP_LOGE(S_TAG, "init FAILED (resources released, retryable)");
+    ESP_LOGE(S_TAG, "init FAILED (internal free=%u largest=%u, psram free=%u)",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     return ESP_ERR_NO_MEM;
 }
 
@@ -386,10 +392,7 @@ esp_err_t drv_scope_start(const scope_cfg_t *cfg)
         s_run = false;
         adc_continuous_stop(s_handle);
         xSemaphoreGive(s_lock);
-        ESP_LOGE(S_TAG, "start: task create FAILED (err %d) internal free=%u psram free=%u",
-                 (int)ret,
-                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+        ESP_LOGE(S_TAG, "start: task create FAILED");
         return ESP_ERR_NO_MEM;
     }
     xSemaphoreGive(s_lock);

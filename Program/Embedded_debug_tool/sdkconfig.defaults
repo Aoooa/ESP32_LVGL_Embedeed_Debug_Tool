@@ -47,6 +47,9 @@ CONFIG_LV_ATTRIBUTE_FAST_MEM_USE_IRAM=y
 CONFIG_FATFS_LFN_STACK=y
 CONFIG_FATFS_ENABLE_EXFAT=y
 CONFIG_FATFS_ALLOC_PREFER_EXTRAM=y
+# FAT 文件名编码：UTF-8（readdir/d_name 直接 UTF-8 → LVGL han_sc_16 直接匹配；
+# 否则 d_name 是 GBK 中文乱码，且路径带中文的 fopen 同样失败）
+CONFIG_FATFS_API_ENCODING_UTF_8=y
 
 # LVGL 运行时（多渲染单元需 OS；池 512KB；绘制线程参数）——
 # Kconfig 默认 LV_OS_NONE/LV_MEM_SIZE=64，重建 sdkconfig 若缺这几项会

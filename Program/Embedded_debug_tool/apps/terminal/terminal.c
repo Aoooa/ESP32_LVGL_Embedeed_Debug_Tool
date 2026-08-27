@@ -236,6 +236,8 @@ lv_obj_t *terminal_create(lv_obj_t *parent, terminal_back_cb_t back_cb, void *ct
 
 void terminal_destroy(lv_obj_t *root)
 {
+    /* UART 惰性占用：终端关闭 → 卸载桥接驱动、释放 IO2/4/16/17 */
+    app_uart_stop();
     s_log_view = NULL;
     s_log_container = NULL;
     s_status_dot = NULL;
@@ -259,6 +261,15 @@ bool terminal_swipe_back(lv_obj_t *root)
 {
     (void)root;
     return true;
+}
+
+/* 进入完成（launcher 回调）：惰性占用 UART 引脚（驱动装载 + 开始转发）。
+ * 上电不占 IO2/4/16/17；仅终端打开期间占用，关闭时 terminal_destroy 释放 */
+void terminal_entered(void *app)
+{
+    (void)app;
+    app_uart_start();
+    ESP_LOGI(TAG, "terminal entered: UART1/2 drivers loaded");
 }
 
 /* 调试事件（测试模块用）：打印终端状态（活跃 UART/暂停/日志行数）供验证 */

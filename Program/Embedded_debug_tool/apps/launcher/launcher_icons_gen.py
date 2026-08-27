@@ -301,6 +301,31 @@ def icon_webfs():
     fill_circle(cv, 45, 16, 3, sub)                     # 网络亮点
     return cv
 
+def icon_meter():
+    """电压表：屏 + 波形 + MIN/MAX 刻度线（金 + 绿）"""
+    main = hexc(0xFFC857); sub = hexc(0x22FF88); white = hexc(0xFFFFFF)
+    cv = new_canvas(); mask = [[0.0] * W for _ in range(H)]
+    round_rect_fill(cv, 10, 12, 50, 50, 6, white)       # 仪表屏
+    mark(cv, mask, 10, 12, 50, 50)
+    finish(cv, mask, main)
+    sin_wave(cv, 15, 45, 34, 8, 1.2, 4, sub)            # 波形（绿）
+    draw_line(cv, 15, 22, 45, 22, 3, white)             # MAX 线
+    for x in range(15, 46, 5):                          # MIN 虚线（底）
+        draw_line(cv, x, 42, min(x + 2, 45), 42, 3, white)
+    return cv
+
+def icon_photo():
+    """照片：相框 + 山形 + 太阳（青 + 琥珀）"""
+    main = hexc(0x3EC6FF); sub = hexc(0xFFC857); white = hexc(0xFFFFFF)
+    cv = new_canvas(); mask = [[0.0] * W for _ in range(H)]
+    round_rect_fill(cv, 9, 13, 51, 49, 4, white)        # 相框
+    mark(cv, mask, 9, 13, 51, 49)
+    finish(cv, mask, main)
+    fill_circle(cv, 38, 22, 3, sub)                     # 太阳
+    poly_line(cv, [(13, 44), (24, 31), (33, 40), (43, 26), (48, 31), (48, 44)], 4, white)  # 山
+    draw_line(cv, 13, 44, 48, 44, 4, white)
+    return cv
+
 ICONS = [
     ("files",    icon_files),
     ("reader",   icon_reader),
@@ -312,6 +337,8 @@ ICONS = [
     ("scope",    icon_scope),
     ("usb2ttl",  icon_usb2ttl),
     ("webfs",    icon_webfs),
+    ("meter",    icon_meter),
+    ("photo",    icon_photo),
 ]
 
 def to_argb_bytes(cv):

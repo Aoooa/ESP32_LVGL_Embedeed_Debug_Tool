@@ -89,6 +89,7 @@ bool io_picker_is_available(int io, uint32_t caps)
     if (io < 0 || io > 48) return false;
     if (io >= 22 && io <= 25) return false;   /* S3 未引出 */
     if (io_reserved_static(io) || io_reserved_dynamic(io)) return false;
+    if (caps & IO_CAP_ADC1) return (io >= 1 && io <= 10);   /* 仅 ADC1（S3 连续 DMA） */
     if (caps & IO_CAP_ADC) return io_is_adc(io);
     return true;   /* GPIO/UART/SPI/I2C/PWM：S3 IO 矩阵全复用 */
 }
@@ -258,6 +259,9 @@ bool io_picker_show(lv_obj_t *parent, uint32_t caps, io_pick_done_t cb, void *ct
                 /* 不可用：显示原因小字，不可点 */
                 const char *ow = hw == IO_HW_RESERVED ? io_reserved_owner_of(io) : NULL;
                 if (!ow && io_reserved_dynamic(io)) ow = "busy";
+                if (!ow && (ui->caps & IO_CAP_ADC1) && io >= 11 && io <= 20) {
+                    ow = "ADC2";   /* 仅 ADC1 需求下，ADC2 脚置灰说明 */
+                }
                 lv_obj_t *r = lv_label_create(b);
                 lv_obj_align(r, LV_ALIGN_RIGHT_MID, -6, 0);
                 lv_obj_set_style_text_font(r, &lv_font_montserrat_12, 0);

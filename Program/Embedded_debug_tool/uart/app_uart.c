@@ -1,4 +1,5 @@
 #include "app_uart.h"
+#include "io_picker.h"
 #include <stdio.h>
 #include <string.h>
 #include "esp_log.h"
@@ -80,9 +81,9 @@ void app_uart_fwd_task(void *arg)
     uint8_t buf[1024];
 
     while (1) {
-        /* USB-UART 桥接开启期间独占 UART1：暂停本转发（暂停时也不读，
-         * 防止与桥接任务分走同一串口的字节） */
-        if (br->paused) {
+        /* UART 惰性占用：驱动未装载（APP 未开）或暂停时循环等待，
+         * 不读端口（防未装驱动时 uart_read_bytes 空转） */
+        if (!br->active || br->paused) {
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
@@ -117,6 +118,7 @@ void app_uart_fwd_task(void *arg)
 void app_uart_init(uart_bridge_t *br)
 {
     br->paused = 0;
+    br->active = 0;   /* 惰性：上电不装载驱动；APP 打开时 app_uart_start 再占 IO */
     br->send_newline = 0;
     br->send_hex = 0;
     br->timer_on = 0;
@@ -128,6 +130,38 @@ void app_uart_init(uart_bridge_t *br)
 
     br->send_timer = xTimerCreate("uart_tx", pdMS_TO_TICKS(1000),
                                    pdTRUE, (void *)br, send_timer_cb);
+}
 
-    drv_uart_init(br->port, br->tx_pin, br->rx_pin);
+/* 装载两个桥接 UART 驱动（幂等：已 active 跳过）。终端 APP 打开时调用，
+ * 期间占用对应 IO（io_picker 记账，其它 APP 选 IO 时置灰）；未占用时
+ * 释放（drv_uart_init 内部幂等） */
+esp_err_t app_uart_start(void)
+{
+    for (int i = 0; i < 2; i++) {
+        uart_bridge_t *br = g_bridges[i];
+        if (!br) continue;
+        if (!br->active) {
+            drv_uart_init(br->port, br->tx_pin, br->rx_pin);
+            br->active = 1;
+            io_picker_reserve(br->tx_pin);   /* 终端占用期间其它 APP 不可选 */
+            io_picker_reserve(br->rx_pin);
+        }
+    }
+    return ESP_OK;
+}
+
+/* 卸载两个桥接 UART 驱动并释放 IO（幂等：未 active 跳过） */
+esp_err_t app_uart_stop(void)
+{
+    for (int i = 0; i < 2; i++) {
+        uart_bridge_t *br = g_bridges[i];
+        if (!br) continue;
+        if (br->active) {
+            br->active = 0;
+            drv_uart_deinit(br->port, br->tx_pin, br->rx_pin);
+            io_picker_release(br->tx_pin);
+            io_picker_release(br->rx_pin);
+        }
+    }
+    return ESP_OK;
 }

@@ -47,6 +47,11 @@ idf_component_register(
         "${MODULE_DIR}/apps/wave_gen/wave_gen.c"
         "${MODULE_DIR}/scope/drv_scope.c"
         "${MODULE_DIR}/apps/scope/scope_app.c"
+        "${MODULE_DIR}/meter/drv_meter.c"
+        "${MODULE_DIR}/apps/meter/meter_app.c"
+        "${MODULE_DIR}/apps/image_viewer/img_decode.c"
+        "${MODULE_DIR}/apps/image_viewer/image_viewer.c"
+        "${MODULE_DIR}/apps/epub/epub.c"
         "${MODULE_DIR}/uart/app_usb2ttl.c"
         "${MODULE_DIR}/apps/usb2ttl/usb2ttl.c"
         "${MODULE_DIR}/apps/web_fs/web_fs_app.c"
@@ -62,6 +67,7 @@ idf_component_register(
         "${MODULE_DIR}/apps"
         "${MODULE_DIR}/apps/launcher"
         "${MODULE_DIR}/apps/file_browser"
+        "${MODULE_DIR}/apps/epub"
         "${MODULE_DIR}/apps/net_console"
         "${MODULE_DIR}/apps/reader"
         "${MODULE_DIR}/apps/terminal"
@@ -79,6 +85,10 @@ idf_component_register(
         "${MODULE_DIR}/wave"
         "${MODULE_DIR}/scope"
         "${MODULE_DIR}/apps/scope"
+        "${MODULE_DIR}/meter"
+        "${MODULE_DIR}/apps/meter"
+        "${MODULE_DIR}/apps/image_viewer"
+        "${MODULE_DIR}/apps/epub"
         "${MODULE_DIR}/apps/usb2ttl"
         "${MODULE_DIR}/apps/web_fs"
 
@@ -90,5 +100,8 @@ idf_component_register(
         esp_tinyusb usb esp_driver_sdspi hal soc
         esp_timer
         esp_adc
+        esp_new_jpeg
+        espressif__libpng
+        espressif__zlib
         dap_port0 dap_port1
 )

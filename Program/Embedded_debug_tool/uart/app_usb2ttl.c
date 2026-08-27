@@ -17,6 +17,7 @@
 #include "app_cardreader.h"
 #include "app_dap.h"
 #include "drv_uart.h"          /* DRV_UART_BAUD_RATE */
+#include "io_picker.h"         /* 惰性占用账本：enable 占用/disable 归还 */
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "tinyusb.h"
@@ -44,6 +45,7 @@ static usb2ttl_state_t s_state = USB2TTL_OFF;
 static volatile bool s_pc_open;        /* PC 已打开串口（DTR+RTS） */
 static volatile bool s_run;            /* 桥接任务运行标志 */
 static TaskHandle_t s_task;            /* 桥接任务句柄（NULL=未运行） */
+static bool s_uart1_self_installed;    /* 本次 enable 自己装载了 UART1 驱动（disable 时归还） */
 
 /* ── 自动下载（DTR/RTS 直通映射，默认关） ── */
 static volatile bool s_auto_isp;           /* PC 经 SetCommState(DTR/RTS) 触发 ISP */
@@ -299,6 +301,18 @@ esp_err_t app_usb2ttl_enable(void)
     /* UART1 独占：暂停 TCP/网页/终端转发（fwd 任务读到 paused 即停读） */
     if (g_bridges[0]) g_bridges[0]->paused = 1;
 
+    /* UART 惰性占用：终端未开启（bridge 非 active）时要自己装载 UART1 驱动，
+     * 并同步 active/账本（让终端/其它 APP 看到占用）；若终端已占用（active）
+     * 则直接复用其驱动。drv_uart_init 内部幂等 */
+    s_uart1_self_installed = false;
+    if (g_bridges[0] && !g_bridges[0]->active) {
+        drv_uart_init(USB2TTL_PORT, g_bridges[0]->tx_pin, g_bridges[0]->rx_pin);
+        g_bridges[0]->active = 1;
+        io_picker_reserve(g_bridges[0]->tx_pin);
+        io_picker_reserve(g_bridges[0]->rx_pin);
+        s_uart1_self_installed = true;
+    }
+
     /* 应用波特率/校验 */
     usb2ttl_apply_uart_cfg(s_baud, s_even_parity);
 
@@ -349,6 +363,15 @@ esp_err_t app_usb2ttl_enable(void)
 
 fail:
     if (g_bridges[0]) g_bridges[0]->paused = 0;
+    if (s_uart1_self_installed) {   /* enable 失败：归还自装的 UART1 驱动/账本 */
+        if (g_bridges[0]) {
+            g_bridges[0]->active = 0;
+            drv_uart_deinit(USB2TTL_PORT, g_bridges[0]->tx_pin, g_bridges[0]->rx_pin);
+            io_picker_release(g_bridges[0]->tx_pin);
+            io_picker_release(g_bridges[0]->rx_pin);
+        }
+        s_uart1_self_installed = false;
+    }
 #if SOC_USB_SERIAL_JTAG_SUPPORTED
     /* 恢复 USJ 控制台（driver 已装成功过，PHY 需要重新映射回 USJ） */
     usb_serial_jtag_ll_phy_enable_external(false);
@@ -391,9 +414,21 @@ esp_err_t app_usb2ttl_disable(void)
         s_auto_isp_gpio_on = false;
     }
 
-    /* 4. 恢复 UART1 默认参数 + 解除暂停（交还 TCP/终端转发） */
-    usb2ttl_apply_uart_cfg(DRV_UART_BAUD_RATE, false);
+    /* 4. 解除暂停（交还 TCP/终端转发）。
+     * 若 UART1 驱动为自己 enable 时装载（终端未占用）→ 卸载释放 IO2/4 +
+     * 清 active/账本；若终端占用中 → 只恢复参数+解除暂停，驱动/引脚归终端 */
     if (g_bridges[0]) g_bridges[0]->paused = 0;
+    if (s_uart1_self_installed) {
+        if (g_bridges[0]) {
+            g_bridges[0]->active = 0;   /* 先清占用，再释放驱动/账本 */
+            drv_uart_deinit(USB2TTL_PORT, g_bridges[0]->tx_pin, g_bridges[0]->rx_pin);
+            io_picker_release(g_bridges[0]->tx_pin);
+            io_picker_release(g_bridges[0]->rx_pin);
+        }
+        s_uart1_self_installed = false;
+    } else {
+        usb2ttl_apply_uart_cfg(DRV_UART_BAUD_RATE, false);   /* 终端占用：只还原参数 */
+    }
 
     s_state = USB2TTL_OFF;
     ESP_LOGI(TAG, "USB2TTL disabled, UART1 restored to TCP/terminal");

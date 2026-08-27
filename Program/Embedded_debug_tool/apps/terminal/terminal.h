@@ -24,7 +24,10 @@ void terminal_init(void);
 /* 创建终端 UI（parent 通常为当前 screen；back_cb=NULL 不显示返回按钮） */
 lv_obj_t *terminal_create(lv_obj_t *parent, terminal_back_cb_t back_cb, void *ctx);
 
-/* 销毁终端 UI（清空全局对象引用后删除对象树）。之后 root 不可用 */
+/* 进入完成（launcher 回调）：装载桥接 UART 驱动（惰性占用 IO2/4、IO16/17） */
+void terminal_entered(void *app);
+
+/* 销毁终端 UI：先停 UART（释放 IO），再清全局对象引用后删除对象树 */
 void terminal_destroy(lv_obj_t *root);
 
 /* 右滑返回（launcher 分发）：无内部分级，直接请求关闭回桌面 */

@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include "drv_uart.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 
 static void tcp_broadcast_to_clients(uart_bridge_t *br, const uint8_t *data, int len)
 {
@@ -104,8 +105,11 @@ static void tcp_bcast_task(void *arg)
 
 void app_tcp_start(void)
 {
+    /* 任务栈放 PSRAM：TCP 转发任务无 DMA/中断刚性内部需求，内部 RAM
+     * 紧张（显示双缓冲+静态已占大量），省 20KB 给 ADC 等 DMA 分配 */
     for (int i = 0; i < 2; i++) {
-        xTaskCreate(tcp_server_task, g_bridges[i]->name, 8192, g_bridges[i], 5, NULL);
+        xTaskCreateWithCaps(tcp_server_task, g_bridges[i]->name, 8192,
+                            g_bridges[i], 5, NULL, MALLOC_CAP_SPIRAM);
     }
-    xTaskCreate(tcp_bcast_task, "tcp_bcast", 4096, NULL, 5, NULL);
+    xTaskCreateWithCaps(tcp_bcast_task, "tcp_bcast", 4096, NULL, 5, NULL, MALLOC_CAP_SPIRAM);
 }

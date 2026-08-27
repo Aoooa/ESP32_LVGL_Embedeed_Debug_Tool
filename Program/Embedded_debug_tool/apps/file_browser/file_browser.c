@@ -1,4 +1,4 @@
-﻿/* file_browser.c —�?SD 卡目录浏览器界面（LVGL 9�?*/
+/* file_browser.c —�?SD 卡目录浏览器界面（LVGL 9�?*/
 
 #include "file_browser.h"
 #include "drv_sdcard.h"
@@ -7,6 +7,7 @@
 #include "launcher.h"
 #include "flow_view.h"
 #include "app_font.h"
+#include "epub.h"
 #include "misc/lv_timer_private.h"
 #include "core/lv_obj_private.h"
 #include "esp_log.h"
@@ -313,12 +314,31 @@ void file_browser_relayout(lv_obj_t *obj)
 }
 
 
-/* 判断是否�?.txt（大小写不敏感） */
+/* 判断是否是 .txt（大小写不敏感） */
 static bool fb_is_txt(const char *name)
 {
     size_t n = strlen(name);
     if (n < 4) return false;
     return strcasecmp(name + n - 4, ".txt") == 0;
+}
+
+/* 判断是否是 .epub */
+static bool fb_is_epub(const char *name)
+{
+    size_t n = strlen(name);
+    if (n < 5) return false;
+    return strcasecmp(name + n - 5, ".epub") == 0;
+}
+
+/* 判断是否是图片（.jpg/.jpeg/.png/.bmp） */
+static bool fb_is_image(const char *name)
+{
+    size_t n = strlen(name);
+    if (n < 4) return false;
+    const char *ext = name + n - 4;
+    if (strcasecmp(ext, ".jpg") == 0 || strcasecmp(ext, ".png") == 0 ||
+        strcasecmp(ext, ".bmp") == 0) return true;
+    return n >= 5 && strcasecmp(name + n - 5, ".jpeg") == 0;
 }
 
 /* 延迟跳转阅读器 APP（一次性定时器，下一帧 LVGL 循环执行，避开 indev 事件上下文） */
@@ -329,6 +349,37 @@ static void fb_open_reader_deferred(lv_timer_t *t)
     if (!fb || !fb->pending_reader) return;
     fb->pending_reader = false;
     launcher_app_launch(LAUNCH_APP_READER, fb->pending_reader_path);  /* 压栈跳转，直接打开 txt */
+}
+
+/* 延迟打开图片查看器（同机制，压栈保活浏览器） */
+static void fb_open_image_deferred(lv_timer_t *t)
+{
+    fb_t *fb = t->user_data;
+    fb->defer_timer = NULL;
+    if (!fb || !fb->pending_reader) return;
+    fb->pending_reader = false;
+    launcher_app_launch(LAUNCH_APP_IMAGEVIEWER, fb->pending_reader_path);
+}
+
+/* EPUB：转换到同目录 <name>.txt 后打开（复用 Reader；转换在持锁线程） */
+static void fb_open_epub_deferred(lv_timer_t *t)
+{
+    fb_t *fb = t->user_data;
+    fb->defer_timer = NULL;
+    if (!fb || !fb->pending_reader) return;
+    fb->pending_reader = false;
+    if (strlen(fb->pending_reader_path) + 5 >= sizeof(fb->pending_reader_path)) {
+        ESP_LOGE("file_browser", "path too long for epub cache");
+        return;
+    }
+    char dst[FB_PATH_MAX];
+    snprintf(dst, sizeof(dst), "%s.txt", fb->pending_reader_path);
+    esp_err_t er = epub_convert(fb->pending_reader_path, dst);
+    if (er == ESP_OK) {
+        launcher_app_launch(LAUNCH_APP_READER, dst);
+    } else {
+        ESP_LOGE("file_browser", "epub convert failed: %d", er);
+    }
 }
 
 
@@ -364,17 +415,33 @@ static void fb_item_event(lv_event_t *e)
     } else if (fb_is_txt(rd->path)) {
         /* 点 txt → 跳转阅读器 APP（直接打开模式）。保存浏览器滚动位置
          * （压栈保活，返回时对象树未销毁，滚动位置天然保留，这里仅存路径）。
-         * 延迟执行避开 indev 事件上下文 */
+         * 延迟执行避开 indev 事件上下文。
+         * 注意：不 free(rd)/不清 user_data——压栈保活的行对象要支持二次点击；
+         * 释放统一由 fb_refresh→fb_free_rows 在下次重建列表时完成 */
         fb->pending_scroll = lv_obj_get_scroll_y(fb->list);
         strncpy(fb->pending_reader_path, rd->path, sizeof(fb->pending_reader_path) - 1);
         fb->pending_reader_path[sizeof(fb->pending_reader_path) - 1] = '\0';
         fb->pending_reader = true;
         fb->defer_timer = lv_timer_create(fb_open_reader_deferred, 1, fb);
         lv_timer_set_repeat_count(fb->defer_timer, 1);
-        free(rd);
-        lv_obj_set_user_data(row, NULL);
+    } else if (fb_is_image(rd->path)) {
+        /* 点图片 → 图片查看器（直接打开该图），行对象保留（可二次点击） */
+        fb->pending_scroll = lv_obj_get_scroll_y(fb->list);
+        strncpy(fb->pending_reader_path, rd->path, sizeof(fb->pending_reader_path) - 1);
+        fb->pending_reader_path[sizeof(fb->pending_reader_path) - 1] = '\0';
+        fb->pending_reader = true;
+        fb->defer_timer = lv_timer_create(fb_open_image_deferred, 1, fb);
+        lv_timer_set_repeat_count(fb->defer_timer, 1);
+    } else if (fb_is_epub(rd->path)) {
+        /* 点 epub → 转换 TXT 后进阅读器，行对象保留（可二次点击） */
+        fb->pending_scroll = lv_obj_get_scroll_y(fb->list);
+        strncpy(fb->pending_reader_path, rd->path, sizeof(fb->pending_reader_path) - 1);
+        fb->pending_reader_path[sizeof(fb->pending_reader_path) - 1] = '\0';
+        fb->pending_reader = true;
+        fb->defer_timer = lv_timer_create(fb_open_epub_deferred, 1, fb);
+        lv_timer_set_repeat_count(fb->defer_timer, 1);
     } else {
-        free(rd);   /* 非 txt 文件：无操作 */
+        free(rd);   /* 其他文件：无操作 */
         lv_obj_set_user_data(row, NULL);
     }
 }

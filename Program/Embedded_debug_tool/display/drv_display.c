@@ -110,13 +110,11 @@ void drv_display_init(drv_display_t *disp)
     ESP_ERROR_CHECK(esp_lcd_panel_init(disp->panel));
     ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(disp->panel, false));
     ESP_ERROR_CHECK(esp_lcd_panel_mirror(disp->panel, false, false));
-    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(disp->panel, true));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(disp->panel, true));
-    ESP_LOGI(TAG, "LCD ST7789 ready: %dx%d", DRV_LCD_H_RES, DRV_LCD_V_RES);
 
-    /* 上电先黑屏：面板 RAM 初始未定义（可能白噪），在桌面渲染前立即填充纯黑，
-     * 避免闪屏。ST7789 开了 invert_color：写 0xFFFF 显示为黑。
-     * PSRAM 源缓冲分块提交（每块 ≤ max_transfer_sz=7.5KB = 16 行）：
+    /* 上电先黑屏：面板 RAM 初始未定义（可能白噪），在开显示（disp_on）前
+     * 立即填充纯黑，杜绝上电白屏闪烁。ST7789 开了 invert_color：写 0xFFFF
+     * 显示为黑。PSRAM 源缓冲分块提交（每块 ≤ max_transfer_sz=7.5KB=16 行）：
      * spi_master 对 PSRAM 源要在 ISR 分配内部 DMA priv buffer（=事务大小），
      * 整帧 153.6KB 一次提交会分配失败（开发时实测过） */
     #define LCD_BLACK_BLOCK_H 16   /* 240px×16 行 ×2B = 7680B ≤ max_transfer_sz */
@@ -135,6 +133,10 @@ void drv_display_init(drv_display_t *disp)
         }
         heap_caps_free(fb);
     }
+
+    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(disp->panel, true));
+    ESP_LOGI(TAG, "LCD ST7789 ready: %dx%d (black-filled before disp_on)",
+             DRV_LCD_H_RES, DRV_LCD_V_RES);
 
     s_disp = *disp;   /* 全部初始化完成后保存全局句柄（滚动命令用） */
 
