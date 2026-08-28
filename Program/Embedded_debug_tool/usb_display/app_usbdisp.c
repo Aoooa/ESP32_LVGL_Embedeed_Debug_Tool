@@ -26,11 +26,11 @@
 static const char *TAG = "app_usbdisp";
 
 #define USDISP_VID          0x303A
-#define USDISP_PID          0x2987
+#define USDISP_PID          0x4010
 /* xfz1986 协议要求的 Product 字符串格式：
  *  esp32udisp0_R<W>x<H>_Ejpeg<Q>_Fps<F>_Bl<B>
  * driver 用 _ 分词, sscanf 解析每个 token, 缺 Fps 或顺序错会导致 monitor 创建失败 */
-#define USDISP_PRODUCT      "esp32udisp0_R240x320_Ejpg6_Fps30_Bl20"
+#define USDISP_PRODUCT      "ESP32_LCD_Display"
 #define USDISP_MANUFACTURER "Espressif"
 /* Vendor Interface 字符串（与 product 同内容，driver 优先读 interface string）
  * 必须分配独立字符串索引，driver 用 GetDescriptor(String) 读取 */
@@ -138,14 +138,15 @@ static bool decode_one_frame(const uint8_t *jpg, size_t len) {
     io->outbuf = (unsigned char *)s_rgb_buf[back];
     int proc_ret = jpeg_dec_process(dec, io);
     jpeg_dec_close(dec);
+    uint16_t w = hi->width, h = hi->height;
     free(io); free(hi);
     if (proc_ret < 0) {
         atomic_fetch_add(&s_error_count, 1);
         return false;
     }
 
-    s_rgb_back_w = hi->width;
-    s_rgb_back_h = hi->height;
+    s_rgb_back_w = w;
+    s_rgb_back_h = h;
     s_rgb_back_new = back;
 
     int64_t now = esp_timer_get_time();
@@ -274,8 +275,10 @@ static const tinyusb_desc_config_t s_desc_cfg = {
     .device = &s_dev_desc,
     .string = s_usb_strings,
     .string_count = 4,
+    .high_speed_config = NULL,
     .full_speed_config = s_cfg_desc,
 };
+
 
 /* ── USB 事件 ── */
 static void tusb_event_cb(tinyusb_event_t *e, void *arg) {
@@ -290,6 +293,44 @@ static void tusb_event_cb(tinyusb_event_t *e, void *arg) {
 }
 
 /* ── enable / disable ── */
+/* Microsoft OS 1.0 Descriptor (Extended Compat ID)
+ * Windows 主机发起 vendor control request (bRequest=0x01 GET_DESCRIPTOR, wValue=0x03EE)
+ * 我们用 tud_control_xfer 返回此 buffer.
+ * 声明 interface 0 是 WinUSB 兼容, Windows 自动加载内置 winusb.sys
+ * 不需装任何驱动, 不受 Secure Boot / test signing 限制
+ */
+static const uint8_t s_ms_os_desc[] = {
+    /* Header (18 bytes) */
+    0x12, 0x00,
+    0x00, 0x01,
+    0xEE, 0x03,
+    0x01,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    /* Extended Compat ID Descriptor (20 bytes) */
+    0x14, 0x00,
+    0x04,
+    0x00,
+    0x01,
+    'W', 'I', 'N', 'U', 'S', 'B', 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+
+/* Override TinyUSB weak default tud_vendor_control_xfer_cb
+ * 处理 Microsoft OS 1.0 GET_DESCRIPTOR 请求 (vendor request)
+ * 这个 callback 是 WEAK 符号, 不会被 esp_tinyusb 强定义冲突
+ */
+bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage,
+                                 const tusb_control_request_t *request) {
+    if (stage == CONTROL_STAGE_SETUP &&
+        request->bRequest == 0x01 &&          /* GET_DESCRIPTOR */
+        request->wValue == 0x03EE) {          /* MS OS 1.0 vendor descriptor */
+        return tud_control_xfer(rhport, request,
+                                (void *)s_ms_os_desc, sizeof(s_ms_os_desc));
+    }
+    return false;
+}
+
 esp_err_t app_usbdisp_enable(void) {
     if ((usdisp_state_t)atomic_load(&s_state) == USDISP_ACTIVE) return ESP_OK;
 
