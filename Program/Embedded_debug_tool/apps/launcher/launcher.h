@@ -33,6 +33,7 @@ typedef enum {
     LAUNCH_APP_WEBFS,       /* WebFS（浏览器访问 SD 文件管理） */
     LAUNCH_APP_METER,       /* 电压表（多路 ADC 电压测量 + 波形） */
     LAUNCH_APP_IMAGEVIEWER, /* 图片查看（SD 图片缩略图+全屏） */
+    LAUNCH_APP_USBDISP,     /* USB 电脑副屏（USB Vendor bulk + MJPEG） */
     LAUNCH_APP_COUNT,
 } launch_app_id_t;
 

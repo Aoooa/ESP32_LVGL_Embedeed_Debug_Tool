@@ -1,0 +1,2 @@
+$ErrorActionPreference = 'SilentlyContinue'
+Get-WinEvent -ProviderName 'Microsoft-Windows-DriverFrameworks-UserMode' -MaxEvents 30 | Select-Object TimeCreated, Id, LevelDisplayName, @{n='Msg';e={ $_.Message.Substring(0, [Math]::Min(500, $_.Message.Length)) }} | Format-Table -AutoSize -Wrap | Out-String -Width 250

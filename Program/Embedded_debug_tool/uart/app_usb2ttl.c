@@ -16,6 +16,7 @@
 #include "app_uart.h"          /* g_bridges / uart_bridge_t.paused */
 #include "app_cardreader.h"
 #include "app_dap.h"
+#include "app_usbdisp.h"
 #include "drv_uart.h"          /* DRV_UART_BAUD_RATE */
 #include "io_picker.h"         /* 惰性占用账本：enable 占用/disable 归还 */
 #include "esp_log.h"
@@ -293,6 +294,10 @@ esp_err_t app_usb2ttl_enable(void)
     }
     if (app_dap_get_state() == DAP_STATE_READY) {
         ESP_LOGE(TAG, "DAP owns USB, disable it first");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (app_usbdisp_get_state() == USDISP_ACTIVE) {
+        ESP_LOGE(TAG, "USB display owns USB, disable it first");
         return ESP_ERR_INVALID_STATE;
     }
 

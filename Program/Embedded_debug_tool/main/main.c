@@ -12,11 +12,40 @@
 #include "app_tcp.h"
 #include "app_web.h"
 #include "app_display.h"
+#include "app_usbdisp.h"
 #include "drv_sdcard.h"
 #include "drv_wave.h"
 #include "esp_lv_adapter.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_log.h"
+
+/* USB 副屏自测模式：编译时打开，会自动周期性启停副屏用于 Windows 端验证 */
+#define USDISP_SELFTEST_ENABLE     0
+#if USDISP_SELFTEST_ENABLE
+static void usdisp_selftest_task(void *arg) {
+    (void)arg;
+    ESP_LOGI("usdisp_selftest", "started, first enable in 5s");
+    vTaskDelay(pdMS_TO_TICKS(5000));
+    bool on = false;
+    while (1) {
+        if (!on) {
+            esp_err_t r = app_usbdisp_enable();
+            ESP_LOGI("usdisp_selftest", "ENABLE -> %s (st=%s, fps=%.1f, err=%u)",
+                     esp_err_to_name(r),
+                     app_usbdisp_state_str(app_usbdisp_get_state()),
+                     app_usbdisp_get_fps(),
+                     (unsigned)app_usbdisp_get_error_count());
+        } else {
+            app_usbdisp_disable();
+            ESP_LOGI("usdisp_selftest", "DISABLE -> st=%s",
+                     app_usbdisp_state_str(app_usbdisp_get_state()));
+        }
+        on = !on;
+        vTaskDelay(pdMS_TO_TICKS(on ? 15000 : 5000));  /* on 15s, off 5s */
+    }
+}
+#endif
 
 static uart_bridge_t s_bridge1 = {
     .port = UART_NUM_1, .tx_pin = 2, .rx_pin = 4,
@@ -88,6 +117,10 @@ void app_main(void)
 
     /* 全部初始化完成 → 一次构建桌面并刷新（上电黑屏 → 桌面，无中间闪烁） */
     app_display_build_ui();
+
+#if USDISP_SELFTEST_ENABLE
+    xTaskCreatePinnedToCore(usdisp_selftest_task, "udisp_test", 4096, NULL, 3, NULL, 0);
+#endif
 
     printf("\n=== Ready ===\n");
     printf(" WiFi: Embedded-debug-tool\n");

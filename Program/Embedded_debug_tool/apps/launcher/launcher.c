@@ -12,6 +12,7 @@
 #include "web_fs_app.h"
 #include "meter_app.h"
 #include "image_viewer.h"
+#include "usb_display.h"
 #include "gesture.h"
 #include "esp_heap_caps.h"
 #include <stdlib.h>
@@ -21,7 +22,7 @@
 #include "esp_log.h"
 
 /* ── App 卡片表（每卡最多 3 行，每行 ≤15 字符防折行） ── */
-#define APP_COUNT 12
+#define APP_COUNT 13
 
 /* 卡片类型：可启动 app / 占位 */
 typedef enum { APP_TYPE_LAUNCH, APP_TYPE_PLACEHOLDER } app_type_t;
@@ -39,6 +40,7 @@ extern const lv_image_dsc_t launcher_icon_usb2ttl;
 extern const lv_image_dsc_t launcher_icon_webfs;
 extern const lv_image_dsc_t launcher_icon_meter;
 extern const lv_image_dsc_t launcher_icon_photo;
+extern const lv_image_dsc_t launcher_icon_udisp;
 
 static const lv_image_dsc_t *const s_app_icons[APP_COUNT] = {
     &launcher_icon_files,      /* Files */
@@ -53,6 +55,7 @@ static const lv_image_dsc_t *const s_app_icons[APP_COUNT] = {
     &launcher_icon_webfs,      /* WebFS */
     &launcher_icon_meter,      /* Meter */
     &launcher_icon_photo,      /* Photos */
+    &launcher_icon_udisp,      /* UsbDisp */
 };
 
 static const struct {
@@ -72,6 +75,7 @@ static const struct {
     { "WebFS", APP_TYPE_LAUNCH,     LAUNCH_APP_WEBFS },
     { "Meter", APP_TYPE_LAUNCH,     LAUNCH_APP_METER },
     { "Photos", APP_TYPE_LAUNCH,     LAUNCH_APP_IMAGEVIEWER },
+    { "UsbDisp", APP_TYPE_LAUNCH,     LAUNCH_APP_USBDISP },
 };
 
 /* ── 主题色（赛博朋克：暗底 + 霓虹青边框） ── */
@@ -467,6 +471,18 @@ const app_manifest_t app_manifests[LAUNCH_APP_COUNT] = {
         .debug_event = (void (*)(void *, int))image_viewer_debug_event,
         .drag_root = (lv_obj_t *(*)(void *))image_viewer_drag_root,
         .drag_exit = (void (*)(void *))image_viewer_drag_exit,
+    },
+    [LAUNCH_APP_USBDISP] = {
+        .id = LAUNCH_APP_USBDISP,
+        .name = "UsbDisp",
+        .launch = (void *(*)(lv_obj_t *, void (*)(void *), void *))usb_display_create,
+        .destroy = (void (*)(void *))usb_display_destroy,
+        .back = (bool (*)(void *))usb_display_swipe_back,
+        .rotate = NULL,
+        .refresh = NULL,
+        .debug_event = NULL,
+        .drag_root = (lv_obj_t *(*)(void *))usb_display_drag_root,
+        .drag_exit = NULL,
     },
 };
 

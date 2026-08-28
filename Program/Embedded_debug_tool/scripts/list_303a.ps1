@@ -1,0 +1,1 @@
+Get-PnpDevice -Class USB -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -match 'VID_303A' } | Select-Object InstanceId, Status, FriendlyName | Format-Table -AutoSize | Out-String -Width 250

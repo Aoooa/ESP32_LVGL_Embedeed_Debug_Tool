@@ -326,6 +326,31 @@ def icon_photo():
     draw_line(cv, 13, 44, 48, 44, 4, white)
     return cv
 
+def icon_usbdisp():
+    """USB 副屏：显示器（屏 + USB 插头 + 像素点）（青 + 紫）"""
+    main = hexc(0x39C5BB); sub = hexc(0xB14CFF); white = hexc(0xFFFFFF)
+    cv = new_canvas(); mask = [[0.0] * W for _ in range(H)]
+    # 显示器外框
+    round_rect_fill(cv, 9, 11, 51, 41, 4, white)
+    mark(cv, mask, 9, 11, 51, 41)
+    finish(cv, mask, main)
+    # 显示器像素点（4 格 2x2）
+    for px, py in [(16, 17), (22, 17), (16, 23), (22, 23)]:
+        fill_rect(cv, px, py, px + 4, py + 4, white)
+    for px, py in [(32, 17), (38, 17), (32, 23), (38, 23)]:
+        fill_rect(cv, px, py, px + 4, py + 4, sub)
+    for px, py in [(16, 31), (22, 31), (16, 37), (22, 37)]:
+        fill_rect(cv, px, py, px + 4, py + 4, sub)
+    for px, py in [(32, 31), (38, 31), (32, 37), (38, 37)]:
+        fill_rect(cv, px, py, px + 4, py + 4, white)
+    # USB 插头（底座）
+    round_rect_fill(cv, 22, 45, 38, 54, 3, white)
+    mark(cv, mask, 22, 45, 38, 54)
+    finish(cv, mask, main)
+    setpx(cv, 26, 49, white); setpx(cv, 30, 49, white)
+    setpx(cv, 34, 49, white); setpx(cv, 38, 49, sub)
+    return cv
+
 ICONS = [
     ("files",    icon_files),
     ("reader",   icon_reader),
@@ -339,6 +364,7 @@ ICONS = [
     ("webfs",    icon_webfs),
     ("meter",    icon_meter),
     ("photo",    icon_photo),
+    ("udisp",    icon_usbdisp),
 ]
 
 def to_argb_bytes(cv):
