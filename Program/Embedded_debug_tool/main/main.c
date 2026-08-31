@@ -21,7 +21,7 @@
 #include "esp_log.h"
 
 /* USB 副屏自测模式：编译时打开，会自动周期性启停副屏用于 Windows 端验证 */
-#define USDISP_SELFTEST_ENABLE     0
+#define USDISP_SELFTEST_ENABLE     1   /* start auto-enable, no APP needed */
 #if USDISP_SELFTEST_ENABLE
 static void usdisp_selftest_task(void *arg) {
     (void)arg;

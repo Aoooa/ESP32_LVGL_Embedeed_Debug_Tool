@@ -23,6 +23,14 @@
 #include <string.h>
 #include <stdatomic.h>
 
+/* ==== self-test mode (让 ESP32 不需要用户操作就能跑) ==== */
+#ifndef USDISP_AUTO_ENABLE_ON_BOOT
+#define USDISP_AUTO_ENABLE_ON_BOOT 1   /* 1=APP创建后 500ms 自动 enable (无需点按钮) */
+#endif
+#ifndef USDISP_PERIODIC_RESTART_SEC
+#define USDISP_PERIODIC_RESTART_SEC 30 /* >0=周期 disable+enable (秒), 0=关闭 */
+#endif
+
 static const char *TAG = "app_usbdisp";
 
 #define USDISP_VID          0x303A
@@ -300,10 +308,10 @@ static void tusb_event_cb(tinyusb_event_t *e, void *arg) {
  * 不需装任何驱动, 不受 Secure Boot / test signing 限制
  */
 static const uint8_t s_ms_os_desc[] = {
-    /* Header (18 bytes) */
-    0x12, 0x00,
+    /* MS OS 1.0 Header (16 bytes) */
+    0x24, 0x00, 0x00, 0x00,
     0x00, 0x01,
-    0xEE, 0x03,
+    0xEE, 0x00,
     0x01,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     /* Extended Compat ID Descriptor (20 bytes) */
@@ -313,7 +321,6 @@ static const uint8_t s_ms_os_desc[] = {
     0x01,
     'W', 'I', 'N', 'U', 'S', 'B', 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
 
 /* Override TinyUSB weak default tud_vendor_control_xfer_cb
@@ -325,11 +332,15 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage,
     if (stage == CONTROL_STAGE_SETUP &&
         request->bRequest == 0x01 &&          /* GET_DESCRIPTOR */
         request->wValue == 0x03EE) {          /* MS OS 1.0 vendor descriptor */
+        ESP_LOGI("app_usbdisp", "MS OS 1.0 GET_DESCRIPTOR, sending %u bytes", sizeof(s_ms_os_desc));
         return tud_control_xfer(rhport, request,
                                 (void *)s_ms_os_desc, sizeof(s_ms_os_desc));
     }
+    ESP_LOGD("app_usbdisp", "vendor req stage=%u bRequest=0x%02x wValue=0x%04x wIndex=0x%04x", stage, request->bRequest, request->wValue, request->wIndex);
     return false;
 }
+
+
 
 esp_err_t app_usbdisp_enable(void) {
     if ((usdisp_state_t)atomic_load(&s_state) == USDISP_ACTIVE) return ESP_OK;
