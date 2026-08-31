@@ -1,2 +1,0 @@
-$ErrorActionPreference = 'SilentlyContinue'
-Get-WinEvent -LogName Setup -MaxEvents 100 | Where-Object { $_.Message -match 'xfz|303A|2987' -or $_.ProviderName -match 'Wudf|Device' } | Select-Object TimeCreated, ProviderName, Id, @{n='Msg';e={ $_.Message.Substring(0, [Math]::Min(400, $_.Message.Length)) }} | Format-Table -AutoSize -Wrap | Out-String -Width 250

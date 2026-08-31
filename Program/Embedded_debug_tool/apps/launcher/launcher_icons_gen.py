@@ -364,7 +364,6 @@ ICONS = [
     ("webfs",    icon_webfs),
     ("meter",    icon_meter),
     ("photo",    icon_photo),
-    ("udisp",    icon_usbdisp),
 ]
 
 def to_argb_bytes(cv):

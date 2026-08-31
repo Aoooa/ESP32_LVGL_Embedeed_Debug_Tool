@@ -2,7 +2,6 @@
 #include "drv_dap.h"
 #include "app_cardreader.h"
 #include "app_usb2ttl.h"
-#include "app_usbdisp.h"
 #include "app_wifi.h"
 #include "usbip_server.h"
 #include "tinyusb.h"
@@ -227,11 +226,6 @@ esp_err_t app_dap_enable(void)
     /* 与 USB2TTL 桥接互斥（共用 USB PHY） */
     if (app_usb2ttl_get_state() == USB2TTL_ON) {
         ESP_LOGE(TAG, "USB2TTL bridge is using USB, disable it first");
-        return ESP_ERR_INVALID_STATE;
-    }
-    /* 与 USB 副屏互斥（共用 USB PHY） */
-    if (app_usbdisp_get_state() == USDISP_ACTIVE) {
-        ESP_LOGE(TAG, "USB display is using USB, disable it first");
         return ESP_ERR_INVALID_STATE;
     }
 

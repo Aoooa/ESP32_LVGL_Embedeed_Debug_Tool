@@ -1,3 +1,0 @@
-$ErrorActionPreference = 'SilentlyContinue'
-$events = Get-WinEvent -LogName Application -MaxEvents 200 | Where-Object { $_.ProviderName -match 'Wudf|UMDF|DriverFrameworks|xdz|xfz' -or $_.Message -match 'xfz|303A' }
-$events | Select-Object TimeCreated, ProviderName, Id, LevelDisplayName, @{n='Msg';e={ $_.Message.Substring(0, [Math]::Min(300, $_.Message.Length)) }} | Format-Table -AutoSize -Wrap | Out-String -Width 250

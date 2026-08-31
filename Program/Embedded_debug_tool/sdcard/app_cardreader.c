@@ -19,7 +19,6 @@
 #include "drv_sdcard.h"
 #include "app_dap.h"
 #include "app_usb2ttl.h"
-#include "app_usbdisp.h"
 #include "esp_log.h"
 #include "esp_lv_adapter.h"
 #include "tinyusb.h"
@@ -204,11 +203,6 @@ esp_err_t app_cardreader_enable(void)
     }
     if (app_usb2ttl_get_state() == USB2TTL_ON) {
         ESP_LOGE(TAG, "USB2TTL is using USB, disable it first");
-        cardreader_set_state(CARDREADER_ERROR);
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (app_usbdisp_get_state() == USDISP_ACTIVE) {
-        ESP_LOGE(TAG, "USB display is using USB, disable it first");
         cardreader_set_state(CARDREADER_ERROR);
         return ESP_ERR_INVALID_STATE;
     }
