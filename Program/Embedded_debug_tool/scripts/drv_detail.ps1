@@ -1,0 +1,1 @@
+Get-PnpDeviceProperty -InstanceId 'USB\VID_303A&PID_4010\0001' -ErrorAction SilentlyContinue | Where-Object { $_.KeyName -match 'Driver|Service|Inf|Hardware|Compat|Upper' } | Format-Table KeyName, Data -AutoSize
