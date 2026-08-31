@@ -55,8 +55,6 @@ idf_component_register(
         "${MODULE_DIR}/uart/app_usb2ttl.c"
         "${MODULE_DIR}/apps/usb2ttl/usb2ttl.c"
         "${MODULE_DIR}/apps/web_fs/web_fs_app.c"
-        "${MODULE_DIR}/usb_display/app_usbdisp.c"
-        "${MODULE_DIR}/apps/usb_display/usb_display.c"
 
     INCLUDE_DIRS
         "."
@@ -93,8 +91,6 @@ idf_component_register(
         "${MODULE_DIR}/apps/epub"
         "${MODULE_DIR}/apps/usb2ttl"
         "${MODULE_DIR}/apps/web_fs"
-        "${MODULE_DIR}/usb_display"
-        "${MODULE_DIR}/apps/usb_display"
 
     PRIV_REQUIRES
         spi_flash nvs_flash esp_netif esp_event

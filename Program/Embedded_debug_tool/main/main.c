@@ -12,36 +12,12 @@
 #include "app_tcp.h"
 #include "app_web.h"
 #include "app_display.h"
-#include "app_usbdisp.h"
 #include "drv_sdcard.h"
 #include "drv_wave.h"
 #include "esp_lv_adapter.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
-
-/* USB 副屏自测模式：编译时打开，会自动周期性启停副屏用于 Windows 端验证 */
-#define USDISP_SELFTEST_ENABLE     1   /* start auto-enable, no APP needed */
-#if USDISP_SELFTEST_ENABLE
-static void usdisp_selftest_task(void *arg) {
-    (void)arg;
-    ESP_LOGI("usdisp_selftest", "started, alternating 3s on / 10s off cycle");
-    vTaskDelay(pdMS_TO_TICKS(5000));
-    bool on = false;
-    while (1) {
-        if (!on) {
-            esp_err_t r = app_usbdisp_enable();
-            ESP_LOGI("usdisp_selftest", "ENABLE -> %s (st=%s)", esp_err_to_name(r), app_usbdisp_state_str(app_usbdisp_get_state()));
-            vTaskDelay(pdMS_TO_TICKS(3000));   /* vendor 3s - PC test window */
-        } else {
-            app_usbdisp_disable();
-            ESP_LOGI("usdisp_selftest", "DISABLE (COM back, flash window)");
-            vTaskDelay(pdMS_TO_TICKS(10000));  /* USJ 10s - flash window */
-        }
-        on = !on;
-    }
-}
-#endif
 
 static uart_bridge_t s_bridge1 = {
     .port = UART_NUM_1, .tx_pin = 2, .rx_pin = 4,
