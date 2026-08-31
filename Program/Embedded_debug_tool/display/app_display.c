@@ -167,6 +167,9 @@ static void fps_timer_cb(lv_timer_t *t)
 static void build_ui(void)
 {
     lv_obj_t *scr = lv_screen_active();
+    /* 全局关闭屏幕滚动条 (右滑返回桌面不应滚动) */
+    lv_obj_set_scrollbar_mode(scr, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC | LV_OBJ_FLAG_SCROLL_MOMENTUM);
     /* 桌面启动器（默认界面）：黑夜主题起步，全屏背景由 launcher root 承担 */
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x080A0C), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
@@ -189,6 +192,9 @@ static void build_ui(void)
 static void build_ui(void)
 {
     lv_obj_t *scr = lv_screen_active();
+    /* 全局关闭屏幕滚动条 (右滑返回桌面不应滚动) */
+    lv_obj_set_scrollbar_mode(scr, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC | LV_OBJ_FLAG_SCROLL_MOMENTUM);
     /* 桌面启动器（默认界面）：黑夜主题起步，全屏背景由 launcher root 承担 */
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x080A0C), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
