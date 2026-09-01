@@ -121,7 +121,7 @@ void drv_display_init(drv_display_t *disp)
     uint16_t *fb = heap_caps_malloc((size_t)DRV_LCD_H_RES * LCD_BLACK_BLOCK_H * 2,
                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (fb) {
-        memset(fb, 0xFF, (size_t)DRV_LCD_H_RES * LCD_BLACK_BLOCK_H * 2);
+        memset(fb, 0x00, (size_t)DRV_LCD_H_RES * LCD_BLACK_BLOCK_H * 2);  /* DIAG: 测 INVON */
         for (int y = 0; y < DRV_LCD_V_RES; y += LCD_BLACK_BLOCK_H) {
             esp_err_t err = esp_lcd_panel_draw_bitmap(disp->panel, 0, y,
                                                       DRV_LCD_H_RES,
