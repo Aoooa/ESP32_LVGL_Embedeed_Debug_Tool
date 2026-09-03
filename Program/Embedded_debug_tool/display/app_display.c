@@ -178,7 +178,7 @@ static void build_ui(void)
         extern esp_lcd_panel_io_handle_t drv_display_get_io(void);
         esp_lcd_panel_handle_t panel = drv_display_get_panel();
         static uint16_t black_fb[240];  /* 240*2 = 480B, 单行 RGB565 black */
-        memset(black_fb, 0xFF, sizeof(black_fb));  /* ST7789 INVON: 写 0xFF 显示黑 */
+        memset(black_fb, 0x00, sizeof(black_fb));  /* 写 0x0000 = RGB565 黑，INVON/非 INVON 都显示黑 */
         for (int y = 0; y < 320; y++) {
             esp_lcd_panel_draw_bitmap(panel, 0, y, 240, y + 1, black_fb);
         }
@@ -217,7 +217,7 @@ static void build_ui(void)
         extern esp_lcd_panel_io_handle_t drv_display_get_io(void);
         esp_lcd_panel_handle_t panel = drv_display_get_panel();
         static uint16_t black_fb[240];  /* 240*2 = 480B, 单行 RGB565 black */
-        memset(black_fb, 0xFF, sizeof(black_fb));  /* ST7789 INVON: 写 0xFF 显示黑 */
+        memset(black_fb, 0x00, sizeof(black_fb));  /* 写 0x0000 = RGB565 黑，INVON/非 INVON 都显示黑 */
         for (int y = 0; y < 320; y++) {
             esp_lcd_panel_draw_bitmap(panel, 0, y, 240, y + 1, black_fb);
         }
@@ -280,6 +280,15 @@ void app_display_start(void)
     lv_indev_t *lv_tp = esp_lv_adapter_register_touch(&tp_cfg);
     assert(lv_tp != NULL);
 
+    /* 关键：先把桌面 UI 建好（scr 黑底 + launcher）再启动 LVGL 任务，
+     * 这样 LVGL 首次渲染就是桌面，避开默认主题浅色（白）闪烁。
+     * 老版本放在 main.c 末尾 deferred build，导致 100-300ms 窗口期内
+     * LVGL 用默认主题渲染 lv_scr_act() = 全白 */
+    if (esp_lv_adapter_lock(-1) == ESP_OK) {
+        build_ui();
+        esp_lv_adapter_unlock();
+    }
+
     ESP_ERROR_CHECK(esp_lv_adapter_start());
 
 
@@ -294,23 +303,16 @@ void app_display_start(void)
     };
     flow_view_set_lock(&fv_lock_cb);
 
-    /* 桌面 UI 由 app_display_build_ui() 统一构建（上电先黑屏，等 main.c
-     * 全部初始化完成后一次刷新，避免闪烁）——此处不再 build_ui */
-
     /* 终端 APP 常驻任务（消费 UART 数据队列；UI 由 launcher 按需创建） */
     terminal_init();
 
     ESP_LOGI(TAG, "Serial monitor UI ready");
 }
 
-/* 构建桌面 UI（launcher）。从 app_display_start 拆出：上电先保持黑屏，
- * 等 main.c 全部初始化（网络/SD/任务）完成后调用，一次刷新到位避免闪烁 */
+/* 保留向后兼容：UI 已在 app_display_start() 内部构建，本函数 no-op */
 void app_display_build_ui(void)
 {
-    if (esp_lv_adapter_lock(-1) == ESP_OK) {
-        build_ui();
-        esp_lv_adapter_unlock();
-    }
+    ESP_LOGW(TAG, "app_display_build_ui() is a no-op; UI built inside app_display_start()");
 }
 
 
